@@ -42,6 +42,8 @@ type ExitBatchInputResult struct {
 type ExitBatchResult struct {
 	Results     []ExitBatchInputResult
 	Destination string
+	// ActivityID tracks the aggregate EXIT for the accepted subset only.
+	ActivityID string
 }
 
 // ExitBatch submits one cooperative request without retry or unilateral
@@ -71,7 +73,10 @@ func (c *Client) ExitBatch(ctx context.Context, req ExitBatchRequest) (
 			"reconciling admission): %w", err)
 	}
 
-	result := &ExitBatchResult{Destination: response.GetOnchainAddress()}
+	result := &ExitBatchResult{
+		Destination: response.GetOnchainAddress(),
+		ActivityID:  response.GetActivityId(),
+	}
 	for _, input := range response.GetResults() {
 		outcome := ExitBatchUnknown
 		switch input.GetOutcome() {

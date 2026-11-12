@@ -5325,8 +5325,12 @@ type ExitBatchResponse struct {
 	Results []*ExitBatchInputResult `protobuf:"bytes,1,rep,name=results,proto3" json:"results,omitempty"`
 	// onchain_address is the common caller-supplied or generated destination.
 	OnchainAddress string `protobuf:"bytes,2,opt,name=onchain_address,json=onchainAddress,proto3" json:"onchain_address,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// activity_id identifies one aggregate EXIT row for the positively
+	// admitted subset. All accepted inputs belong to this one composed intent.
+	// Empty when no input is positively admitted. Unknown inputs are excluded.
+	ActivityId    string `protobuf:"bytes,3,opt,name=activity_id,json=activityId,proto3" json:"activity_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ExitBatchResponse) Reset() {
@@ -5369,6 +5373,13 @@ func (x *ExitBatchResponse) GetResults() []*ExitBatchInputResult {
 func (x *ExitBatchResponse) GetOnchainAddress() string {
 	if x != nil {
 		return x.OnchainAddress
+	}
+	return ""
+}
+
+func (x *ExitBatchResponse) GetActivityId() string {
+	if x != nil {
+		return x.ActivityId
 	}
 	return ""
 }
@@ -7298,10 +7309,12 @@ const file_wallet_proto_rawDesc = "" +
 	"\x14ExitBatchInputResult\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x129\n" +
 	"\aoutcome\x18\x02 \x01(\x0e2\x1f.wavewalletrpc.ExitBatchOutcomeR\aoutcome\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"{\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"\x9c\x01\n" +
 	"\x11ExitBatchResponse\x12=\n" +
 	"\aresults\x18\x01 \x03(\v2#.wavewalletrpc.ExitBatchInputResultR\aresults\x12'\n" +
-	"\x0fonchain_address\x18\x02 \x01(\tR\x0eonchainAddress\"K\n" +
+	"\x0fonchain_address\x18\x02 \x01(\tR\x0eonchainAddress\x12\x1f\n" +
+	"\vactivity_id\x18\x03 \x01(\tR\n" +
+	"activityId\"K\n" +
 	"\x11ExitStatusRequest\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1a\n" +
 	"\bdetailed\x18\x02 \x01(\bR\bdetailed\"\xd5\x02\n" +

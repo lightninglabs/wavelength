@@ -1525,6 +1525,10 @@ message ExitBatchResponse {
     repeated ExitBatchInputResult results = 1;
     // onchain_address is the common caller-supplied or generated destination.
     string onchain_address = 2;
+    // activity_id identifies one aggregate EXIT row for the positively
+    // admitted subset. All accepted inputs belong to this one composed intent.
+    // Empty when no input is positively admitted. Unknown inputs are excluded.
+    string activity_id = 3;
 }
 
 // ExitStatusRequest identifies the VTXO whose exit job to query via

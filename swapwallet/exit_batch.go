@@ -4,6 +4,9 @@ package swapwallet
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"math"
 	"strings"
 
 	"github.com/btcsuite/btcd/wire/v2"
@@ -47,6 +50,47 @@ func (s *Service) ExitBatch(ctx context.Context,
 	if s.deps == nil || s.deps.RPCServer == nil {
 		return nil, statusSwapBackendUnavailable()
 	}
+
+	// Capture amounts before dispatch; accepted inputs may disappear from
+	// spendable inventory immediately. Missing metadata rejects before any
+	// dispatch; the daemon still owns eligibility and reservation below.
+	inventory, err := s.deps.RPCServer.ListVTXOs(
+		ctx, &waverpc.ListVTXOsRequest{
+			ExcludeCheckpointPsbts: true,
+		},
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "read "+
+			"exit inputs before admission: %v", err)
+	}
+	amounts := make(map[string]int64, len(targets))
+	for _, input := range inventory.GetVtxos() {
+		amounts[input.GetOutpoint()] = input.GetAmountSat()
+	}
+	var selectedAmount int64
+	for _, target := range targets {
+		if amounts[target] <= 0 {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"exit input %s is not in current inventory",
+				target)
+		}
+		if amounts[target] > math.MaxInt64-selectedAmount {
+			return nil, status.Error(
+				codes.InvalidArgument,
+				"selected exit amount overflows",
+			)
+		}
+		selectedAmount += amounts[target]
+	}
+
+	// A fresh activity identity distinguishes a later explicit attempt from
+	// an older failed one. It is not an RPC replay key.
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "allocate "+
+			"exit activity identity: %v", err)
+	}
+	activityPrefix := "batch-exit-" + hex.EncodeToString(nonce[:]) + "-"
 
 	destination := strings.TrimSpace(req.GetOnchainAddress())
 	if destination == "" {
@@ -116,6 +160,32 @@ func (s *Service) ExitBatch(ctx context.Context,
 			result.Error = "daemon did not report input admission"
 		}
 		response.Results = append(response.Results, result)
+	}
+
+	// All positively admitted inputs belong to the one composed intent.
+	// Project one aggregate row: each source reports the same round-level
+	// fee, so one row per input would count that fee repeatedly.
+	var admitted []string
+	var amount int64
+	for _, input := range response.Results {
+		if input.Outcome != accepted {
+			continue
+		}
+		admitted = append(admitted, input.Outpoint)
+		amount += amounts[input.Outpoint]
+	}
+	if len(admitted) > 0 && s.runtime != nil {
+		entry := leaveEntryStub(
+			activityPrefix+admitted[0], admitted, destination,
+			amount, "", false,
+		)
+		// Cancellation after admission cannot discard the row. Existing
+		// EXIT rehydration and reconciliation follow the composed
+		// intent through restart and confirmation of its first admitted
+		// source.
+		s.runtime.trackPendingEntryWithoutTimeout(entry)
+		s.runtime.projectAndEmit(context.WithoutCancel(ctx), entry)
+		response.ActivityId = entry.Id
 	}
 
 	return response, nil
