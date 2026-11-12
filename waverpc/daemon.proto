@@ -1720,6 +1720,10 @@ message LeaveVTXOsResponse {
 
     // status is the result: "queued" on success, "preview" on dry_run.
     string status = 2;
+
+    // errors contains definitive per-input failures before intent registration.
+    // A missing input in both this map and queued_outpoints is unknown.
+    map<string, string> errors = 3;
 }
 
 message SendOnChainRequest {

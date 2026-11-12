@@ -152,13 +152,11 @@ func (a *Ark) buildSendOnChainIntentPackage(ctx context.Context,
 }
 
 // sendOnChainIntentReplayer replays persisted SendOnChain intents after a
-// daemon restart. handleSendOnChain reserves the forfeit anchors before it
-// persists the intent, so a crashed send's anchors recover from their
-// persisted status directly into PendingForfeit (not Live) — the VTXO
-// manager's startup orphan sweep only releases Spending VTXOs and never
-// touches PendingForfeit anchors. Replay re-reserves exactly those
-// outpoints, which is safe because re-issuing a forfeit reservation against
-// an already-PendingForfeit VTXO self-loops idempotently in the VTXO FSM.
+// daemon restart. handleSendOnChain reserves the anchors before persisting
+// the intent. Startup orphan-forfeit recovery returns uncheckpointed pending
+// reservations to Live before replay re-reserves those exact outpoints.
+// A second claim on a still-PendingForfeit VTXO is refused by the FSM;
+// replay relies on that startup recovery, not an idempotent reservation.
 // Selection is never re-run, since that could silently bind the intent to a
 // different forfeit set and change its identity. The rebuilt intent is then
 // re-registered with the round actor.

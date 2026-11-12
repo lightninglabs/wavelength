@@ -89,6 +89,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
   populated by current behavior. Status strings are the wrapper-owned
   lowercase set
   (`pending`/`materializing`/`csv_pending`/`sweeping`/`completed`/`failed`/`unspecified`).
+- `ExitBatchRequest` / `ExitBatchResult` — one cooperative request for exact
+  `Outpoints` and a common optional `Destination`. Ordered `Results` preserve
+  each input's `Outpoint`, `Outcome` (`accepted` / `failed` / `unknown`) and
+  `Error`. `Destination` in the result is the actual common address. There is
+  no retry, unilateral fallback, or all-or-nothing guarantee. Unknown results
+  and transport errors require reconciliation before a new submission.
 - `GetExitPlanRequest`/`Result`, `ExitPlanEntry` — previews backing-wallet
   funding needed before `Exit` can start, per outpoint and aggregated.
   `ExitPlanEntry.RoundCommitment` names the cooperative round holding the
@@ -126,6 +132,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
 | `SendPrepared` | Dispatch a prepared send (consumes `SendIntentID`). Returns `{Entry, ActualAmountSat}`. |
 | `List` | Unified history view (Activity / VTXOs / Onchain) as a tagged-union `ListResult`. |
 | `Exit` | Trigger cooperative leave or unilateral unroll for a VTXO. |
+| `ExitBatch` | Submit an exact cooperative selection once and preserve every input outcome. |
 | `ExitStatus` | Query the phase of an exit job. |
 | `ExitSummary` | Wallet-wide portfolio of in-progress exits plus aggregate totals. |
 | `GetExitPlan` | Preview backing-wallet funding needed before `Exit` can start. |

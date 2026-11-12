@@ -34,6 +34,7 @@ const (
 	WalletService_ExportExits_FullMethodName     = "/wavewalletrpc.WalletService/ExportExits"
 	WalletService_SweepWallet_FullMethodName     = "/wavewalletrpc.WalletService/SweepWallet"
 	WalletService_Exit_FullMethodName            = "/wavewalletrpc.WalletService/Exit"
+	WalletService_ExitBatch_FullMethodName       = "/wavewalletrpc.WalletService/ExitBatch"
 	WalletService_ExitStatus_FullMethodName      = "/wavewalletrpc.WalletService/ExitStatus"
 	WalletService_ExitSummary_FullMethodName     = "/wavewalletrpc.WalletService/ExitSummary"
 	WalletService_SubscribeWallet_FullMethodName = "/wavewalletrpc.WalletService/SubscribeWallet"
@@ -126,6 +127,10 @@ type WalletServiceClient interface {
 	// starts a unilateral unroll instead after checking that the outpoint is
 	// present in the local backing wallet's UTXO set.
 	Exit(ctx context.Context, in *ExitRequest, opts ...grpc.CallOption) (*ExitResponse, error)
+	// ExitBatch submits the exact selection in one cooperative leave request.
+	// It never starts unilateral exit. Results describe local admission, not
+	// confirmation. Unknown outcomes must be reconciled, never blindly retried.
+	ExitBatch(ctx context.Context, in *ExitBatchRequest, opts ...grpc.CallOption) (*ExitBatchResponse, error)
 	// ExitStatus reports the current phase of an unroll job for the
 	// specified VTXO outpoint, including recovery chain progress and
 	// sweep state. Proxies waverpc.GetUnrollStatus.
@@ -298,6 +303,16 @@ func (c *walletServiceClient) Exit(ctx context.Context, in *ExitRequest, opts ..
 	return out, nil
 }
 
+func (c *walletServiceClient) ExitBatch(ctx context.Context, in *ExitBatchRequest, opts ...grpc.CallOption) (*ExitBatchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExitBatchResponse)
+	err := c.cc.Invoke(ctx, WalletService_ExitBatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *walletServiceClient) ExitStatus(ctx context.Context, in *ExitStatusRequest, opts ...grpc.CallOption) (*ExitStatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ExitStatusResponse)
@@ -424,6 +439,10 @@ type WalletServiceServer interface {
 	// starts a unilateral unroll instead after checking that the outpoint is
 	// present in the local backing wallet's UTXO set.
 	Exit(context.Context, *ExitRequest) (*ExitResponse, error)
+	// ExitBatch submits the exact selection in one cooperative leave request.
+	// It never starts unilateral exit. Results describe local admission, not
+	// confirmation. Unknown outcomes must be reconciled, never blindly retried.
+	ExitBatch(context.Context, *ExitBatchRequest) (*ExitBatchResponse, error)
 	// ExitStatus reports the current phase of an unroll job for the
 	// specified VTXO outpoint, including recovery chain progress and
 	// sweep state. Proxies waverpc.GetUnrollStatus.
@@ -490,6 +509,9 @@ func (UnimplementedWalletServiceServer) SweepWallet(context.Context, *SweepWalle
 }
 func (UnimplementedWalletServiceServer) Exit(context.Context, *ExitRequest) (*ExitResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Exit not implemented")
+}
+func (UnimplementedWalletServiceServer) ExitBatch(context.Context, *ExitBatchRequest) (*ExitBatchResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ExitBatch not implemented")
 }
 func (UnimplementedWalletServiceServer) ExitStatus(context.Context, *ExitStatusRequest) (*ExitStatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ExitStatus not implemented")
@@ -791,6 +813,24 @@ func _WalletService_Exit_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WalletService_ExitBatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExitBatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).ExitBatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_ExitBatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).ExitBatch(ctx, req.(*ExitBatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WalletService_ExitStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ExitStatusRequest)
 	if err := dec(in); err != nil {
@@ -904,6 +944,10 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Exit",
 			Handler:    _WalletService_Exit_Handler,
+		},
+		{
+			MethodName: "ExitBatch",
+			Handler:    _WalletService_ExitBatch_Handler,
 		},
 		{
 			MethodName: "ExitStatus",

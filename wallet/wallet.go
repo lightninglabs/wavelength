@@ -2175,7 +2175,10 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 		)
 
 		return fn.Ok[WalletResp](&LeaveVTXOsResponse{
-			Errors: make(map[wire.OutPoint]error),
+			Errors: allTargetErrors(
+				req.TargetOutpoints,
+				fmt.Errorf("actor system not configured"),
+			),
 		})
 	}
 

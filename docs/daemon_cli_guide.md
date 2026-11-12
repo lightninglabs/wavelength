@@ -1,4 +1,8 @@
 # waved / wavecli User Guide
+`wavecli exit batch --outpoint TXID1:0 --outpoint TXID2:1` submits one
+cooperative batch. See [cooperative exit batches](cooperative-exit-batches.md)
+for partial admission and unknown-outcome handling.
+
 
 This guide covers installing, configuring, and operating the Ark client
 daemon (`waved`) and its CLI (`wavecli`).

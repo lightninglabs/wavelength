@@ -86,6 +86,17 @@ func TestExitExportRequiresWritePermission(t *testing.T) {
 	}
 }
 
+// TestExitBatchRequiresWritePermission prevents read-only batch admission.
+func TestExitBatchRequiresWritePermission(t *testing.T) {
+	t.Parallel()
+	method := wavewalletrpc.WalletService_ExitBatch_FullMethodName
+	ops, ok := wavedRPCPermissions[method]
+	require.True(t, ok)
+	require.Equal(t, []bakery.Op{
+		{Entity: entityOnChain, Action: "write"},
+	}, ops)
+}
+
 // TestWalletRefreshRequiresVTXOWritePermission checks the wallet-layer
 // Refresh carries the same permission as the RefreshVTXOs it proxies, so it
 // cannot become a way around a macaroon that may not spend VTXOs.

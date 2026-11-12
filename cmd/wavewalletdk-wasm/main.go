@@ -123,6 +123,9 @@ func walletCall(_ js.Value, args []js.Value) any {
 	case "exit":
 		return promise(jsonVerb(req, mobile.Exit))
 
+	case "exitBatch":
+		return promise(jsonVerb(req, mobile.ExitBatch))
+
 	case "exitStatus":
 		return promise(jsonVerb(req, mobile.ExitStatus))
 
@@ -250,13 +253,8 @@ func promise(fn func() (any, error)) any {
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					reject.Invoke(
-						jsError(
-							errors.New(
-								"wavewalletdk" +
-									" panic"),
-						),
-					)
+					err := errors.New("wavewalletdk panic")
+					reject.Invoke(jsError(err))
 				}
 			}()
 

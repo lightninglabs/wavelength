@@ -38,13 +38,17 @@ application-facing wallet API.
   `AmountSat`/`Memo` fields plus the mobile-only `TimeoutSeconds`. It is
   projected onto `wavewalletdk.ReceiveRequest` after deadline validation.
 - RPC verbs (`GetInfo`, `CreateWallet`, `UnlockWallet`, `Balance`, `Deposit`,
-  `Receive`, `PrepareSend`, `SendPrepared`, `List`, `Exit`, `ExitStatus`,
+  `Receive`, `PrepareSend`, `SendPrepared`, `List`, `Exit`, `ExitBatch`, `ExitStatus`,
   `ExitSummary`, `GetExitPlan`, `SweepWallet`, `Status`, `Subscribe`,
   `OpenWalletFromPasskey`) — each dereferences the singleton `wavewalletdk.Client`
   via `activeClient()`, decodes a JSON request into the matching
   `wavewalletdk.*Request`, and marshals the `wavewalletdk.*Result` response.
   `Receive` is the exception: it decodes `mobileReceiveRequest` first so the
   binding can own its request deadline without changing the SDK DTO.
+- `ExitBatch` accepts the SDK's PascalCase `Outpoints` / `Destination` JSON
+  and returns `Results` / `Destination`. Every result must be inspected even
+  on nil error. It uses the daemon lifecycle context, like singular `Exit`;
+  unknown outcomes require reconciliation rather than replay or unroll.
 - Scalar conveniences (`ConfirmedBalanceSat`, `PendingInboundSat`,
   `WalletReady`, `IsRunning`) — avoid a JSON round trip for hot-path reads;
   `IsRunning` never blocks on an RPC.
