@@ -82,6 +82,7 @@ into specific topics below.
 - [SDK shutdown implementation plan](sdk-shutdown-ownership-execplan.md).
 - [Notification source selection](notification-sources.md).
 - [Signed notification subscriptions](notification-subscriptions.md).
+- [Publisher wake feeds](notification-feed.md).
 - [Notification subscription implementation plan](notification-subscriptions-execplan.md).
 
 - [Domain shutdown ownership](domain-shutdown.md) — domain workers joined before shared store teardown.

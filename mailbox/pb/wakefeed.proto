@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package mailbox.v1;
+
+import "notification.proto";
+
+option go_package = "github.com/lightninglabs/wavelength/mailbox/pb;mailboxpb";
+
+// WakeFeedService delegates wake observation to a subscriber's mailbox key.
+// It has no relay URL, device token or delivery credential. Grant mutations
+// require a fresh wallet-signed challenge, consumed with the mutation.
+service WakeFeedService {
+    // GetFeedChallenge issues stateless authority for the wallet owner.
+    rpc GetFeedChallenge (NotificationChallengeRequest)
+        returns (NotificationChallenge);
+
+    // SetFeedGrant creates, renews or revokes the exact signed delegation.
+    rpc SetFeedGrant (FeedGrantRequest) returns (FeedGrantResponse);
+}
+
+// FeedGrantMutation binds a publisher-issued random ID to one subscriber key.
+// IDs encode at least 128 cryptographically random bits as raw URL-base64.
+// Renewal retains the subscriber route and its token until expiry.
+// Removal uses only action and grant_id; all other fields must be empty.
+message FeedGrantMutation {
+    enum Action {
+        ACTION_UNSPECIFIED = 0;
+        ACTION_UPSERT = 1;
+        ACTION_REMOVE = 2;
+    }
+    Action action = 1;
+    string grant_id = 2;
+    bytes subscriber_pubkey = 3;
+    // Bit 0 permits protocol wakes; bit 1 permits payment-activity hints.
+    // Unknown bits are rejected. These never authorize wallet operations.
+    uint32 event_classes = 4;
+    int64 expires_at_unix = 5;
+    // Subscriber-signed consent binds this producer, grant ID, classes and
+    // expiry. A producer retains one owner per (subscriber, grant ID).
+    bytes subscriber_signature = 6;
+}
+
+// FeedGrantRequest signs every challenge and mutation field under the wallet
+// identity key, using the wavelength-wake-feed-grant-v1 domain tag.
+message FeedGrantRequest {
+    NotificationChallenge challenge = 1;
+    FeedGrantMutation mutation = 2;
+    bytes signature = 3;
+}
+
+// FeedGrantResponse returns a non-authorizing opaque correlation token.
+// Only possession of the subscriber key authorizes mailbox Pull and AckUpTo.
+// Removal returns an empty token and zero expiry.
+message FeedGrantResponse {
+    string grant_id = 1;
+    bytes feed_token = 2;
+    int64 expires_at_unix = 3;
+}
+
+// WakeFeedEvent is an operator-originated KIND_EVENT in a subscriber mailbox.
+// It contains no wallet identity, wallet message, amount or destination token.
+// A generation and its push obligation must be committed before AckUpTo.
+message WakeFeedEvent {
+    bytes feed_token = 1;
+    uint64 generation = 2;
+    // Coalesced class bits have the same meaning as the grant's class mask.
+    uint32 event_classes = 3;
+    // The latest opaque classified-payment identity. Empty for wake-only
+    // events. This is a hint, not an exhaustive payment log or receipt proof.
+    string payment_event_id = 4;
+    // Bound local push retries by this producer-authorized grant expiry.
+    int64 expires_at_unix = 5;
+    // Publisher-owned route ID, matching the enrolled route when binding the
+    // token. This is not the wallet identity.
+    string grant_id = 6;
+}
