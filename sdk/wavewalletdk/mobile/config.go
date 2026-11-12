@@ -19,9 +19,10 @@ import (
 // seconds and amounts are int64 to stay JSON-host friendly (no uint, no
 // time.Duration).
 type mobileConfig struct {
-	DataDir    string `json:"data_dir"`
-	Network    string `json:"network"`
-	DebugLevel string `json:"debug_level"`
+	DataDir        string `json:"data_dir"`
+	Network        string `json:"network"`
+	DebugLevel     string `json:"debug_level"`
+	DiagnosticLogs bool   `json:"diagnostic_logs"`
 
 	// AllowMainnet must be true to run on mainnet.
 	HostDrivenIngress   bool `json:"host_driven_ingress"`

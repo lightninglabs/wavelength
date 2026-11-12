@@ -58,6 +58,11 @@ func StartExternalSeedWallet(reqJSON []byte) ([]byte, error) {
 				"request: %w", err)
 		}
 		defer clear(req.SeedEntropy)
+		attachDiagnosticLogs(
+			&cfg, diagnosticLoggingRequested(
+				reqJSON, true,
+			),
+		)
 
 		client, openResult, err :=
 			wavewalletdk.StartExternalSeedWalletWithContexts(
