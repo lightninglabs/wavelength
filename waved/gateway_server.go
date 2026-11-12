@@ -1,9 +1,11 @@
 package waved
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -22,6 +24,12 @@ import (
 const (
 	defaultGatewayReadHeaderTimeout = 5 * time.Second
 	defaultGatewayReadTimeout       = 30 * time.Second
+
+	// defaultGatewayMaxRequestBodyBytes accommodates base64 expansion of
+	// bytes fields within the default 4 MiB gRPC receive envelope, plus
+	// JSON field names and framing. It bounds encoded REST input
+	// independently.
+	defaultGatewayMaxRequestBodyBytes int64 = 8 << 20
 
 	// Server-streaming gateway responses intentionally keep writes open
 	// beyond a fixed deadline.
@@ -125,7 +133,8 @@ func (g *gatewayServer) Start(ctx context.Context) error {
 	g.cancel = cancelRegister
 	g.httpSrv = &http.Server{
 		Handler: gateway.BrowserHeaders(
-			mux, g.cfg.AllowedOrigins, rpcauth.MacaroonMetadataKey,
+			limitGatewayRequestBody(mux), g.cfg.AllowedOrigins,
+			rpcauth.MacaroonMetadataKey,
 		),
 		ReadTimeout:       defaultGatewayReadTimeout,
 		ReadHeaderTimeout: defaultGatewayReadHeaderTimeout,
@@ -179,6 +188,45 @@ func macaroonHeaderMatcher(key string) (string, bool) {
 	}
 
 	return runtime.DefaultHeaderMatcher(key)
+}
+
+// limitGatewayRequestBody prevents grpc-gateway from decoding an unbounded JSON
+// payload before the proxied gRPC server applies its own message limit.
+func limitGatewayRequestBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > defaultGatewayMaxRequestBodyBytes {
+			http.Error(
+				w, "request body too large",
+				http.StatusRequestEntityTooLarge,
+			)
+
+			return
+		}
+
+		// Read through the same bound for chunked bodies. Decode only
+		// after the entire encoded body fits; a valid JSON prefix
+		// cannot bypass it.
+		body := http.MaxBytesReader(
+			w, r.Body, defaultGatewayMaxRequestBodyBytes,
+		)
+		defer func() {
+			_ = body.Close()
+		}()
+		data, err := io.ReadAll(body)
+		if err != nil {
+			code := http.StatusBadRequest
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				code = http.StatusRequestEntityTooLarge
+			}
+			http.Error(w, http.StatusText(code), code)
+
+			return
+		}
+
+		r.Body = io.NopCloser(bytes.NewReader(data))
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Stop stops the HTTP/JSON gateway.

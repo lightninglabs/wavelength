@@ -97,7 +97,12 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `Register` calls `resumePending` synchronously before returning (unless
   `cfg.Swap.SuppressResume`, in which case a higher subserver drives
   `ResumePending` itself) so the daemon gRPC server begins accepting calls
-  with all prior sessions already driven by a worker.
+  with persisted receives admitted to the bounded worker pool or FIFO.
+  At most `MaxActiveReceiveSwaps` (default 128) receive workers run, with
+  another 128 payment hashes queued. A single refill owner scans durable
+  summaries; its creation-time/payment-hash cursor visits overflow before
+  retrying older failed workers. New receives cannot bypass the backlog.
+  Failed scans retry on the daemon context; shutdown starts no queued work.
 - Swap state, persistence, and protocol behavior are never duplicated in this
   layer — they stay in `sdk/swaps`. This package is a worker registry and RPC
   facade only.

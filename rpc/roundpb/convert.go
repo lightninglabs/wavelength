@@ -325,10 +325,19 @@ func flattenNode(n *tree.Node, nodes *[]*TreeNode,
 	return nil
 }
 
-// DefaultMaxTreeNodes is the upper bound on the number of nodes
-// allowed in a VTXOTree received from the server. A round with 1000
-// participants at depth 10 produces ~2000 nodes; 50,000 is generous.
-const DefaultMaxTreeNodes = 50_000
+// DefaultMaxTreeNodes is the upper bound on the number of nodes allowed in a
+// VTXOTree received from the server. A round with 1000 participants at depth
+// 10 produces roughly 2000 nodes, leaving substantial headroom without allowing
+// multi-second tree adaptation on the ingress transaction path.
+const DefaultMaxTreeNodes = 5_000
+
+const (
+	// DefaultMaxTreeOutputs bounds output allocation across one tree.
+	DefaultMaxTreeOutputs = 2 * DefaultMaxTreeNodes
+
+	// DefaultMaxTreeCoSigners bounds public-key parsing across one tree.
+	DefaultMaxTreeCoSigners = 10 * DefaultMaxTreeNodes
+)
 
 // TreeFromProtoOption is a functional option for TreeFromProto that
 // allows callers to override default validation parameters.
@@ -347,8 +356,57 @@ func defaultTreeFromProtoConfig() treeFromProtoConfig {
 	}
 }
 
+// TreeDecodeBudget bounds conversion work before cryptographic parsing. Node
+// options scale all three limits; explicit zero retains default work budgets.
+type TreeDecodeBudget struct {
+	// Nodes bounds the aggregate nodes in one batch envelope.
+	Nodes int
+
+	// Outputs bounds output conversion across the admitted nodes.
+	Outputs int
+
+	// CoSigners bounds public-key parsing and aggregation.
+	CoSigners int
+}
+
+// ResolveTreeDecodeBudget resolves the same options used by TreeFromProto so
+// batch admission cannot silently override the configured per-tree node limit.
+// An explicit disabled node cap retains default aggregate work budgets.
+func ResolveTreeDecodeBudget(opts ...TreeFromProtoOption) TreeDecodeBudget {
+	cfg := defaultTreeFromProtoConfig()
+	for _, option := range opts {
+		option(&cfg)
+	}
+
+	return cfg.budget()
+}
+
+// budget scales repeated-field work from the node limit. Saturating the
+// products preserves their ordering even for limits near the host integer
+// maximum.
+func (cfg treeFromProtoConfig) budget() TreeDecodeBudget {
+	nodes := cfg.maxNodes
+	if nodes <= 0 {
+		nodes = DefaultMaxTreeNodes
+	}
+	scale := func(factor int) int {
+		if nodes > math.MaxInt/factor {
+			return math.MaxInt
+		}
+
+		return factor * nodes
+	}
+
+	return TreeDecodeBudget{
+		Nodes:     nodes,
+		Outputs:   scale(2),
+		CoSigners: scale(10),
+	}
+}
+
 // WithMaxTreeNodes sets the maximum number of nodes allowed in a
-// deserialized VTXOTree. A value of 0 disables the limit.
+// deserialized VTXOTree and scales its repeated-field budgets. A value of 0
+// disables only the per-tree node cap; aggregate work keeps default budgets.
 func WithMaxTreeNodes(maxNodes int) TreeFromProtoOption {
 	return func(cfg *treeFromProtoConfig) {
 		cfg.maxNodes = maxNodes
@@ -378,6 +436,26 @@ func TreeFromProto(pt *VTXOTree,
 	if cfg.maxNodes > 0 && len(pt.Nodes) > cfg.maxNodes {
 		return nil, fmt.Errorf("tree has %d nodes, exceeds maximum %d",
 			len(pt.Nodes), cfg.maxNodes)
+	}
+
+	budget := cfg.budget()
+
+	// Check repeated fields before parsing any keys or allocating outputs.
+	var outputs, coSigners int
+	for _, node := range pt.Nodes {
+		if node == nil {
+			continue
+		}
+		outputs += len(node.Outputs)
+		coSigners += len(node.CoSigners)
+		if outputs > budget.Outputs {
+			return nil, fmt.Errorf("tree outputs exceed aggregate "+
+				"maximum %d", budget.Outputs)
+		}
+		if coSigners > budget.CoSigners {
+			return nil, fmt.Errorf("tree co-signers exceed "+
+				"aggregate maximum %d", budget.CoSigners)
+		}
 	}
 
 	// Convert all proto nodes to Go nodes.
