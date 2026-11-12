@@ -143,3 +143,11 @@ keyset cursor across windows, then pumps native durable round work. It shares
 the receipt controller's mode lease, cancellation fence and final-access join.
 It performs no startup repair and produces no payment proof. See
 [background windows](../../../docs/mobile-receipt-window.md).
+
+## Single-batch host intake
+
+`ProcessNext(id, timeoutSeconds)` returns the bounded native intake result as
+JSON. The host passes a unique ID and uses `CancelReceiptWindow(id)` for early
+expiry. It retains the native daemon through final access and shares its route
+guard. It supplies no payment proof, awaiting-peer or suspension guarantee.
+See [single-batch host intake](../../../docs/sdk-process-next.md).

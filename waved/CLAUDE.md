@@ -595,3 +595,14 @@ keyset cursor across windows, then pumps native durable round work. It shares
 the receipt controller's mode lease, cancellation fence and final-access join.
 It performs no startup repair and produces no payment proof. See
 [background windows](../docs/mobile-receipt-window.md).
+
+## Single-batch host intake
+
+`ProcessNext` shares the receipt controller's foreground/window exclusion,
+unique-ID cancellation and daemon lifetime. It pumps one restricted batch,
+without source enrollment, receipt reads or maintenance. Remote ACK follows
+the committed handoff; downstream actor/effect completion is separate. An
+empty result supplies no global-idle or awaiting-peer proof. See
+[ingress ownership](../docs/sdk-wake-ingress-architecture.md).
+
+See [single-batch host intake](../docs/sdk-process-next.md) for the API contract.
