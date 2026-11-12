@@ -5579,6 +5579,8 @@ type lndUnrollWallet struct {
 	scripts ownedWalletScriptRegistrar
 }
 
+var _ txconfirm.FeeInputConfirmer = (*lndUnrollWallet)(nil)
+
 // ListUnspent returns UTXOs from the boarding backend's configured LND wallet
 // account only.
 //
@@ -5595,6 +5597,13 @@ func (w *lndUnrollWallet) ListUnspent(ctx context.Context, minConfs,
 	return w.boardingBackend.ListUnspentWalletAccount(
 		ctx, minConfs, maxConfs,
 	)
+}
+
+// FeeInputConfirmed verifies the selected LND coin against the active chain.
+func (w *lndUnrollWallet) FeeInputConfirmed(ctx context.Context,
+	outpoint wire.OutPoint) (bool, error) {
+
+	return w.boardingBackend.FeeInputConfirmed(ctx, outpoint)
 }
 
 // NewWalletPkScript returns a fresh wallet-managed taproot pkScript suitable

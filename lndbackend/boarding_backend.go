@@ -272,6 +272,31 @@ func (l *BoardingBackend) GetTransaction(ctx context.Context,
 	return info, nil
 }
 
+// FeeInputConfirmed checks the wallet's confirmation block against the active
+// chain. WalletKit can retain a confirmed coin from an orphaned block after a
+// reorg; its confirmation count alone does not make the coin usable for CPFP.
+// This checks confirmation ancestry, not whether another child already spends
+// the coin: replacements must be able to reuse their existing fee input.
+func (l *BoardingBackend) FeeInputConfirmed(ctx context.Context,
+	outpoint wire.OutPoint) (bool, error) {
+
+	info, err := l.GetTransaction(ctx, outpoint.Hash)
+	if err != nil {
+		return false, err
+	}
+	if info.BlockHeight <= 0 || info.BlockHash == nil {
+		return false, nil
+	}
+
+	activeHash, err := l.chainKit.GetBlockHash(ctx, int64(info.BlockHeight))
+	if err != nil {
+		return false, fmt.Errorf("get active confirmation block: %w",
+			err)
+	}
+
+	return activeHash == *info.BlockHash, nil
+}
+
 // GetBlock returns the full block for the given block hash via LND's ChainKit
 // RPC. This is used to compute merkle inclusion proofs for boarding TxProofs.
 func (l *BoardingBackend) GetBlock(ctx context.Context,
