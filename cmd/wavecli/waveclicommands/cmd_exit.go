@@ -52,6 +52,7 @@ func newExitCmd() *cobra.Command {
 			"dispatching to the daemon; exits 0 on a valid "+
 			"preview, non-zero on validation failure")
 
+	cmd.AddCommand(newExitBatchCmd())
 	cmd.AddCommand(newExitStatusCmd())
 	cmd.AddCommand(newExitSummaryCmd())
 	cmd.AddCommand(newExitPlanCmd())

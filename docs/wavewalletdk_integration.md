@@ -1,4 +1,8 @@
 # wavewalletdk Integration Guide
+Selected VTXOs can leave in one cooperative request through `ExitBatch`. See
+[cooperative exit batches](cooperative-exit-batches.md) for per-input outcomes
+and compatibility.
+
 
 `wavewalletdk` is the wallet-facing SDK for applications that want a small API over
 `waved`. `Start` embeds the daemon in-process and connects to it over private

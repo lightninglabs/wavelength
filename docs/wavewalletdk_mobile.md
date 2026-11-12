@@ -1,4 +1,7 @@
 # wavewalletdk on mobile (gomobile)
+For the cooperative multi-input ABI, results and retry rules, see
+[cooperative exit batches](cooperative-exit-batches.md).
+
 
 `sdk/wavewalletdk/mobile` is a [gomobile](https://pkg.go.dev/golang.org/x/mobile/cmd/gomobile)-safe
 facade over the wallet SDK. It lets an Android (Kotlin/Java) or iOS

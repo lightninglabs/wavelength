@@ -588,6 +588,34 @@ func walletQueryMethodRegistry() []schemaMethod { //nolint:funlen
 			MCPTool:      true,
 		},
 		{
+			Method: "exit.batch",
+			Description: "Queue one cooperative batch; " +
+				"inspect every input result",
+			Params: []schemaParam{
+				{
+					Name:     "outpoint",
+					Type:     "string[]",
+					FlagType: "stringArray",
+					Required: true,
+					Description: "exact VTXO selection; " +
+						"repeat for each input",
+				},
+				{
+					Name: "onchain-address",
+					Type: "string",
+					Description: "common destination; " +
+						"empty uses wallet address",
+				},
+				{Name: "dry-run", Type: "bool",
+					Description: "local validation only"},
+			},
+			RequestType:  "ExitBatchRequest",
+			ResponseType: "ExitBatchResponse",
+			DryRun:       true,
+			JSONInput:    false,
+			MCPTool:      false,
+		},
+		{
 			Method:      "exit.status",
 			Description: "Query the status of an exit job",
 			Params: []schemaParam{
