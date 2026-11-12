@@ -44,7 +44,6 @@ type Server struct {
 	slots          chan struct{}
 	running        atomic.Bool
 	sourceFailures atomic.Uint64
-	requests       [2]atomic.Uint64
 	delivered      [2][4]atomic.Uint64
 }
 

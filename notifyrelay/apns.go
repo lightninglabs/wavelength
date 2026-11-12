@@ -201,9 +201,8 @@ func notificationPayload(delivery Delivery) ([]byte, error) {
 		switch delivery.Presentation.normalized() {
 		case PresentationGeneric:
 			aps["alert"] = map[string]string{
-				"title": "Wavelength",
-				"body": "Payment activity. Open Wavelength " +
-					"to update your wallet.",
+				"title": "Payment activity",
+				"body":  "Open your wallet for updates.",
 			}
 
 		case PresentationReceiptHint:

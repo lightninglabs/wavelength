@@ -7,8 +7,9 @@ keys, feed checkpoints and provider jobs. It contains no wallet state or wallet
 signing keys.
 
 The reference daemon uses this SQL store and fixed-source subscribers. It
-opens no legacy store and exposes no producer push endpoint. Old library
-regression fixtures remain only until their separate cleanup slice.
+opens no legacy store and exposes no producer push endpoint. The retired
+Bolt store, producer capability DTOs and their fixtures are removed. Management
+proof and anonymous-challenge restart tests use the same SQL owner.
 
 ## Persistence rules
 

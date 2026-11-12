@@ -108,8 +108,6 @@ func TestSQLManagementRace(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, first.ID, renewed.SubscriptionID)
-	require.Empty(t, renewed.WakeCapability)
-	require.Empty(t, renewed.AlertCapability)
 	require.Less(
 		t, renewed.ExpiresAt, h.now.Add(subscriptionLifetime).Unix(),
 	)

@@ -14,14 +14,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
-	bolt "go.etcd.io/bbolt"
 )
 
 // testEnrollmentVerifier replaces Apple certificate issuance only. Management
@@ -53,12 +51,12 @@ type testProvider struct {
 	send func(context.Context, Delivery) (ProviderResult, error)
 }
 
-// ValidateApplication preserves reference APNs routing policy in legacy tests.
+// ValidateApplication preserves reference APNs routing policy in HTTP tests.
 func (p *testProvider) ValidateApplication(app AppConfig) error {
 	return (&APNSProvider{}).ValidateApplication(app)
 }
 
-// NormalizeDeviceToken preserves reference token validation in legacy tests.
+// NormalizeDeviceToken preserves reference token validation in HTTP tests.
 func (p *testProvider) NormalizeDeviceToken(token string) (string, error) {
 	return (&APNSProvider{}).NormalizeDeviceToken(token)
 }
@@ -73,7 +71,7 @@ func (p *testProvider) Send(ctx context.Context, d Delivery) (ProviderResult,
 // relayHarness holds a real database and real signed management assertions.
 type relayHarness struct {
 	t        *testing.T
-	store    *Store
+	store    *SQLStore
 	server   *Server
 	provider *testProvider
 	key      *ecdsa.PrivateKey
@@ -85,7 +83,7 @@ type relayHarness struct {
 }
 
 // newRelayHarness isolates persistent state and fake certificate issuance.
-func newRelayHarness(t *testing.T, shared *Store) *relayHarness {
+func newRelayHarness(t *testing.T, shared *SQLStore) *relayHarness {
 	t.Helper()
 	h := &relayHarness{t: t, app: AppConfig{
 		ID:                "wallet-production",
@@ -96,10 +94,13 @@ func newRelayHarness(t *testing.T, shared *Store) *relayHarness {
 	}}
 	h.clock.Store(time.Now().UTC().UnixNano())
 	if shared == nil {
+		database := sqlTestOpener(t)()
+		t.Cleanup(func() { require.NoError(t, database.Close()) })
 		var err error
-		shared, err = OpenStore(filepath.Join(t.TempDir(), "relay.db"))
+		shared, err = NewSQLStore(
+			t.Context(), database, testSourceConfig(t, "producer"),
+		)
 		require.NoError(t, err)
-		t.Cleanup(func() { require.NoError(t, shared.Close()) })
 	}
 	h.store = shared
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -114,15 +115,11 @@ func newRelayHarness(t *testing.T, shared *Store) *relayHarness {
 			Outcome: OutcomeAccepted,
 		}, nil
 	}}
-	h.server, err = newServer(
-		Config{
-			Applications: []AppConfig{h.app},
-		},
-		shared,
-		h.provider, &testEnrollmentVerifier{
+	h.server, err = newAuthenticatedServer(
+		Config{Applications: []AppConfig{h.app}}, shared, h.provider,
+		&AppAttestAuthenticator{verifier: &testEnrollmentVerifier{
 			public: &key.PublicKey,
-		},
-		h.now,
+		}}, h.now,
 	)
 	require.NoError(t, err)
 	h.enroll()
@@ -244,7 +241,7 @@ func (h *relayHarness) manage(
 	return h.post("/v1/installations/"+h.ownerID+"/manage", proof, "")
 }
 
-// subscribe creates one app-owned route and decodes its scoped capabilities.
+// subscribe creates one app-owned route and decodes its source offers.
 func (h *relayHarness) subscribe(route string, alerts bool) ManagementResult {
 	h.t.Helper()
 	response := h.manage(
@@ -331,78 +328,19 @@ func TestConcurrentManagementCounter(t *testing.T) {
 	}
 	workers.Wait()
 	require.EqualValues(t, 1, successes.Load())
-	require.NoError(
-		t, h.store.db.View(func(tx *bolt.Tx) error {
-			require.Equal(
-				t, 1, tx.Bucket(
-					[]byte(subscriptionsBucket),
-				).Stats().KeyN,
-			)
-
-			return nil
-		}),
+	count, err := h.store.database.Queries.CountInstallationSubscriptions(
+		t.Context(), h.ownerID,
 	)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, count)
 }
 
-// TestCapabilitiesAreScopedAndRevocable checks fixed routing, ownership and
-// permission removal through the real HTTP and durable admission paths.
-func TestCapabilitiesAreScopedAndRevocable(t *testing.T) {
-	h := newRelayHarness(t, nil)
-	other := newRelayHarness(t, h.store)
-	sub := h.subscribe("wallet-a", true)
-	foreign := other.subscribe("wallet-b", false)
-	request := PushRequest{EventID: "event-1"}
-	require.Equal(
-		t, http.StatusUnauthorized,
-		h.post("/v1/alerts", request, sub.WakeCapability).Code,
-	)
-	require.Equal(
-		t, http.StatusAccepted,
-		h.post("/v1/alerts", request, sub.AlertCapability).Code,
-	)
-	require.Equal(
-		t, http.StatusBadRequest,
-		h.post("/v1/wakes", map[string]string{
-			"event_id": "event-2", "device_token": "deadbeef",
-		}, sub.WakeCapability).Code,
-	)
-	require.Equal(
-		t, http.StatusUnauthorized, h.manage(ManagementPayload{
-			Action:         "revoke_subscription",
-			SubscriptionID: foreign.SubscriptionID,
-		}).Code,
-	)
-	// Disabling alerts also prevents a queued alert from being sent later.
-	renewed := h.subscribe("wallet-a", false)
-	require.Empty(t, renewed.AlertCapability)
-	require.Equal(t, sub.SubscriptionID, renewed.SubscriptionID)
-	require.Equal(
-		t, http.StatusUnauthorized,
-		h.post("/v1/wakes", request, sub.WakeCapability).Code,
-	)
-	worked, err := h.server.DeliverOnce(t.Context())
-	require.NoError(t, err)
-	require.False(t, worked)
-	require.Equal(
-		t, http.StatusAccepted,
-		h.post("/v1/wakes", request, renewed.WakeCapability).Code,
-	)
-	require.Equal(
-		t, http.StatusOK, h.manage(ManagementPayload{
-			Action:         "revoke_subscription",
-			SubscriptionID: renewed.SubscriptionID,
-		}).Code,
-	)
-	worked, err = h.server.DeliverOnce(t.Context())
-	require.NoError(t, err)
-	require.False(t, worked)
-}
-
-// TestAnonymousChallengesDoNotAllocate verifies MAC/expiry validation and
-// persistence across restart without an attacker-controlled nonce table.
+// TestAnonymousChallengesDoNotAllocate verifies stateless challenges survive
+// a real SQL pool restart without allocating consumed-nonce rows.
 func TestAnonymousChallengesDoNotAllocate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "relay.db")
-	store, err := OpenStore(path)
+	open := sqlTestOpener(t)
+	database := open()
+	store, err := NewSQLStore(t.Context(), database)
 	require.NoError(t, err)
 	now := time.Now()
 	var challenge Challenge
@@ -416,21 +354,14 @@ func TestAnonymousChallengesDoNotAllocate(t *testing.T) {
 		)
 		require.NoError(t, err)
 	}
-	require.NoError(
-		t, store.db.View(func(tx *bolt.Tx) error {
-			require.Zero(
-				t, tx.Bucket(
-					[]byte(challengesBucket),
-				).Stats().KeyN,
-			)
-
-			return nil
-		}),
-	)
-	require.NoError(t, store.Close())
-	store, err = OpenStore(path)
+	count, err := database.Queries.CountConsumedChallenges(t.Context())
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	require.Zero(t, count)
+	require.NoError(t, database.Close())
+	database = open()
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+	store, err = NewSQLStore(t.Context(), database)
+	require.NoError(t, err)
 	loaded, err := store.loadChallenge(t.Context(), challenge.ID, now)
 	require.NoError(t, err)
 	require.Equal(t, challenge, loaded)
@@ -440,67 +371,4 @@ func TestAnonymousChallengesDoNotAllocate(t *testing.T) {
 		t.Context(), challenge.ID, now.Add(challengeLifetime),
 	)
 	require.ErrorIs(t, err, ErrNotFound)
-}
-
-// TestSubscriptionVerification proves a producer can reject fabricated grants
-// and mixed subscriptions without sending a notification or creating any work.
-func TestSubscriptionVerification(t *testing.T) {
-	h := newRelayHarness(t, nil)
-	first := h.subscribe("first-route", true)
-	second := h.subscribe("second-route", true)
-	path := "/v1/subscriptions/verify"
-	request := SubscriptionVerificationRequest{
-		SubscriptionID:  first.SubscriptionID,
-		AlertCapability: first.AlertCapability,
-	}
-	response := h.post(path, request, first.WakeCapability)
-	require.Equal(t, http.StatusOK, response.Code)
-	var result SubscriptionVerificationResult
-	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &result))
-	require.Equal(t, first.ExpiresAt, result.ExpiresAt)
-	worked, err := h.server.DeliverOnce(t.Context())
-	require.NoError(t, err)
-	require.False(t, worked, "verification must never create a push job")
-	require.NotContains(t, response.Body.String(), h.ownerID)
-	request.AlertCapability = second.AlertCapability
-	require.Equal(
-		t, http.StatusUnauthorized,
-		h.post(path, request, first.WakeCapability).Code,
-	)
-	request.AlertCapability = first.AlertCapability
-	request.SubscriptionID = second.SubscriptionID
-	require.Equal(
-		t, http.StatusUnauthorized,
-		h.post(path, request, first.WakeCapability).Code,
-	)
-	request.SubscriptionID = first.SubscriptionID
-	require.Equal(
-		t, http.StatusUnauthorized,
-		h.post(path, request, first.AlertCapability).Code,
-	)
-	request.AlertCapability = ""
-	require.Equal(
-		t, http.StatusOK,
-		h.post(path, request, first.WakeCapability).Code,
-	)
-	renewed := h.subscribe("first-route", false)
-	require.Equal(
-		t, http.StatusUnauthorized,
-		h.post(path, request, first.WakeCapability).Code,
-	)
-	require.Equal(
-		t, http.StatusOK,
-		h.post(path, request, renewed.WakeCapability).Code,
-	)
-	request.AlertCapability = first.AlertCapability
-	require.Equal(
-		t, http.StatusUnauthorized,
-		h.post(path, request, renewed.WakeCapability).Code,
-	)
-	request.AlertCapability = ""
-	h.clock.Add(int64(subscriptionLifetime))
-	require.Equal(
-		t, http.StatusUnauthorized,
-		h.post(path, request, renewed.WakeCapability).Code,
-	)
 }
