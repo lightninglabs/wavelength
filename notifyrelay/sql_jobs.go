@@ -45,7 +45,7 @@ func enqueueSQLJobTx(ctx context.Context, q *sqlc.Queries,
 	id := string(scope) + "/" + sub.ID
 	_, err := q.GetJob(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
-		count, err := q.CountPendingJobs(ctx)
+		count, err := q.CountPendingJobsForScope(ctx, string(scope))
 		if err != nil {
 			return err
 		}

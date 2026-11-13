@@ -3,6 +3,8 @@ package notifyrelay
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"errors"
 	"strconv"
 	"time"
 
@@ -128,6 +130,25 @@ func (s *SQLStore) scheduleRoundBindings(ctx context.Context, sourceID string,
 				deadline.Unix(),
 			)
 			if sub.ExpiresAt <= max(now.Unix(), opens.Unix()) {
+				continue
+			}
+			id := string(ScopeSchedule) + "/" + sub.ID
+			if err := q.DeleteExpiredScheduleJob(ctx,
+				sqlc.DeleteExpiredScheduleJobParams{
+					ID: id, ExpiresAt: now.UnixNano(),
+				},
+			); err != nil {
+				return err
+			}
+			prior, err := q.GetJob(ctx, id)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			// Completion of a claimed older slot must never turn a
+			// future slot into immediately due coalesced work.
+			// Retry after that claim settles; do not advance its
+			// cutoff.
+			if err == nil && prior.LeaseUntil != 0 {
 				continue
 			}
 			if err := enqueueSQLJobTx(

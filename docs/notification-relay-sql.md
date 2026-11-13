@@ -228,3 +228,15 @@ Internal `round` and `schedule` lanes become the existing silent `wake` payload
 at provider construction. Neither lane can create an alert or choose a device.
 The claim-fenced provider result advances only that lane's installation clock.
 Urgent retry delay is capped at five seconds and job expiry remains authoritative.
+
+Future schedule jobs and urgent signing jobs each have their own bounded
+4,096-job pool. Ordinary wakes and payment alerts retain their existing shared
+4,096-job pool. Total job storage is therefore bounded by 12,288 rows. Future
+registration work cannot consume the reserved admission capacity for signing
+or payments. Exhaustion of an incoming event's own pool remains backpressure.
+
+A scheduler never coalesces a future slot into a still-claimed older scheduled
+job. It leaves the cutoff marker unchanged and retries after that claim settles.
+Once both the old job and its lease expire, it may remove that expired row and
+queue the future window. Claim tokens fence any delayed completion, which cannot
+retire or reschedule the new job. This preserves the next slot's opening time.

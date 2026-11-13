@@ -29,7 +29,10 @@ const (
 	maxDedupPerRoute        = 1024
 	maxDedupPerInstallation = 1024
 	maxDedupRecords         = 100_000
-	maxPendingJobs          = 4096
+	// Existing wake/alert work shares one pool. Each new round lane has
+	// its own equally bounded pool so future schedules cannot block
+	// signing or payment delivery. Total job storage is at most 3x this.
+	maxPendingJobs = 4096
 )
 
 // installation stores public management evidence and a private APNs token.

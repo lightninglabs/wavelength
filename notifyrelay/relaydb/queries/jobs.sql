@@ -94,3 +94,11 @@ WHERE id = sqlc.arg(id) AND lease_until <= sqlc.arg(now_nano);
 -- name: SetRoundJobWindow :exec
 UPDATE relay_jobs SET next_at = $2, expires_at = $3
 WHERE id = $1 AND lease_until = 0;
+
+-- name: CountPendingJobsForScope :one
+SELECT COUNT(*) FROM relay_jobs
+WHERE scope = $1 OR (scope IN ('wake', 'alert') AND $1 IN ('wake', 'alert'));
+
+-- name: DeleteExpiredScheduleJob :exec
+DELETE FROM relay_jobs WHERE id = $1 AND scope = 'schedule'
+    AND expires_at <= $2 AND lease_until <= $2;

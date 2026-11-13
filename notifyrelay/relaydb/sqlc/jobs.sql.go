@@ -138,6 +138,18 @@ func (q *Queries) CountPendingJobs(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countPendingJobsForScope = `-- name: CountPendingJobsForScope :one
+SELECT COUNT(*) FROM relay_jobs
+WHERE scope = $1 OR (scope IN ('wake', 'alert') AND $1 IN ('wake', 'alert'))
+`
+
+func (q *Queries) CountPendingJobsForScope(ctx context.Context, scope string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countPendingJobsForScope, scope)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countSubscriptionDedup = `-- name: CountSubscriptionDedup :one
 SELECT COUNT(*) FROM relay_dedup WHERE subscription_id = $1
 `
@@ -180,6 +192,21 @@ func (q *Queries) DeleteClaimedJob(ctx context.Context, arg DeleteClaimedJobPara
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const deleteExpiredScheduleJob = `-- name: DeleteExpiredScheduleJob :exec
+DELETE FROM relay_jobs WHERE id = $1 AND scope = 'schedule'
+    AND expires_at <= $2 AND lease_until <= $2
+`
+
+type DeleteExpiredScheduleJobParams struct {
+	ID        string
+	ExpiresAt int64
+}
+
+func (q *Queries) DeleteExpiredScheduleJob(ctx context.Context, arg DeleteExpiredScheduleJobParams) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredScheduleJob, arg.ID, arg.ExpiresAt)
+	return err
 }
 
 const finishJob = `-- name: FinishJob :execrows
