@@ -259,6 +259,9 @@ type GetInfoResponse struct {
 	// absent when it uses event-driven registration. A scheduled operator
 	// rejects any join that does not select one of the published slots.
 	BatchSchedule *BatchSchedule `protobuf:"bytes,25,opt,name=batch_schedule,json=batchSchedule,proto3" json:"batch_schedule,omitempty"`
+	// assets lists the Taproot Assets the operator admits into rounds. It is
+	// empty when the operator serves no assets.
+	Assets        []*AssetPolicy `protobuf:"bytes,26,rep,name=assets,proto3" json:"assets,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -447,6 +450,60 @@ func (x *GetInfoResponse) GetBatchSchedule() *BatchSchedule {
 	return nil
 }
 
+func (x *GetInfoResponse) GetAssets() []*AssetPolicy {
+	if x != nil {
+		return x.Assets
+	}
+	return nil
+}
+
+// AssetPolicy describes one Taproot Asset the operator admits into rounds.
+type AssetPolicy struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// asset_ref identifies the asset in tap-sdk's asset reference format: its
+	// group key for a grouped asset, its asset ID otherwise.
+	AssetRef      string `protobuf:"bytes,1,opt,name=asset_ref,json=assetRef,proto3" json:"asset_ref,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AssetPolicy) Reset() {
+	*x = AssetPolicy{}
+	mi := &file_ark_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AssetPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AssetPolicy) ProtoMessage() {}
+
+func (x *AssetPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_ark_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AssetPolicy.ProtoReflect.Descriptor instead.
+func (*AssetPolicy) Descriptor() ([]byte, []int) {
+	return file_ark_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *AssetPolicy) GetAssetRef() string {
+	if x != nil {
+		return x.AssetRef
+	}
+	return ""
+}
+
 // BatchSchedule lists an operator's upcoming scheduled-batch registration
 // windows. At each cutoff the operator stops admitting joins and starts
 // quoting and signing; a cutoff says nothing about when the batch transaction
@@ -476,7 +533,7 @@ type BatchSchedule struct {
 
 func (x *BatchSchedule) Reset() {
 	*x = BatchSchedule{}
-	mi := &file_ark_proto_msgTypes[3]
+	mi := &file_ark_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -488,7 +545,7 @@ func (x *BatchSchedule) String() string {
 func (*BatchSchedule) ProtoMessage() {}
 
 func (x *BatchSchedule) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[3]
+	mi := &file_ark_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -501,7 +558,7 @@ func (x *BatchSchedule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchSchedule.ProtoReflect.Descriptor instead.
 func (*BatchSchedule) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{3}
+	return file_ark_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *BatchSchedule) GetVersion() uint32 {
@@ -549,7 +606,7 @@ type BatchSlot struct {
 
 func (x *BatchSlot) Reset() {
 	*x = BatchSlot{}
-	mi := &file_ark_proto_msgTypes[4]
+	mi := &file_ark_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -561,7 +618,7 @@ func (x *BatchSlot) String() string {
 func (*BatchSlot) ProtoMessage() {}
 
 func (x *BatchSlot) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[4]
+	mi := &file_ark_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -574,7 +631,7 @@ func (x *BatchSlot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchSlot.ProtoReflect.Descriptor instead.
 func (*BatchSlot) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{4}
+	return file_ark_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *BatchSlot) GetRegistrationOpensUnix() int64 {
@@ -609,7 +666,7 @@ type EstimateFeeRequest struct {
 
 func (x *EstimateFeeRequest) Reset() {
 	*x = EstimateFeeRequest{}
-	mi := &file_ark_proto_msgTypes[5]
+	mi := &file_ark_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -621,7 +678,7 @@ func (x *EstimateFeeRequest) String() string {
 func (*EstimateFeeRequest) ProtoMessage() {}
 
 func (x *EstimateFeeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[5]
+	mi := &file_ark_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -634,7 +691,7 @@ func (x *EstimateFeeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateFeeRequest.ProtoReflect.Descriptor instead.
 func (*EstimateFeeRequest) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{5}
+	return file_ark_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *EstimateFeeRequest) GetAmountSat() int64 {
@@ -687,7 +744,7 @@ type EstimateFeeResponse struct {
 
 func (x *EstimateFeeResponse) Reset() {
 	*x = EstimateFeeResponse{}
-	mi := &file_ark_proto_msgTypes[6]
+	mi := &file_ark_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -699,7 +756,7 @@ func (x *EstimateFeeResponse) String() string {
 func (*EstimateFeeResponse) ProtoMessage() {}
 
 func (x *EstimateFeeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[6]
+	mi := &file_ark_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -712,7 +769,7 @@ func (x *EstimateFeeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateFeeResponse.ProtoReflect.Descriptor instead.
 func (*EstimateFeeResponse) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{6}
+	return file_ark_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *EstimateFeeResponse) GetLiquidityFeeSat() int64 {
@@ -777,7 +834,7 @@ const file_ark_proto_rawDesc = "" +
 	"\x05State\x12\x15\n" +
 	"\x11STATE_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fSTATE_ACTIVE\x10\x01\x12\x12\n" +
-	"\x0eSTATE_DISABLED\x10\x02\"\xc0\a\n" +
+	"\x0eSTATE_DISABLED\x10\x02\"\xed\a\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06pubkey\x18\x02 \x01(\fR\x06pubkey\x12\x18\n" +
@@ -803,7 +860,10 @@ const file_ark_proto_rawDesc = "" +
 	"\x14ark_version_policies\x18\x16 \x03(\v2\x18.arkrpc.ArkVersionPolicyR\x12arkVersionPolicies\x12;\n" +
 	"\x1afree_refresh_window_blocks\x18\x17 \x01(\rR\x17freeRefreshWindowBlocks\x12-\n" +
 	"\x12vtxo_confirmations\x18\x18 \x01(\rR\x11vtxoConfirmations\x12<\n" +
-	"\x0ebatch_schedule\x18\x19 \x01(\v2\x15.arkrpc.BatchScheduleR\rbatchSchedule\"\x9d\x01\n" +
+	"\x0ebatch_schedule\x18\x19 \x01(\v2\x15.arkrpc.BatchScheduleR\rbatchSchedule\x12+\n" +
+	"\x06assets\x18\x1a \x03(\v2\x13.arkrpc.AssetPolicyR\x06assets\"*\n" +
+	"\vAssetPolicy\x12\x1b\n" +
+	"\tasset_ref\x18\x01 \x01(\tR\bassetRef\"\x9d\x01\n" +
 	"\rBatchSchedule\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12\x1f\n" +
 	"\vschedule_id\x18\x02 \x01(\fR\n" +
@@ -847,31 +907,33 @@ func file_ark_proto_rawDescGZIP() []byte {
 }
 
 var file_ark_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_ark_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_ark_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_ark_proto_goTypes = []any{
 	(ArkVersionPolicy_State)(0), // 0: arkrpc.ArkVersionPolicy.State
 	(*GetInfoRequest)(nil),      // 1: arkrpc.GetInfoRequest
 	(*ArkVersionPolicy)(nil),    // 2: arkrpc.ArkVersionPolicy
 	(*GetInfoResponse)(nil),     // 3: arkrpc.GetInfoResponse
-	(*BatchSchedule)(nil),       // 4: arkrpc.BatchSchedule
-	(*BatchSlot)(nil),           // 5: arkrpc.BatchSlot
-	(*EstimateFeeRequest)(nil),  // 6: arkrpc.EstimateFeeRequest
-	(*EstimateFeeResponse)(nil), // 7: arkrpc.EstimateFeeResponse
+	(*AssetPolicy)(nil),         // 4: arkrpc.AssetPolicy
+	(*BatchSchedule)(nil),       // 5: arkrpc.BatchSchedule
+	(*BatchSlot)(nil),           // 6: arkrpc.BatchSlot
+	(*EstimateFeeRequest)(nil),  // 7: arkrpc.EstimateFeeRequest
+	(*EstimateFeeResponse)(nil), // 8: arkrpc.EstimateFeeResponse
 }
 var file_ark_proto_depIdxs = []int32{
 	0, // 0: arkrpc.ArkVersionPolicy.state:type_name -> arkrpc.ArkVersionPolicy.State
 	2, // 1: arkrpc.GetInfoResponse.ark_version_policies:type_name -> arkrpc.ArkVersionPolicy
-	4, // 2: arkrpc.GetInfoResponse.batch_schedule:type_name -> arkrpc.BatchSchedule
-	5, // 3: arkrpc.BatchSchedule.slots:type_name -> arkrpc.BatchSlot
-	1, // 4: arkrpc.ArkService.GetInfo:input_type -> arkrpc.GetInfoRequest
-	6, // 5: arkrpc.ArkService.EstimateFee:input_type -> arkrpc.EstimateFeeRequest
-	3, // 6: arkrpc.ArkService.GetInfo:output_type -> arkrpc.GetInfoResponse
-	7, // 7: arkrpc.ArkService.EstimateFee:output_type -> arkrpc.EstimateFeeResponse
-	6, // [6:8] is the sub-list for method output_type
-	4, // [4:6] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	5, // 2: arkrpc.GetInfoResponse.batch_schedule:type_name -> arkrpc.BatchSchedule
+	4, // 3: arkrpc.GetInfoResponse.assets:type_name -> arkrpc.AssetPolicy
+	6, // 4: arkrpc.BatchSchedule.slots:type_name -> arkrpc.BatchSlot
+	1, // 5: arkrpc.ArkService.GetInfo:input_type -> arkrpc.GetInfoRequest
+	7, // 6: arkrpc.ArkService.EstimateFee:input_type -> arkrpc.EstimateFeeRequest
+	3, // 7: arkrpc.ArkService.GetInfo:output_type -> arkrpc.GetInfoResponse
+	8, // 8: arkrpc.ArkService.EstimateFee:output_type -> arkrpc.EstimateFeeResponse
+	7, // [7:9] is the sub-list for method output_type
+	5, // [5:7] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_ark_proto_init() }
@@ -885,7 +947,7 @@ func file_ark_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ark_proto_rawDesc), len(file_ark_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
