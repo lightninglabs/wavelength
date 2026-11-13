@@ -602,7 +602,7 @@ func (b *behavior) startSweep(ctx context.Context,
 	// Check before adopting any staged sweep: a restored Bitcoin sweep
 	// must never consume an output now known to carry assets. The asset
 	// claim takes the sweep's place and is submitted below like one.
-	asset := b.desc != nil && b.desc.TaprootAssetRoot != nil
+	asset := b.isAssetExit()
 	if asset {
 		claimed, err := b.claimAsset(ctx)
 		if err != nil || !claimed {
@@ -878,11 +878,17 @@ func (b *behavior) claimAsset(ctx context.Context) (bool, error) {
 // a reorganization or restart, until it is final. Zero asks for one
 // confirmation.
 func (b *behavior) sweepTargetConfs() uint32 {
-	if b.desc != nil && b.desc.TaprootAssetRoot != nil {
+	if b.isAssetExit() {
 		return chainsource.DefaultFinalityDepth
 	}
 
 	return 0
+}
+
+// isAssetExit reports whether the job exits an asset VTXO, whose final spend
+// is an asset claim rather than a Bitcoin sweep.
+func (b *behavior) isAssetExit() bool {
+	return b.desc != nil && b.desc.TaprootAssetRoot != nil
 }
 
 // sweepFeeRateFallback prefers the daemon-level local-network fallback, then
@@ -2183,8 +2189,14 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 
 	// Any retained candidate can win the replacement race. The spend
 	// notification is confirmed-chain evidence, so select its exact bytes
-	// for terminal accounting before completing the obligation.
+	// for terminal accounting before completing the obligation. An asset
+	// claim instead completes on txconfirm's report at its finality depth,
+	// since its first confirmation can still be reorganized away.
 	if b.sweepCandidate(msg.SpendingTxid) != nil {
+		if b.isAssetExit() {
+			return fn.Ok[Resp](&AckResp{})
+		}
+
 		return b.confirmSweepCandidate(
 			ctx, ax, msg.SpendingTxid, msg.SpendingHeight,
 		)
