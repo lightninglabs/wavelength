@@ -250,3 +250,46 @@ func TestOrdinaryFeedCannotUpgradeRoundConsent(t *testing.T) {
 		t, uint32(binding.EventClasses)&notification.FeedClassRound,
 	)
 }
+
+// TestSuccessiveRoundWakesHaveDistinctProviderIdentity preserves retry
+// identity while preventing job deletion from reusing it for a later phase.
+func TestSuccessiveRoundWakesHaveDistinctProviderIdentity(t *testing.T) {
+	h, f, id := roundWakeHarness(t)
+	admitRoundWake(t, h, f, id, 1, h.now.Add(time.Minute))
+	first, err := h.store.claim(t.Context(), h.now)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	require.NoError(
+		t,
+		h.store.complete(
+			t.Context(), *first, ProviderResult{
+				Outcome: OutcomeAccepted,
+			},
+			h.now,
+		),
+	)
+	h.now = h.now.Add(roundQuietPeriod)
+	admitRoundWake(t, h, f, id, 2, h.now.Add(time.Minute))
+	second, err := h.store.claim(t.Context(), h.now)
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	require.EqualValues(t, 1, first.job.Generation)
+	require.EqualValues(t, 1, second.job.Generation)
+	require.NotEqual(
+		t, providerRequestID(*first), providerRequestID(*second),
+	)
+	requestID := providerRequestID(*second)
+	require.NoError(
+		t,
+		h.store.complete(
+			t.Context(), *second, ProviderResult{
+				Outcome: OutcomeRetry,
+			},
+			h.now,
+		),
+	)
+	retried, err := h.store.claim(t.Context(), h.now.Add(roundQuietPeriod))
+	require.NoError(t, err)
+	require.NotNil(t, retried)
+	require.Equal(t, requestID, providerRequestID(*retried))
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"math"
 	"time"
 
@@ -329,7 +330,9 @@ func (f *feedIngress) admitEvent(ctx context.Context, q *sqlc.Queries,
 			now.Add(time.Minute).Unix(),
 		)
 		if err := enqueueSQLJobTx(
-			ctx, q, urgent, ScopeRound, "", now,
+			ctx, q, urgent, ScopeRound,
+			fmt.Sprintf("%x/%d", event.FeedToken, event.Generation),
+			now,
 		); err != nil {
 			return err
 		}

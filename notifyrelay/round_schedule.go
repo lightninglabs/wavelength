@@ -3,6 +3,7 @@ package notifyrelay
 import (
 	"bytes"
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/lightninglabs/wavelength/arkrpc"
@@ -130,7 +131,8 @@ func (s *SQLStore) scheduleRoundBindings(ctx context.Context, sourceID string,
 				continue
 			}
 			if err := enqueueSQLJobTx(
-				ctx, q, sub, ScopeSchedule, "", now,
+				ctx, q, sub, ScopeSchedule,
+				sourceID+"/"+strconv.FormatInt(cutoff, 10), now,
 			); err != nil {
 				return err
 			}
