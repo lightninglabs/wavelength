@@ -44,6 +44,10 @@ type SwapServiceMailboxServer interface {
 	SignInSwapForfeit(ctx context.Context, req *SignInSwapForfeitRequest) (*SignInSwapForfeitResponse, error)
 	// SubmitOutSwapForfeitSignature handles SubmitOutSwapForfeitSignature.
 	SubmitOutSwapForfeitSignature(ctx context.Context, req *SubmitOutSwapForfeitSignatureRequest) (*SubmitOutSwapForfeitSignatureResponse, error)
+	// ListRecoverableSwaps handles ListRecoverableSwaps.
+	ListRecoverableSwaps(ctx context.Context, req *ListRecoverableSwapsRequest) (*ListRecoverableSwapsResponse, error)
+	// GetSwapRecoveryInfo handles GetSwapRecoveryInfo.
+	GetSwapRecoveryInfo(ctx context.Context, req *GetSwapRecoveryInfoRequest) (*GetSwapRecoveryInfoResponse, error)
 }
 
 // RegisterSwapServiceMailboxServer registers handlers for SwapService.
@@ -147,6 +151,26 @@ func RegisterSwapServiceMailboxServer(r rpc.Router, impl SwapServiceMailboxServe
 		}
 
 		return impl.SubmitOutSwapForfeitSignature(ctx, req)
+	})
+	r.Handle("swaprpc.SwapService", "ListRecoverableSwaps", func() proto.Message {
+		return &ListRecoverableSwapsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListRecoverableSwapsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListRecoverableSwaps(ctx, req)
+	})
+	r.Handle("swaprpc.SwapService", "GetSwapRecoveryInfo", func() proto.Message {
+		return &GetSwapRecoveryInfoRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetSwapRecoveryInfoRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetSwapRecoveryInfo(ctx, req)
 	})
 }
 
@@ -373,6 +397,52 @@ func (c *SwapServiceMailboxClient) SubmitOutSwapForfeitSignature(ctx context.Con
 	}
 
 	resp := new(SubmitOutSwapForfeitSignatureResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListRecoverableSwaps calls the ListRecoverableSwaps RPC.
+func (c *SwapServiceMailboxClient) ListRecoverableSwaps(ctx context.Context, req *ListRecoverableSwapsRequest, opts ...rpc.RPCOptions) (*ListRecoverableSwapsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "swaprpc.SwapService",
+		Method:  "ListRecoverableSwaps",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListRecoverableSwapsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetSwapRecoveryInfo calls the GetSwapRecoveryInfo RPC.
+func (c *SwapServiceMailboxClient) GetSwapRecoveryInfo(ctx context.Context, req *GetSwapRecoveryInfoRequest, opts ...rpc.RPCOptions) (*GetSwapRecoveryInfoResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "swaprpc.SwapService",
+		Method:  "GetSwapRecoveryInfo",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetSwapRecoveryInfoResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

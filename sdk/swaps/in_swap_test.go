@@ -18,6 +18,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	swapsqlc "github.com/lightninglabs/wavelength/sdk/swaps/sqlc"
+	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/zpay32"
@@ -101,8 +102,8 @@ func (f *failAtExecDBTX) QueryRowContext(ctx context.Context, query string,
 
 // RequestChannelID is unused in these tests.
 func (c *testInSwapServerConn) RequestChannelID(_ context.Context,
-	_ *btcec.PublicKey, _ lntypes.Hash, _ btcutil.Amount, _ uint32,
-	_ bool) (*OutSwapQuote, error) {
+	_ *btcec.PublicKey, _ lntypes.Hash, _ btcutil.Amount, _ uint32, _ bool,
+	_ *swaprpc.SwapOwnerProof, _ []byte) (*OutSwapQuote, error) {
 
 	return nil, nil
 }
@@ -116,7 +117,7 @@ func (c *testInSwapServerConn) AcknowledgeOutSwapHTLC(context.Context,
 
 // CreateInSwap returns the preconfigured in-swap config.
 func (c *testInSwapServerConn) CreateInSwap(context.Context, string, uint64,
-	*btcec.PublicKey) (*InSwapConfig, error) {
+	*btcec.PublicKey, *swaprpc.SwapOwnerProof) (*InSwapConfig, error) {
 
 	c.createCalls++
 
@@ -127,13 +128,20 @@ func (c *testInSwapServerConn) CreateInSwap(context.Context, string, uint64,
 // the credit account options passed by the client.
 func (c *testInSwapServerConn) CreateInSwapWithCredits(_ context.Context,
 	_ string, _ uint64, _ *btcec.PublicKey, accountKey []byte,
-	maxCreditSat uint64) (*InSwapConfig, error) {
+	maxCreditSat uint64, _ *swaprpc.SwapOwnerProof) (*InSwapConfig, error) {
 
 	c.createCalls++
 	c.createAccountKey = append([]byte(nil), accountKey...)
 	c.createMaxCreditSat = maxCreditSat
 
 	return c.cfg, nil
+}
+
+// ListRecoverableSwaps is unused in these tests.
+func (c *testInSwapServerConn) ListRecoverableSwaps(context.Context,
+	*swaprpc.SwapOwnerProof) ([]*swaprpc.RecoverableSwap, error) {
+
+	return nil, nil
 }
 
 // QuoteInSwap returns the preconfigured in-swap quote.

@@ -40,6 +40,9 @@ const (
 	recoveryIndexerRetryAttempts = 8
 	recoveryIndexerRetryBase     = 150 * time.Millisecond
 	recoveryIndexerRetryMax      = 5 * time.Second
+
+	// Swap recovery must not hold ordinary wallet restore indefinitely.
+	recoverySwapTimeout = 30 * time.Second
 )
 
 // recoveryIndexedVTXOFamilies lists the key families seed recovery scans
@@ -61,6 +64,9 @@ type WalletRecoveryResult struct {
 	VTXOs             uint32
 	OORReceiveScripts uint32
 	OOREvents         uint32
+	VHTLCs            uint32
+	VHTLCRefunds      uint32
+	VHTLCClaims       uint32
 }
 
 // RecoverWalletState reruns the daemon's idempotent seed-recovery scan. It is
@@ -111,6 +117,9 @@ func (r WalletRecoveryResult) apply(resp *waverpc.InitWalletResponse) {
 	resp.RecoveredVtxos = r.VTXOs
 	resp.RecoveredOorReceiveScripts = r.OORReceiveScripts
 	resp.RecoveredOorEvents = r.OOREvents
+	resp.RecoveredVhtlcs = r.VHTLCs
+	resp.RecoveredVhtlcRefunds = r.VHTLCRefunds
+	resp.RecoveredVhtlcClaims = r.VHTLCClaims
 }
 
 func (r *RPCServer) recoverWalletState(ctx context.Context, window uint32) (
@@ -165,8 +174,40 @@ func (r *RPCServer) recoverWalletState(ctx context.Context, window uint32) (
 	); err != nil {
 		return nil, fmt.Errorf("recover OOR receive scripts: %w", err)
 	}
+	r.recoverSwapVHTLCs(ctx, &result)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	return &result, nil
+}
+
+// recoverSwapVHTLCs delegates swapserver-owned vHTLC discovery to the
+// configured swap runtime after the wallet seed is available for signing.
+// This optional phase preserves core and partial results on backend failure.
+func (r *RPCServer) recoverSwapVHTLCs(ctx context.Context,
+	result *WalletRecoveryResult) {
+
+	if r.server.cfg.Swap == nil || r.server.cfg.Swap.Backend == nil {
+		return
+	}
+
+	swapCtx, cancel := context.WithTimeout(ctx, recoverySwapTimeout)
+	defer cancel()
+	recovered, err := r.server.cfg.Swap.Backend.RecoverVHTLCs(swapCtx)
+	if err != nil {
+		r.server.log.WarnS(ctx, "Optional swap recovery incomplete",
+			err,
+		)
+	}
+	if recovered == nil {
+		return
+	}
+
+	result.VHTLCs += recovered.RecoveredVHTLCs
+	result.VHTLCRefunds += recovered.RecoveredVHTLCRefunds
+	result.VHTLCClaims += recovered.RecoveredVHTLCClaims
+
 }
 
 func (r *RPCServer) recoverBoardingKeys(ctx context.Context,

@@ -56,6 +56,14 @@ func (s *Server) finishWalletOnlineStartup(ctx context.Context) error {
 
 		return s.refreshAuthenticatedOperatorTerms(refreshCtx)
 	}, func(ctx context.Context) error {
+		// Recovery material lookups need authenticated ingress. In
+		// host-driven mode, defer replay until foreground intake
+		// starts, while retaining recovery policy before ordinary
+		// intent replay.
+		if err := s.restoreUnrollSubsystem(ctx); err != nil {
+			return err
+		}
+
 		err := s.replayPendingIntents(
 			ctx, s.walletRef.UnsafeFromSome(),
 		)

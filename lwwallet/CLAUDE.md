@@ -51,6 +51,11 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
 - `EsploraChainService` — `chain.Interface` adapter over `EsploraClient`,
   driven by a shared `TipPoller`. Feeds btcwallet's internal address-credit
   pipeline. Constructor: `NewEsploraChainService(esplora, tipPoller, logger)`.
+  Rescan addresses also remain in the live watch set: restarted wallets must
+  observe future spends and change at their existing receive/change addresses.
+  Retain rescan outpoints and learn owned outputs from historical/live delivery
+  so changeless spends are relevant too. Keep spent watches for reorg replay;
+  never add foreign outputs merely because their transaction is relevant.
 - Start-block discovery (`start_block.go`) — resolves where a new or
   restored wallet begins scanning from the Esplora address index instead of
   from the seed birthday, and writes it into `waddrmgr` as a *verified*

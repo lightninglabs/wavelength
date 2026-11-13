@@ -99,7 +99,10 @@ func newClaimSessionHarness(t *testing.T, restart bool) *claimSessionHarness {
 		vhtlcPolicyTemplate: policyTemplate,
 		vhtlcPkScript:       pkScript,
 		vhtlcConfig: VHTLCConfig{
-			RefundLocktime: 300,
+			RefundLocktime:                       300,
+			UnilateralClaimDelay:                 12,
+			UnilateralRefundDelay:                24,
+			UnilateralRefundWithoutReceiverDelay: 36,
 		},
 		vhtlcOutpoint: "funding:0",
 		vhtlcAmount:   42_000,
@@ -446,8 +449,8 @@ func TestReceiveClaimFailedAfterPONREscalatesNearDeadline(t *testing.T) {
 		MinRecoveryMarginBlocks:       12,
 	})
 
-	// Within the margin of the refund locktime of 300.
-	h.daemon.blockHeight = 295
+	// Within the margin of the latest claim start: 300 - 72 - 12.
+	h.daemon.blockHeight = 204
 	h.daemon.oorSession = claimOOR(oorFailed, false)
 
 	err := h.session.claimFundedVHTLC(t.Context())
@@ -483,7 +486,7 @@ func newEscalatingHarness(t *testing.T,
 		CooperativeFailureGracePeriod: time.Hour,
 		MinRecoveryMarginBlocks:       12,
 	})
-	h.daemon.blockHeight = 295
+	h.daemon.blockHeight = 204
 	h.daemon.oorSession = claimOOR(oorFailed, false)
 	h.daemon.statusResp = status
 

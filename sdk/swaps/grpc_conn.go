@@ -16,6 +16,8 @@ import (
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // GRPCSwapServerConn implements SwapServerConn using the shared generated
@@ -25,6 +27,7 @@ type GRPCSwapServerConn struct {
 	creditAccountSigner CreditAccountAuthorizationSigner
 	authNow             func() time.Time
 	authRand            io.Reader
+	isREST              bool
 }
 
 const wireCreditFundingLightningReceive = swaprpc.
@@ -51,7 +54,12 @@ func NewGRPCSwapServerConn(conn grpc.ClientConnInterface,
 func NewRESTSwapServerConn(addr string,
 	opts ...restclient.Option) *GRPCSwapServerConn {
 
-	return newSwapServerConn(restclient.NewSwapServiceClient(addr, opts...))
+	serverConn := newSwapServerConn(
+		restclient.NewSwapServiceClient(addr, opts...),
+	)
+	serverConn.isREST = true
+
+	return serverConn
 }
 
 // NewAuthenticatedRESTSwapServerConn creates a REST-backed SwapServerConn
@@ -60,9 +68,7 @@ func NewAuthenticatedRESTSwapServerConn(addr string,
 	creditSigner CreditAccountAuthorizationSigner,
 	opts ...restclient.Option) *GRPCSwapServerConn {
 
-	serverConn := newSwapServerConn(
-		restclient.NewSwapServiceClient(addr, opts...),
-	)
+	serverConn := NewRESTSwapServerConn(addr, opts...)
 	serverConn.creditAccountSigner = creditSigner
 
 	return serverConn
@@ -84,7 +90,8 @@ func newSwapServerConn(client swaprpc.SwapServiceClient) *GRPCSwapServerConn {
 func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 	vhtlcPubkey *btcec.PublicKey, paymentHash lntypes.Hash,
 	amountSat btcutil.Amount, expirySeconds uint32,
-	supportsInArkCredit bool) (*OutSwapQuote, error) {
+	supportsInArkCredit bool, ownerProof *swaprpc.SwapOwnerProof,
+	preimageRecoveryParams []byte) (*OutSwapQuote, error) {
 
 	if vhtlcPubkey == nil {
 		return nil, fmt.Errorf("vHTLC pubkey must be provided")
@@ -102,6 +109,20 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 		),
 		AmountSat:           uint64(amountSat),
 		SupportsInArkCredit: supportsInArkCredit,
+		OwnerProof:          ownerProof,
+		PreimageRecoveryParams: append(
+			[]byte(nil), preimageRecoveryParams...,
+		),
+	}
+	if ownerProof != nil || len(preimageRecoveryParams) != 0 {
+		supported, err := g.supportsRecoveryMetadata(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !supported {
+			req.OwnerProof = nil
+			req.PreimageRecoveryParams = nil
+		}
 	}
 	if err := g.authorizeCreditAccountRequest(ctx, req); err != nil {
 		return nil, err
@@ -179,11 +200,11 @@ func (g *GRPCSwapServerConn) AcknowledgeOutSwapHTLC(ctx context.Context,
 
 // CreateInSwap initiates one Ark-to-Lightning swap on the swap server.
 func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context, invoice string,
-	maxFeeSat uint64, clientVhtlcPubkey *btcec.PublicKey) (*InSwapConfig,
-	error) {
+	maxFeeSat uint64, clientVhtlcPubkey *btcec.PublicKey,
+	ownerProof *swaprpc.SwapOwnerProof) (*InSwapConfig, error) {
 
 	return g.CreateInSwapWithCredits(
-		ctx, invoice, maxFeeSat, clientVhtlcPubkey, nil, 0,
+		ctx, invoice, maxFeeSat, clientVhtlcPubkey, nil, 0, ownerProof,
 	)
 }
 
@@ -192,7 +213,8 @@ func (g *GRPCSwapServerConn) CreateInSwap(ctx context.Context, invoice string,
 // non-zero. Zero forbids credit, including mandatory credit.
 func (g *GRPCSwapServerConn) CreateInSwapWithCredits(ctx context.Context,
 	invoice string, maxFeeSat uint64, clientVhtlcPubkey *btcec.PublicKey,
-	accountPubKey []byte, maxCreditSat uint64) (*InSwapConfig, error) {
+	accountPubKey []byte, maxCreditSat uint64,
+	ownerProof *swaprpc.SwapOwnerProof) (*InSwapConfig, error) {
 
 	if clientVhtlcPubkey == nil {
 		return nil, fmt.Errorf("client vHTLC pubkey must be provided")
@@ -205,6 +227,16 @@ func (g *GRPCSwapServerConn) CreateInSwapWithCredits(ctx context.Context,
 			SerializeCompressed(),
 		AccountPubkey: append([]byte(nil), accountPubKey...),
 		MaxCreditSat:  maxCreditSat,
+		OwnerProof:    ownerProof,
+	}
+	if ownerProof != nil {
+		supported, err := g.supportsRecoveryMetadata(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !supported {
+			req.OwnerProof = nil
+		}
 	}
 	if len(accountPubKey) > 0 {
 		if err := g.authorizeCreditAccountRequest(
@@ -220,6 +252,83 @@ func (g *GRPCSwapServerConn) CreateInSwapWithCredits(ctx context.Context,
 	}
 
 	return inSwapConfigFromProto(resp)
+}
+
+// ListRecoverableSwaps returns owner-scoped recovery candidates from the swap
+// server.
+func (g *GRPCSwapServerConn) ListRecoverableSwaps(ctx context.Context,
+	ownerProof *swaprpc.SwapOwnerProof) ([]*swaprpc.RecoverableSwap,
+	error) {
+
+	resp, err := g.ListRecoverableSwapsPage(ctx, ownerProof, 0, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.GetSwaps(), nil
+}
+
+// GetSwapRecoveryInfo fetches the signing audience over the configured server
+// transport. The caller must compare its network with local chain parameters.
+func (g *GRPCSwapServerConn) GetSwapRecoveryInfo(ctx context.Context) (
+	*swaprpc.GetSwapRecoveryInfoResponse, error) {
+
+	resp, err := g.client.GetSwapRecoveryInfo(
+		ctx, &swaprpc.GetSwapRecoveryInfoRequest{},
+	)
+	if err != nil {
+		// Older JSON gateways have no recovery route. Normalize only
+		// this optional capability, not NotFound from ordinary swap
+		// requests.
+		if g.isREST && status.Code(err) == codes.NotFound {
+			return nil, status.Error(
+				codes.Unimplemented,
+				"swap recovery discovery is not supported",
+			)
+		}
+
+		return nil, fmt.Errorf("GetSwapRecoveryInfo RPC: %w", err)
+	}
+
+	return resp, nil
+}
+
+// supportsRecoveryMetadata probes only REST: old JSON gateways discard unknown
+// fields, which would invalidate the account signature over the request. Check
+// before signing instead of retrying a possibly admitted creation request.
+func (g *GRPCSwapServerConn) supportsRecoveryMetadata(ctx context.Context) (
+	bool, error) {
+
+	if !g.isREST {
+		return true, nil
+	}
+
+	_, err := g.GetSwapRecoveryInfo(ctx)
+	if status.Code(err) == codes.Unimplemented {
+		return false, nil
+	}
+
+	return err == nil, err
+}
+
+// ListRecoverableSwapsPage sends the exact signed pagination fields without
+// normalizing defaults, since zero and an explicit default sign differently.
+func (g *GRPCSwapServerConn) ListRecoverableSwapsPage(ctx context.Context,
+	ownerProof *swaprpc.SwapOwnerProof, pageSize uint32, pageToken []byte) (
+	*swaprpc.ListRecoverableSwapsResponse, error) {
+
+	resp, err := g.client.ListRecoverableSwaps(
+		ctx, &swaprpc.ListRecoverableSwapsRequest{
+			OwnerProof: ownerProof,
+			PageSize:   pageSize,
+			PageToken:  pageToken,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ListRecoverableSwaps RPC: %w", err)
+	}
+
+	return resp, nil
 }
 
 // QuoteInSwap previews one Ark-to-Lightning swap on the swap server without

@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btclog/v2"
 	sdkark "github.com/lightninglabs/wavelength/sdk/ark"
+	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -694,8 +695,9 @@ type SwapServerConn interface {
 	// credit-attach receive through the in-ark leg when it is set.
 	RequestChannelID(ctx context.Context, vhtlcPubkey *btcec.PublicKey,
 		paymentHash lntypes.Hash, amountSat btcutil.Amount,
-		expirySeconds uint32,
-		supportsInArkCredit bool) (*OutSwapQuote, error)
+		expirySeconds uint32, supportsInArkCredit bool,
+		ownerProof *swaprpc.SwapOwnerProof,
+		preimageRecoveryParams []byte) (*OutSwapQuote, error)
 
 	// AcknowledgeOutSwapHTLC tells the server this receiver validated and
 	// durably accepted the out-swap HTLC event.
@@ -705,7 +707,16 @@ type SwapServerConn interface {
 
 	// CreateInSwap initiates an Ark->LN swap on the server.
 	CreateInSwap(ctx context.Context, invoice string, maxFeeSat uint64,
-		clientVhtlcPubkey *btcec.PublicKey) (*InSwapConfig, error)
+		clientVhtlcPubkey *btcec.PublicKey,
+		ownerProof *swaprpc.SwapOwnerProof) (*InSwapConfig, error)
+
+	// ListRecoverableSwaps returns the default first page only. Recovery
+	// scans must use RecoverableSwapPageServerConn to avoid truncation.
+	ListRecoverableSwaps(ctx context.Context,
+		ownerProof *swaprpc.SwapOwnerProof) (
+		[]*swaprpc.RecoverableSwap,
+		error,
+	)
 
 	// QuoteInSwap previews an Ark->LN swap without creating server or
 	// client state.
@@ -746,6 +757,11 @@ type SwapServerConn interface {
 //
 //nolint:interfacebloat
 type DaemonConn interface {
+	// DeriveSwapPreimage reproduces an invoice secret with the active
+	// wallet's seed without exporting a private key or ECDH base.
+	DeriveSwapPreimage(ctx context.Context,
+		params []byte) (lntypes.Preimage, error)
+
 	// BlockHeight returns the daemon's best known chain height.
 	BlockHeight(ctx context.Context) (uint32, error)
 
@@ -856,6 +872,11 @@ type DaemonConn interface {
 	SignVTXOForfeit(ctx context.Context,
 		req *waverpc.SignVTXOForfeitRequest) (
 		*waverpc.SignVTXOForfeitResponse, error)
+
+	// SignIdentitySchnorr signs one domain-separated message with the
+	// daemon identity key.
+	SignIdentitySchnorr(ctx context.Context, message,
+		tag []byte) ([]byte, error)
 }
 
 // CustomInput aliases the Ark SDK's typed custom OOR input.
@@ -891,6 +912,10 @@ type InSwapRefundAuthorization struct {
 // SwapClient is the high-level client API for Lightning<->Ark
 // swaps.
 type SwapClient struct {
+	// restoreGate serializes scans while allowing queued callers to obey
+	// their own cancellation deadlines rather than wait on a mutex.
+	restoreGate chan struct{}
+
 	server     SwapServerConn
 	daemon     DaemonConn
 	invoiceGen InvoiceCreator
@@ -951,6 +976,7 @@ func NewSwapClientWithStore(server SwapServerConn, daemon DaemonConn,
 	}
 
 	return &SwapClient{
+		restoreGate:              make(chan struct{}, 1),
 		server:                   server,
 		daemon:                   daemon,
 		invoiceGen:               invoiceGen,

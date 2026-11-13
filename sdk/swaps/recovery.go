@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -137,6 +138,8 @@ type RecoveryPolicy struct {
 	// AutoEscalate allows the SDK to start on-chain recovery without a
 	// manual caller command once the grace/deadline policy says waiting
 	// longer is unsafe or unproductive.
+	// New receive exits also require enough remaining blocks for ancestry
+	// and claim CSV; an unreadable height or a closed window defers them.
 	AutoEscalate bool
 
 	// CooperativeFailureGracePeriod is measured from the first cooperative
@@ -145,14 +148,13 @@ type RecoveryPolicy struct {
 	// pressure overrides the wait.
 	CooperativeFailureGracePeriod time.Duration
 
-	// MinRecoveryMarginBlocks is the minimum block margin preserved before
-	// a refund locktime. Claim recovery may override the grace period when
-	// the current height plus this margin reaches the refund locktime.
+	// MinRecoveryMarginBlocks triggers deadline pressure before the latest
+	// viable claim-exit start (refund height minus ancestry and claim CSV).
+	// It may override grace, but never the requirement for a viable window.
 	MinRecoveryMarginBlocks uint32
 
-	// ExitAncestryDelayBlocks is the pre-funding block budget reserved for
-	// making the vHTLC output available on chain when the receiver first
-	// evaluates a proposed vHTLC policy.
+	// ExitAncestryDelayBlocks budgets making the vHTLC output available on
+	// chain, both during policy admission and before a new automatic exit.
 	ExitAncestryDelayBlocks uint32
 
 	// MaxFeeRateSatPerKW caps the final recovery exit-spend fee rate. The
@@ -247,7 +249,8 @@ func decideRecoveryEscalation(policy RecoveryPolicy, firstFailureAt time.Time,
 	}
 
 	if deadlineHeight != 0 &&
-		currentHeight+policy.MinRecoveryMarginBlocks >= deadlineHeight {
+		uint64(currentHeight)+uint64(policy.MinRecoveryMarginBlocks) >=
+			uint64(deadlineHeight) {
 
 		decision.Escalate = true
 		decision.Trigger = "deadline_margin"
@@ -304,6 +307,69 @@ func pubKeyBytesForRecovery(pubKey *btcec.PublicKey,
 	return pubKey.SerializeCompressed(), nil
 }
 
+// armVHTLCRecoveryParams is the stable request shape shared by live swap
+// sessions and seed-restore recovery.
+type armVHTLCRecoveryParams struct {
+	RequestID   string
+	PaymentHash lntypes.Hash
+	Direction   waverpc.VHTLCRecoveryDirection
+	Action      waverpc.VHTLCRecoveryAction
+
+	VTXOOutpoint  string
+	VTXOAmountSat int64
+
+	SenderPubkey   []byte
+	ReceiverPubkey []byte
+	ServerPubkey   []byte
+
+	RefundLocktime                       int32
+	UnilateralClaimDelay                 int32
+	UnilateralRefundDelay                int32
+	UnilateralRefundWithoutReceiverDelay int32
+
+	DestinationScript []byte
+	MaxFeeRateSatKW   int32
+}
+
+// buildArmVHTLCRecoveryRequest clones the durable request fields so retries
+// compare against stable bytes regardless of the caller's backing slices.
+func buildArmVHTLCRecoveryRequest(
+	params armVHTLCRecoveryParams) *waverpc.ArmVHTLCRecoveryRequest {
+
+	return &waverpc.ArmVHTLCRecoveryRequest{
+		RequestId:     params.RequestID,
+		SwapId:        append([]byte(nil), params.PaymentHash[:]...),
+		Direction:     params.Direction,
+		Action:        params.Action,
+		VtxoOutpoint:  params.VTXOOutpoint,
+		VtxoAmountSat: params.VTXOAmountSat,
+		SenderPubkey: append(
+			[]byte(nil), params.SenderPubkey...,
+		),
+		ReceiverPubkey: append(
+			[]byte(nil), params.ReceiverPubkey...,
+		),
+		ServerPubkey: append(
+			[]byte(nil), params.ServerPubkey...,
+		),
+		RefundLocktime:       params.RefundLocktime,
+		UnilateralClaimDelay: params.UnilateralClaimDelay,
+		UnilateralRefundDelay: params.
+			UnilateralRefundDelay,
+		UnilateralRefundWithoutReceiverDelay: params.
+			UnilateralRefundWithoutReceiverDelay,
+		PreimageHash: append(
+			[]byte(nil), params.PaymentHash[:]...,
+		),
+		SignerKeyFamily: recoverySignerFamily(),
+		SignerKeyIndex:  recoverySignerKeyIndex,
+		DestinationScript: append(
+			[]byte(nil), params.DestinationScript...,
+		),
+		MaxFeeRateSatPerKw: params.MaxFeeRateSatKW,
+	}
+}
+
 // ensurePayRefundRecoveryArmed stores a dormant refund-without-receiver
 // recovery row for the funded pay-side vHTLC. The row is armed before refund
 // locktime pressure so escalation later only flips existing durable state.
@@ -337,47 +403,36 @@ func (s *paySession) ensurePayRefundRecoveryArmed(ctx context.Context) error {
 		return err
 	}
 
-	resp, err := s.client.daemon.ArmVHTLCRecovery(
-		ctx, &waverpc.ArmVHTLCRecoveryRequest{
-			RequestId: recoveryRequestID(
-				string(SwapDirectionPay), s.cfg.PaymentHash,
-				recoveryActionRefundWithoutReceiver,
-			),
-			SwapId: append(
-				[]byte(nil), s.cfg.PaymentHash[:]...,
-			),
-			Direction:      recoveryDirectionPay,
-			Action:         recoveryActionRefundWithoutReceiver,
-			VtxoOutpoint:   s.vhtlcOutpoint,
-			VtxoAmountSat:  s.vhtlcAmount,
-			SenderPubkey:   sender,
-			ReceiverPubkey: receiver,
-			ServerPubkey:   server,
-			RefundLocktime: int32(
-				s.cfg.VHTLCConfig.RefundLocktime,
-			),
-			UnilateralClaimDelay: int32(
-				s.cfg.VHTLCConfig.UnilateralClaimDelay,
-			),
-			UnilateralRefundDelay: int32(
-				s.cfg.VHTLCConfig.UnilateralRefundDelay,
-			),
-			UnilateralRefundWithoutReceiverDelay: int32(
-				s.cfg.VHTLCConfig.
-					UnilateralRefundWithoutReceiverDelay,
-			),
-			PreimageHash: append(
-				[]byte(nil), s.cfg.PaymentHash[:]...,
-			),
-			SignerKeyFamily: recoverySignerFamily(),
-			SignerKeyIndex:  recoverySignerKeyIndex,
-			DestinationScript: append(
-				[]byte(nil), s.refundReceiveScript...,
-			),
-			MaxFeeRateSatPerKw: s.client.recoveryPolicy.
-				MaxFeeRateSatPerKW,
-		},
-	)
+	req := buildArmVHTLCRecoveryRequest(armVHTLCRecoveryParams{
+		RequestID: recoveryRequestID(
+			string(SwapDirectionPay), s.cfg.PaymentHash,
+			recoveryActionRefundWithoutReceiver,
+		),
+		PaymentHash:    s.cfg.PaymentHash,
+		Direction:      recoveryDirectionPay,
+		Action:         recoveryActionRefundWithoutReceiver,
+		VTXOOutpoint:   s.vhtlcOutpoint,
+		VTXOAmountSat:  s.vhtlcAmount,
+		SenderPubkey:   sender,
+		ReceiverPubkey: receiver,
+		ServerPubkey:   server,
+		RefundLocktime: int32(
+			s.cfg.VHTLCConfig.RefundLocktime,
+		),
+		UnilateralClaimDelay: int32(
+			s.cfg.VHTLCConfig.UnilateralClaimDelay,
+		),
+		UnilateralRefundDelay: int32(
+			s.cfg.VHTLCConfig.UnilateralRefundDelay,
+		),
+		UnilateralRefundWithoutReceiverDelay: int32(
+			s.cfg.VHTLCConfig.UnilateralRefundWithoutReceiverDelay,
+		),
+		DestinationScript: s.refundReceiveScript,
+		MaxFeeRateSatKW:   s.client.recoveryPolicy.MaxFeeRateSatPerKW,
+	})
+
+	resp, err := s.client.daemon.ArmVHTLCRecovery(ctx, req)
 	if err != nil {
 		return fmt.Errorf("arm pay refund recovery: %w", err)
 	}
@@ -444,47 +499,36 @@ func (s *ReceiveSession) ensureReceiveClaimRecoveryArmed(
 		return err
 	}
 
-	resp, err := s.client.daemon.ArmVHTLCRecovery(
-		ctx, &waverpc.ArmVHTLCRecoveryRequest{
-			RequestId: recoveryRequestID(
-				string(SwapDirectionReceive), s.PaymentHash,
-				recoveryActionClaim,
-			),
-			SwapId: append(
-				[]byte(nil), s.PaymentHash[:]...,
-			),
-			Direction:      recoveryDirectionReceive,
-			Action:         recoveryActionClaim,
-			VtxoOutpoint:   s.vhtlcOutpoint,
-			VtxoAmountSat:  s.vhtlcAmount,
-			SenderPubkey:   sender,
-			ReceiverPubkey: receiver,
-			ServerPubkey:   server,
-			RefundLocktime: int32(
-				s.vhtlcConfig.RefundLocktime,
-			),
-			UnilateralClaimDelay: int32(
-				s.vhtlcConfig.UnilateralClaimDelay,
-			),
-			UnilateralRefundDelay: int32(
-				s.vhtlcConfig.UnilateralRefundDelay,
-			),
-			UnilateralRefundWithoutReceiverDelay: int32(
-				s.vhtlcConfig.
-					UnilateralRefundWithoutReceiverDelay,
-			),
-			PreimageHash: append(
-				[]byte(nil), s.PaymentHash[:]...,
-			),
-			SignerKeyFamily: recoverySignerFamily(),
-			SignerKeyIndex:  recoverySignerKeyIndex,
-			DestinationScript: append(
-				[]byte(nil), s.claimReceiveScript...,
-			),
-			MaxFeeRateSatPerKw: s.client.recoveryPolicy.
-				MaxFeeRateSatPerKW,
-		},
-	)
+	req := buildArmVHTLCRecoveryRequest(armVHTLCRecoveryParams{
+		RequestID: recoveryRequestID(
+			string(SwapDirectionReceive), s.PaymentHash,
+			recoveryActionClaim,
+		),
+		PaymentHash:    s.PaymentHash,
+		Direction:      recoveryDirectionReceive,
+		Action:         recoveryActionClaim,
+		VTXOOutpoint:   s.vhtlcOutpoint,
+		VTXOAmountSat:  s.vhtlcAmount,
+		SenderPubkey:   sender,
+		ReceiverPubkey: receiver,
+		ServerPubkey:   server,
+		RefundLocktime: int32(
+			s.vhtlcConfig.RefundLocktime,
+		),
+		UnilateralClaimDelay: int32(
+			s.vhtlcConfig.UnilateralClaimDelay,
+		),
+		UnilateralRefundDelay: int32(
+			s.vhtlcConfig.UnilateralRefundDelay,
+		),
+		UnilateralRefundWithoutReceiverDelay: int32(
+			s.vhtlcConfig.UnilateralRefundWithoutReceiverDelay,
+		),
+		DestinationScript: s.claimReceiveScript,
+		MaxFeeRateSatKW:   s.client.recoveryPolicy.MaxFeeRateSatPerKW,
+	})
+
+	resp, err := s.client.daemon.ArmVHTLCRecovery(ctx, req)
 	if err != nil {
 
 		// The row is daemon-owned and the request id is deterministic,
@@ -719,19 +763,38 @@ func (s *ReceiveSession) maybeEscalateReceiveClaimRecovery(ctx context.Context,
 			btclog.Hex("hash", s.PaymentHash[:]),
 			slog.String("recovery_id", s.claimRecoveryID),
 		)
+
+		return nil
 	}
 
-	// The refund deadline is an absolute height, so the deadline trigger
-	// cannot be evaluated without a height. Only the wall-clock grace
-	// policy applies until a height is readable.
-	deadlineHeight := s.vhtlcConfig.RefundLocktime
-	if err != nil {
-		deadlineHeight = 0
+	policy := s.client.recoveryPolicy.WithDefaults()
+	// A new unroll must leave time for ancestry and claim CSV before the
+	// sender's refund leaf opens. Keep funded sessions pending when that
+	// window closes; neither grace expiry nor consent makes a late exit
+	// safe.
+	if err := vhtlcTiming(s.vhtlcConfig).ValidateClaimWindow(
+		arkscript.VHTLCClaimWindow{
+			CurrentHeight:     height,
+			ExitAncestryDelay: policy.ExitAncestryDelayBlocks,
+		},
+	); err != nil {
+
+		s.client.log.DebugS(ctx, "Receive claim exit window closed",
+			slog.Any("err", err),
+			btclog.Hex("hash", s.PaymentHash[:]),
+		)
+
+		return nil
 	}
+	// Apply deadline pressure before the latest viable start, rather than
+	// waiting until only the margin remains before the refund itself.
+	deadlineHeight := s.vhtlcConfig.RefundLocktime -
+		policy.ExitAncestryDelayBlocks -
+		s.vhtlcConfig.UnilateralClaimDelay
 
 	decision := decideRecoveryEscalation(
-		s.client.recoveryPolicy, s.firstReceiveClaimRecoveryFailure(),
-		s.client.now(), height, deadlineHeight,
+		policy, s.firstReceiveClaimRecoveryFailure(), s.client.now(),
+		height, deadlineHeight,
 	)
 	if !decision.Escalate {
 		s.client.log.DebugS(ctx,

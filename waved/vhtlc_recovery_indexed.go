@@ -3,8 +3,6 @@ package waved
 import (
 	"bytes"
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
@@ -219,19 +217,8 @@ func (m *vhtlcRecoveryTargetMaterializer) buildIndexedRecoveryDescriptor(
 			"missing")
 	}
 	for _, pkg := range packages {
-		// An ancestor may already be an outgoing local package. Reuse
-		// it through its existing direction; immutable upsert still
-		// checks the exact signed payload before accepting it.
-		direction := db.OORPackageDirectionIncoming
-		existing, err := m.packages.GetPackage(ctx, pkg.SessionID)
-		if err == nil {
-			direction = existing.Direction
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
-		}
-		if err := m.packages.UpsertPackage(
-			ctx, direction, pkg.SessionID, pkg.ArkPSBT,
-			pkg.FinalCheckpointPSBTs,
+		if err := persistIndexedRecoveryPackage(
+			ctx, m.packages, pkg,
 		); err != nil {
 			return nil, fmt.Errorf("persist recovery package: %w",
 				err)

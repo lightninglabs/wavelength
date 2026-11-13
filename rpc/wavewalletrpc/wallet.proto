@@ -328,6 +328,10 @@ message CreateResponse {
     // recovered_oor_events is the number of OOR recipient events processed
     // during recovery.
     uint32 recovered_oor_events = 8;
+    // Recovery counts for validated swapserver rows and daemon jobs.
+    uint32 recovered_vhtlcs = 9;
+    uint32 recovered_vhtlc_refunds = 10;
+    uint32 recovered_vhtlc_claims = 11;
 }
 
 // UnlockRequest carries the password used to decrypt the on-disk seed for

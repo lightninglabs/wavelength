@@ -163,12 +163,21 @@ func (r *RPCServer) GetVHTLCRecoveryStatus(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	if req.RecoveryId == "" {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"recovery_id is required")
+	if (req.GetRecoveryId() == "") == (req.GetRequestId() == "") {
+		return nil, status.Errorf(codes.InvalidArgument, "exactly "+
+			"one of recovery_id or request_id is required")
 	}
 
-	recoveryStatus, err := service.GetRecoveryStatus(ctx, req.RecoveryId)
+	var recoveryStatus *coordinator.RecoveryStatus
+	if req.GetRequestId() != "" {
+		recoveryStatus, err = service.GetRecoveryStatusByRequestID(
+			ctx, req.GetRequestId(),
+		)
+	} else {
+		recoveryStatus, err = service.GetRecoveryStatus(
+			ctx, req.GetRecoveryId(),
+		)
+	}
 	if err != nil {
 		if errors.Is(err, db.ErrVHTLCRecoveryJobNotFound) {
 			return &waverpc.GetVHTLCRecoveryStatusResponse{}, nil

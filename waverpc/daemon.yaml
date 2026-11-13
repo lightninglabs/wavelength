@@ -44,6 +44,12 @@ http:
     - selector: waverpc.DaemonService.ReceiveAuthECDH
       post: /v1/daemon/receive-auth-ecdh
       body: "*"
+    - selector: waverpc.DaemonService.SignIdentitySchnorr
+      post: /v1/daemon/sign-identity-schnorr
+      body: "*"
+    - selector: waverpc.DaemonService.DeriveSwapPreimage
+      post: /v1/daemon/derive-swap-preimage
+      body: "*"
     - selector: waverpc.DaemonService.SignOutSwapHtlcAck
       post: /v1/daemon/sign-out-swap-htlc-ack
       body: "*"

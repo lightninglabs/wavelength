@@ -3183,6 +3183,14 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
+	if len(req.GetCustomInputs()) != 0 &&
+		r.server.cfg != nil &&
+		r.server.cfg.CustomOORSendHook != nil {
+
+		if err := r.server.cfg.CustomOORSendHook(ctx, req); err != nil {
+			return nil, err
+		}
+	}
 
 	requestRecipients, err := sendOORRequestRecipients(req)
 	if err != nil {

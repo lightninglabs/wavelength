@@ -141,6 +141,191 @@ func (q *Queries) GetReceiveSwap(ctx context.Context, paymentHash []byte) (Recei
 	return i, err
 }
 
+const InsertPaySwap = `-- name: InsertPaySwap :execrows
+INSERT INTO pay_swaps (
+    payment_hash, invoice, max_fee_sat, state, amount_sat, fee_sat,
+    expiry_unix, client_pubkey, operator_pubkey, server_pubkey,
+    settlement_type, refund_locktime, unilateral_claim_delay,
+    unilateral_refund_delay, unilateral_refund_without_receiver_delay,
+    vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount,
+    funding_session_id, refund_receive_pubkey, refund_receive_pkscript,
+    refund_session_id, refund_recovery_id, preimage, intervention_reason,
+    created_at_unix, updated_at_unix, credit_quote
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+    $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29
+)
+ON CONFLICT (payment_hash) DO NOTHING
+`
+
+type InsertPaySwapParams struct {
+	PaymentHash                          []byte
+	Invoice                              string
+	MaxFeeSat                            int64
+	State                                string
+	AmountSat                            int64
+	FeeSat                               int64
+	ExpiryUnix                           int64
+	ClientPubkey                         []byte
+	OperatorPubkey                       []byte
+	ServerPubkey                         []byte
+	SettlementType                       string
+	RefundLocktime                       int64
+	UnilateralClaimDelay                 int64
+	UnilateralRefundDelay                int64
+	UnilateralRefundWithoutReceiverDelay int64
+	VhtlcPkscript                        []byte
+	VhtlcPolicyTemplate                  []byte
+	VhtlcOutpoint                        string
+	VhtlcAmount                          int64
+	FundingSessionID                     string
+	RefundReceivePubkey                  []byte
+	RefundReceivePkscript                []byte
+	RefundSessionID                      string
+	RefundRecoveryID                     string
+	Preimage                             []byte
+	InterventionReason                   string
+	CreatedAtUnix                        int64
+	UpdatedAtUnix                        int64
+	CreditQuote                          []byte
+}
+
+// Admission never replaces a session already owned by another caller.
+func (q *Queries) InsertPaySwap(ctx context.Context, arg InsertPaySwapParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, InsertPaySwap,
+		arg.PaymentHash,
+		arg.Invoice,
+		arg.MaxFeeSat,
+		arg.State,
+		arg.AmountSat,
+		arg.FeeSat,
+		arg.ExpiryUnix,
+		arg.ClientPubkey,
+		arg.OperatorPubkey,
+		arg.ServerPubkey,
+		arg.SettlementType,
+		arg.RefundLocktime,
+		arg.UnilateralClaimDelay,
+		arg.UnilateralRefundDelay,
+		arg.UnilateralRefundWithoutReceiverDelay,
+		arg.VhtlcPkscript,
+		arg.VhtlcPolicyTemplate,
+		arg.VhtlcOutpoint,
+		arg.VhtlcAmount,
+		arg.FundingSessionID,
+		arg.RefundReceivePubkey,
+		arg.RefundReceivePkscript,
+		arg.RefundSessionID,
+		arg.RefundRecoveryID,
+		arg.Preimage,
+		arg.InterventionReason,
+		arg.CreatedAtUnix,
+		arg.UpdatedAtUnix,
+		arg.CreditQuote,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const InsertReceiveSwap = `-- name: InsertReceiveSwap :execrows
+INSERT INTO receive_swaps (
+    payment_hash, amount_sat, payer_fee_msat, state, invoice, preimage,
+    deadline_unix, client_pubkey, payment_addr, operator_pubkey,
+    swap_server_pubkey, settlement_type, refund_locktime,
+    unilateral_claim_delay, unilateral_refund_delay,
+    unilateral_refund_without_receiver_delay, vhtlc_pkscript,
+    vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount,
+    pending_htlc_ack_cursor, claim_receive_pubkey, claim_receive_pkscript,
+    claim_session_id, claim_recovery_id, intervention_reason,
+    requested_amount_sat, available_credit_sat, attached_credit_sat,
+    dust_limit_sat, created_at_unix, updated_at_unix
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+    $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
+    $29, $30, $31, $32
+)
+ON CONFLICT (payment_hash) DO NOTHING
+`
+
+type InsertReceiveSwapParams struct {
+	PaymentHash                          []byte
+	AmountSat                            int64
+	PayerFeeMsat                         int64
+	State                                string
+	Invoice                              string
+	Preimage                             []byte
+	DeadlineUnix                         int64
+	ClientPubkey                         []byte
+	PaymentAddr                          []byte
+	OperatorPubkey                       []byte
+	SwapServerPubkey                     []byte
+	SettlementType                       string
+	RefundLocktime                       int64
+	UnilateralClaimDelay                 int64
+	UnilateralRefundDelay                int64
+	UnilateralRefundWithoutReceiverDelay int64
+	VhtlcPkscript                        []byte
+	VhtlcPolicyTemplate                  []byte
+	VhtlcOutpoint                        string
+	VhtlcAmount                          int64
+	PendingHtlcAckCursor                 int64
+	ClaimReceivePubkey                   []byte
+	ClaimReceivePkscript                 []byte
+	ClaimSessionID                       string
+	ClaimRecoveryID                      string
+	InterventionReason                   string
+	RequestedAmountSat                   int64
+	AvailableCreditSat                   int64
+	AttachedCreditSat                    int64
+	DustLimitSat                         int64
+	CreatedAtUnix                        int64
+	UpdatedAtUnix                        int64
+}
+
+// Admission never replaces a session already owned by another caller.
+func (q *Queries) InsertReceiveSwap(ctx context.Context, arg InsertReceiveSwapParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, InsertReceiveSwap,
+		arg.PaymentHash,
+		arg.AmountSat,
+		arg.PayerFeeMsat,
+		arg.State,
+		arg.Invoice,
+		arg.Preimage,
+		arg.DeadlineUnix,
+		arg.ClientPubkey,
+		arg.PaymentAddr,
+		arg.OperatorPubkey,
+		arg.SwapServerPubkey,
+		arg.SettlementType,
+		arg.RefundLocktime,
+		arg.UnilateralClaimDelay,
+		arg.UnilateralRefundDelay,
+		arg.UnilateralRefundWithoutReceiverDelay,
+		arg.VhtlcPkscript,
+		arg.VhtlcPolicyTemplate,
+		arg.VhtlcOutpoint,
+		arg.VhtlcAmount,
+		arg.PendingHtlcAckCursor,
+		arg.ClaimReceivePubkey,
+		arg.ClaimReceivePkscript,
+		arg.ClaimSessionID,
+		arg.ClaimRecoveryID,
+		arg.InterventionReason,
+		arg.RequestedAmountSat,
+		arg.AvailableCreditSat,
+		arg.AttachedCreditSat,
+		arg.DustLimitSat,
+		arg.CreatedAtUnix,
+		arg.UpdatedAtUnix,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const ListPaySwaps = `-- name: ListPaySwaps :many
 SELECT payment_hash, invoice, max_fee_sat, state, amount_sat, fee_sat, expiry_unix, client_pubkey, operator_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, funding_session_id, refund_receive_pubkey, refund_receive_pkscript, refund_session_id, refund_recovery_id, preimage, intervention_reason, created_at_unix, updated_at_unix, settlement_type, credit_quote FROM pay_swaps
 ORDER BY created_at_unix ASC

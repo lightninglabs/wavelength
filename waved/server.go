@@ -1922,6 +1922,7 @@ func (s *Server) finishWalletStartup(ctx context.Context) error {
 			return err
 		}
 	}
+
 	if err := s.runWalletReadyHooks(ctx); err != nil {
 		return err
 	}
@@ -6129,9 +6130,9 @@ func (w *btcwUnrollWallet) ReleaseOutput(_ context.Context, id wallet.LockID,
 	return w.Wallet.BtcWallet.ReleaseOutput(wtxmgr.LockID(id), op)
 }
 
-// initUnrollSubsystem creates and wires the new unilateral-exit runtime:
-// shared tx confirmation, per-target unroll actors behind the registry, and
-// the VTXO critical-expiry handoff into that registry.
+// initUnrollSubsystem registers shared tx confirmation, the unroll registry,
+// and recovery services before mailbox ingress. Durable replay and the VTXO
+// expiry handoff wait until ingress can answer authenticated material lookups.
 //
 //nolint:contextcheck // unroll actors own lifecycle after registration
 func (s *Server) initUnrollSubsystem(ctx context.Context,
@@ -6310,6 +6311,22 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		return err
 	}
 
+	s.log.InfoS(ctx, "Unroll subsystem registered")
+
+	return nil
+}
+
+// restoreUnrollSubsystem drives durable jobs only after mailbox ingress is
+// available. Keep the policy-bearing recovery admission before generic orphan
+// reconciliation so a restarted vHTLC cannot inherit the standard exit leaf.
+func (s *Server) restoreUnrollSubsystem(ctx context.Context) error {
+	registry := s.unrollRegistry
+	recoverySvc := s.vhtlcRecovery
+	recoveryStore := s.vhtlcRecoveryStore
+	if registry == nil || recoverySvc == nil || recoveryStore == nil {
+		return fmt.Errorf("unroll subsystem was not registered")
+	}
+
 	// 3. Restore non-terminal jobs from durable state. A failure here
 	// is fatal at boot: any non-terminal record we silently drop is a
 	// VTXO that already transitioned to unilateral_exit but whose
@@ -6361,6 +6378,9 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	// reference to the lazy resolver; setting the target here wires
 	// the critical-expiry path through to the unroll manager.
 	if s.lazyChainResolver != nil {
+		// Set has no context argument; replay intentionally detaches
+		// buffered admissions, whose durable rows survive startup.
+		//nolint:contextcheck
 		s.lazyChainResolver.Set(chainResolverRef)
 	}
 
@@ -6392,7 +6412,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	// known-stranded VTXO. A policy mismatch is only non-fatal when a
 	// live child is confirmed to be driving the bound record.
 	if err := s.recoverOrphanedUnrollJobs(
-		ctx, vtxoStore, registry, recoveryStore,
+		ctx, s.vtxoStore, registry, recoveryStore,
 	); err != nil {
 		return fmt.Errorf("recover orphaned unroll jobs: %w", err)
 	}

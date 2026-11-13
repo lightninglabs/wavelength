@@ -5,8 +5,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/stretchr/testify/require"
 )
+
+// TestReceiveClaimRejectsTimestampDeadline also protects already-funded legacy
+// sessions: an old timestamp must not be mistaken for a future block height.
+func TestReceiveClaimRejectsTimestampDeadline(t *testing.T) {
+	t.Parallel()
+	h := newClaimSessionHarness(t, false)
+	h.session.vhtlcConfig.RefundLocktime = txscript.LockTimeThreshold
+	err := h.session.ensureReceiveClaimStillPossible(t.Context())
+	require.ErrorIs(t, err, errReceiveCooperativeDeadline)
+	require.NoError(t, h.session.claimFundedVHTLC(t.Context()))
+	require.Zero(t, h.daemon.sendCustomCalls)
+	require.Zero(t, h.daemon.escalateCalls)
+}
 
 // TestDecideRecoveryEscalationAppliesPolicy verifies the SDK does not turn a
 // cooperative retry failure into on-chain unroll until the configured policy
@@ -60,11 +74,9 @@ func TestDecideRecoveryEscalationRespectsDisabledAutoEscalate(t *testing.T) {
 	require.Equal(t, "auto_escalate_disabled", decision.Trigger)
 }
 
-// TestReceiveClaimRecoveryEscalatesOnGraceWithoutHeight verifies an unreadable
-// best block does not hold back the wall-clock grace policy: the refund
-// deadline is absolute and cannot be evaluated without a height, but the grace
-// period needs no chain state, so a receive claim recovery still escalates.
-func TestReceiveClaimRecoveryEscalatesOnGraceWithoutHeight(t *testing.T) {
+// TestReceiveClaimRecoveryDefersWithoutHeight keeps grace expiry from starting
+// an exit whose claim window cannot be evaluated against chain state.
+func TestReceiveClaimRecoveryDefersWithoutHeight(t *testing.T) {
 	t.Parallel()
 
 	h := newClaimSessionHarness(t, true)
@@ -74,13 +86,83 @@ func TestReceiveClaimRecoveryEscalatesOnGraceWithoutHeight(t *testing.T) {
 		MinRecoveryMarginBlocks:       12,
 	})
 
-	// The harness carries a realistic absolute refund locktime, so the
-	// deadline trigger has nothing to admit while no height is readable.
+	// Even disabled grace must not bypass the absolute claim deadline.
 	h.daemon.blockHeightErr = errors.New("block height unavailable")
 
 	err := h.session.maybeEscalateReceiveClaimRecovery(
 		t.Context(), errors.New("claim send failed"),
 	)
 	require.NoError(t, err)
-	require.Equal(t, 1, h.daemon.escalateCalls)
+	require.Zero(t, h.daemon.escalateCalls)
+}
+
+// TestReceiveClaimRecoveryRequiresViableWindow exercises the ancestry/CSV
+// boundary before either grace expiry or deadline pressure can spend fees.
+func TestReceiveClaimRecoveryRequiresViableWindow(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		height uint32
+		grace  time.Duration
+		want   int
+	}{
+		{
+			"grace elapsed",
+			100,
+			0,
+			1,
+		},
+		{
+			"before pressure",
+			203,
+			time.Hour,
+			0,
+		},
+		{
+			"start deadline margin",
+			204,
+			time.Hour,
+			1,
+		},
+		{
+			"last viable block",
+			215,
+			time.Hour,
+			1,
+		},
+		{
+			"ancestry plus csv boundary",
+			216,
+			0,
+			0,
+		},
+		{
+			"refund cutoff",
+			295,
+			0,
+			0,
+		},
+		{
+			"refund mature",
+			300,
+			0,
+			0,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newClaimSessionHarness(t, true)
+			h.daemon.blockHeight = test.height
+			h.session.client.SetRecoveryPolicy(RecoveryPolicy{
+				AutoEscalate:                  true,
+				CooperativeFailureGracePeriod: test.grace,
+			})
+			err := h.session.maybeEscalateReceiveClaimRecovery(
+				t.Context(), errors.New("cooperative claim "+
+					"failed"),
+			)
+			require.NoError(t, err)
+			require.Equal(t, test.want, h.daemon.escalateCalls)
+			require.Zero(t, h.daemon.sendCustomCalls)
+		})
+	}
 }

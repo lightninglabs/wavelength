@@ -41,13 +41,17 @@ type EsploraChainService struct {
 	// in its handleChainNotifications goroutine.
 	notifications chan interface{}
 
-	// mu protects watchedAddrs and bestBlock.
+	// mu protects watchedAddrs, watchedOutpoints and bestBlock.
 	mu sync.Mutex
 
-	// watchedAddrs holds addresses registered via NotifyReceived.
+	// watchedAddrs holds addresses registered via NotifyReceived or Rescan.
 	// These are used during block processing to detect relevant
 	// transactions for RelevantTx notifications.
 	watchedAddrs map[string]btcaddr.Address
+
+	// watchedOutpoints includes restored coins and outputs learned during
+	// historical or live delivery. Retain spent entries for reorg replay.
+	watchedOutpoints map[wire.OutPoint]struct{}
 
 	// bestBlock caches the current chain tip, updated on each
 	// processed TipBlock event.
@@ -104,6 +108,7 @@ func NewEsploraChainService(esplora *EsploraClient, tipPoller *TipPoller,
 		log:                   logger,
 		notifications:         make(chan interface{}, 100),
 		watchedAddrs:          make(map[string]btcaddr.Address),
+		watchedOutpoints:      make(map[wire.OutPoint]struct{}),
 		maxGapFillPerTipEvent: defaultMaxGapFillPerTipEvent,
 		quit:                  make(chan struct{}),
 	}
@@ -786,6 +791,21 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 
 	ctx := s.requestContext()
 
+	// Wallet restart supplies existing receive and change addresses through
+	// Rescan, not another NewAddress notification. Keep them in the live
+	// filter too, or future fee spends leave stale credits and miss change.
+	if err := s.NotifyReceived(addrs); err != nil {
+		return fmt.Errorf("register rescan addresses: %w", err)
+	}
+	s.mu.Lock()
+	if s.watchedOutpoints == nil {
+		s.watchedOutpoints = make(map[wire.OutPoint]struct{})
+	}
+	for outpoint := range outpoints {
+		s.watchedOutpoints[outpoint] = struct{}{}
+	}
+	s.mu.Unlock()
+
 	// Build the pkScript lookup from addresses.
 	addrScripts := make(map[string]struct{})
 	for _, addr := range addrs {
@@ -920,6 +940,7 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 			}
 
 			relevantTxs = append(relevantTxs, rec)
+			s.watchTransactionOutputs(tx, addrScripts)
 		}
 
 		// Queue FilteredBlockConnected so btcwallet processes
@@ -1123,6 +1144,9 @@ func (s *EsploraChainService) txMatchesRescan(tx *wire.MsgTx,
 // notifications.
 func (s *EsploraChainService) NotifyReceived(addrs []btcaddr.Address) error {
 	s.mu.Lock()
+	if s.watchedAddrs == nil {
+		s.watchedAddrs = make(map[string]btcaddr.Address)
+	}
 	for _, addr := range addrs {
 		s.watchedAddrs[addr.String()] = addr
 	}
@@ -1322,8 +1346,8 @@ func (s *EsploraChainService) processReorgEvent(ctx context.Context,
 // height between btcwallet's view and the chain tip: the next
 // TipBlock event re-walks whatever stretch is missing.
 //
-// The full block is only fetched when there is at least one watched
-// address; without watchers there can be no relevant transactions, so
+// The full block is only fetched when there is a watched address or
+// outpoint; without watchers there can be no relevant transactions, so
 // the EsploraClient's raw-block call (and the associated bandwidth)
 // is skipped.
 func (s *EsploraChainService) processTipEvent(ctx context.Context,
@@ -1465,13 +1489,16 @@ func (s *EsploraChainService) deliverHeight(ctx context.Context,
 		Time: blockTime,
 	}
 
-	// Filter block for relevant transactions if we have any
-	// watched addresses. This requires fetching the full block
+	// Filter for relevant transactions if we watch addresses or outpoints.
+	// This requires fetching the full block
 	// from Esplora; the EsploraClient memoizes the raw block by
 	// hash so concurrent consumers (e.g. boarding tx-proof
 	// builders) reuse the response.
 	var relevantTxs []*wtxmgr.TxRecord
-	if len(watchedScripts) > 0 {
+	s.mu.Lock()
+	hasOutpoints := len(s.watchedOutpoints) > 0
+	s.mu.Unlock()
+	if len(watchedScripts) > 0 || hasOutpoints {
 		block, err := s.esplora.GetRawBlock(ctx, hash)
 		if err != nil {
 			s.log.WarnS(ctx, "Chain service block fetch failed",
@@ -1530,7 +1557,7 @@ func (s *EsploraChainService) deliverHeight(ctx context.Context,
 }
 
 // filterBlockTxs checks all transactions in the block against the
-// watched pkScripts and returns TxRecords for matching transactions.
+// watched scripts and outpoints, returning TxRecords for matching transactions.
 func (s *EsploraChainService) filterBlockTxs(ctx context.Context,
 	block *wire.MsgBlock,
 	watchedScripts map[string]struct{},
@@ -1539,7 +1566,7 @@ func (s *EsploraChainService) filterBlockTxs(ctx context.Context,
 	var records []*wtxmgr.TxRecord
 
 	for _, tx := range block.Transactions {
-		if !s.txMatchesScripts(tx, watchedScripts) {
+		if !s.txMatchesLiveWatches(tx, watchedScripts) {
 			continue
 		}
 
@@ -1555,15 +1582,26 @@ func (s *EsploraChainService) filterBlockTxs(ctx context.Context,
 		)
 
 		records = append(records, rec)
+		s.watchTransactionOutputs(tx, watchedScripts)
 	}
 
 	return records
 }
 
-// txMatchesScripts checks whether any transaction output pays to one
-// of the watched pkScripts.
-func (s *EsploraChainService) txMatchesScripts(tx *wire.MsgTx,
+// txMatchesLiveWatches includes spends with no owned output, so btcwallet
+// removes the old credit even for a full external sweep or changeless CPFP.
+func (s *EsploraChainService) txMatchesLiveWatches(tx *wire.MsgTx,
 	watchedScripts map[string]struct{}) bool {
+
+	s.mu.Lock()
+	for _, input := range tx.TxIn {
+		if _, ok := s.watchedOutpoints[input.PreviousOutPoint]; ok {
+			s.mu.Unlock()
+
+			return true
+		}
+	}
+	s.mu.Unlock()
 
 	for _, txOut := range tx.TxOut {
 		if _, ok := watchedScripts[string(txOut.PkScript)]; ok {
@@ -1572,6 +1610,28 @@ func (s *EsploraChainService) txMatchesScripts(tx *wire.MsgTx,
 	}
 
 	return false
+}
+
+// watchTransactionOutputs learns only owned outputs, not every output of a
+// relevant transaction. Keep the set monotonic so reorgs and delivery retries
+// can still recognize a spend; a match is notification, not spend authority.
+func (s *EsploraChainService) watchTransactionOutputs(tx *wire.MsgTx,
+	watchedScripts map[string]struct{}) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.watchedOutpoints == nil {
+		s.watchedOutpoints = make(map[wire.OutPoint]struct{})
+	}
+	hash := tx.TxHash()
+	for index, output := range tx.TxOut {
+		if _, ok := watchedScripts[string(output.PkScript)]; !ok {
+			continue
+		}
+		s.watchedOutpoints[wire.OutPoint{
+			Hash: hash, Index: uint32(index),
+		}] = struct{}{}
+	}
 }
 
 // Compile-time check that EsploraChainService implements

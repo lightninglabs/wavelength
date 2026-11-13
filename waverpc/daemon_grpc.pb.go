@@ -30,7 +30,9 @@ const (
 	DaemonService_ReceiveAuthKey_FullMethodName                                 = "/waverpc.DaemonService/ReceiveAuthKey"
 	DaemonService_SignReceiveAuthMessage_FullMethodName                         = "/waverpc.DaemonService/SignReceiveAuthMessage"
 	DaemonService_SignReceiveAuthMessageCompact_FullMethodName                  = "/waverpc.DaemonService/SignReceiveAuthMessageCompact"
+	DaemonService_SignIdentitySchnorr_FullMethodName                            = "/waverpc.DaemonService/SignIdentitySchnorr"
 	DaemonService_ReceiveAuthECDH_FullMethodName                                = "/waverpc.DaemonService/ReceiveAuthECDH"
+	DaemonService_DeriveSwapPreimage_FullMethodName                             = "/waverpc.DaemonService/DeriveSwapPreimage"
 	DaemonService_GetIndexedVTXOByPkScript_FullMethodName                       = "/waverpc.DaemonService/GetIndexedVTXOByPkScript"
 	DaemonService_GetVTXOExpiryInfo_FullMethodName                              = "/waverpc.DaemonService/GetVTXOExpiryInfo"
 	DaemonService_GetIndexedOORSessionByTxid_FullMethodName                     = "/waverpc.DaemonService/GetIndexedOORSessionByTxid"
@@ -117,9 +119,16 @@ type DaemonServiceClient interface {
 	// SignReceiveAuthMessageCompact signs one message with the
 	// per-payment receive-auth key and returns a compact signature.
 	SignReceiveAuthMessageCompact(ctx context.Context, in *SignReceiveAuthMessageCompactRequest, opts ...grpc.CallOption) (*SignReceiveAuthMessageCompactResponse, error)
+	// SignIdentitySchnorr signs recovery owner proofs with the daemon identity
+	// key. Only the wavelength-swap-recovery-owner-v1 tag is accepted.
+	SignIdentitySchnorr(ctx context.Context, in *SignIdentitySchnorrRequest, opts ...grpc.CallOption) (*SignIdentitySchnorrResponse, error)
 	// ReceiveAuthECDH derives one Sphinx shared secret with the
 	// per-payment receive-auth key.
 	ReceiveAuthECDH(ctx context.Context, in *ReceiveAuthECDHRequest, opts ...grpc.CallOption) (*ReceiveAuthECDHResponse, error)
+	// DeriveSwapPreimage derives a receive preimage from public recovery
+	// parameters using the active wallet's seed. In lnd mode the same lnd
+	// wallet seed must be restored; private keys never leave that wallet.
+	DeriveSwapPreimage(ctx context.Context, in *DeriveSwapPreimageRequest, opts ...grpc.CallOption) (*DeriveSwapPreimageResponse, error)
 	// GetIndexedVTXOByPkScript queries the authoritative indexer for the
 	// first VTXO matching the given script and status filter.
 	GetIndexedVTXOByPkScript(ctx context.Context, in *GetIndexedVTXOByPkScriptRequest, opts ...grpc.CallOption) (*GetIndexedVTXOByPkScriptResponse, error)
@@ -409,10 +418,30 @@ func (c *daemonServiceClient) SignReceiveAuthMessageCompact(ctx context.Context,
 	return out, nil
 }
 
+func (c *daemonServiceClient) SignIdentitySchnorr(ctx context.Context, in *SignIdentitySchnorrRequest, opts ...grpc.CallOption) (*SignIdentitySchnorrResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SignIdentitySchnorrResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SignIdentitySchnorr_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) ReceiveAuthECDH(ctx context.Context, in *ReceiveAuthECDHRequest, opts ...grpc.CallOption) (*ReceiveAuthECDHResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ReceiveAuthECDHResponse)
 	err := c.cc.Invoke(ctx, DaemonService_ReceiveAuthECDH_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) DeriveSwapPreimage(ctx context.Context, in *DeriveSwapPreimageRequest, opts ...grpc.CallOption) (*DeriveSwapPreimageResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeriveSwapPreimageResponse)
+	err := c.cc.Invoke(ctx, DaemonService_DeriveSwapPreimage_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -863,9 +892,16 @@ type DaemonServiceServer interface {
 	// SignReceiveAuthMessageCompact signs one message with the
 	// per-payment receive-auth key and returns a compact signature.
 	SignReceiveAuthMessageCompact(context.Context, *SignReceiveAuthMessageCompactRequest) (*SignReceiveAuthMessageCompactResponse, error)
+	// SignIdentitySchnorr signs recovery owner proofs with the daemon identity
+	// key. Only the wavelength-swap-recovery-owner-v1 tag is accepted.
+	SignIdentitySchnorr(context.Context, *SignIdentitySchnorrRequest) (*SignIdentitySchnorrResponse, error)
 	// ReceiveAuthECDH derives one Sphinx shared secret with the
 	// per-payment receive-auth key.
 	ReceiveAuthECDH(context.Context, *ReceiveAuthECDHRequest) (*ReceiveAuthECDHResponse, error)
+	// DeriveSwapPreimage derives a receive preimage from public recovery
+	// parameters using the active wallet's seed. In lnd mode the same lnd
+	// wallet seed must be restored; private keys never leave that wallet.
+	DeriveSwapPreimage(context.Context, *DeriveSwapPreimageRequest) (*DeriveSwapPreimageResponse, error)
 	// GetIndexedVTXOByPkScript queries the authoritative indexer for the
 	// first VTXO matching the given script and status filter.
 	GetIndexedVTXOByPkScript(context.Context, *GetIndexedVTXOByPkScriptRequest) (*GetIndexedVTXOByPkScriptResponse, error)
@@ -1078,8 +1114,14 @@ func (UnimplementedDaemonServiceServer) SignReceiveAuthMessage(context.Context, 
 func (UnimplementedDaemonServiceServer) SignReceiveAuthMessageCompact(context.Context, *SignReceiveAuthMessageCompactRequest) (*SignReceiveAuthMessageCompactResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SignReceiveAuthMessageCompact not implemented")
 }
+func (UnimplementedDaemonServiceServer) SignIdentitySchnorr(context.Context, *SignIdentitySchnorrRequest) (*SignIdentitySchnorrResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SignIdentitySchnorr not implemented")
+}
 func (UnimplementedDaemonServiceServer) ReceiveAuthECDH(context.Context, *ReceiveAuthECDHRequest) (*ReceiveAuthECDHResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ReceiveAuthECDH not implemented")
+}
+func (UnimplementedDaemonServiceServer) DeriveSwapPreimage(context.Context, *DeriveSwapPreimageRequest) (*DeriveSwapPreimageResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeriveSwapPreimage not implemented")
 }
 func (UnimplementedDaemonServiceServer) GetIndexedVTXOByPkScript(context.Context, *GetIndexedVTXOByPkScriptRequest) (*GetIndexedVTXOByPkScriptResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetIndexedVTXOByPkScript not implemented")
@@ -1417,6 +1459,24 @@ func _DaemonService_SignReceiveAuthMessageCompact_Handler(srv interface{}, ctx c
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_SignIdentitySchnorr_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SignIdentitySchnorrRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SignIdentitySchnorr(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SignIdentitySchnorr_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SignIdentitySchnorr(ctx, req.(*SignIdentitySchnorrRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_ReceiveAuthECDH_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ReceiveAuthECDHRequest)
 	if err := dec(in); err != nil {
@@ -1431,6 +1491,24 @@ func _DaemonService_ReceiveAuthECDH_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).ReceiveAuthECDH(ctx, req.(*ReceiveAuthECDHRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_DeriveSwapPreimage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeriveSwapPreimageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).DeriveSwapPreimage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_DeriveSwapPreimage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).DeriveSwapPreimage(ctx, req.(*DeriveSwapPreimageRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2182,8 +2260,16 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _DaemonService_SignReceiveAuthMessageCompact_Handler,
 		},
 		{
+			MethodName: "SignIdentitySchnorr",
+			Handler:    _DaemonService_SignIdentitySchnorr_Handler,
+		},
+		{
 			MethodName: "ReceiveAuthECDH",
 			Handler:    _DaemonService_ReceiveAuthECDH_Handler,
+		},
+		{
+			MethodName: "DeriveSwapPreimage",
+			Handler:    _DaemonService_DeriveSwapPreimage_Handler,
 		},
 		{
 			MethodName: "GetIndexedVTXOByPkScript",

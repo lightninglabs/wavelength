@@ -15,11 +15,13 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/swaprecovery"
 	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -1509,6 +1511,12 @@ type testSwapServerConn struct {
 	submitForfeitCalls       int
 	lastSubmitForfeitPayload *ForfeitSignaturePayload
 	lastSubmitForfeitSig     *ForfeitParticipantSignature
+
+	recoverableRows      []*swaprpc.RecoverableSwap
+	recoverableErr       error
+	lastOwnerProof       *swaprpc.SwapOwnerProof
+	lastRecoveryParams   []byte
+	lastRecoverableProof *swaprpc.SwapOwnerProof
 }
 
 type testIncomingEventReceiver struct {
@@ -1556,11 +1564,14 @@ func (r *testIncomingEventReceiver) WaitIncomingVHTLC(context.Context,
 // a single path wrapping the lone configured hint.
 func (c *testSwapServerConn) RequestChannelID(_ context.Context,
 	vhtlcPubkey *btcec.PublicKey, _ lntypes.Hash, amountSat btcutil.Amount,
-	_ uint32, supportsInArkCredit bool) (*OutSwapQuote, error) {
+	_ uint32, supportsInArkCredit bool, ownerProof *swaprpc.SwapOwnerProof,
+	preimageRecoveryParams []byte) (*OutSwapQuote, error) {
 
 	c.lastVhtlcPubkey = vhtlcPubkey
 	c.lastAmountSat = amountSat
 	c.lastSupportsInArkCredit = supportsInArkCredit
+	c.lastOwnerProof = ownerProof
+	c.lastRecoveryParams = append([]byte(nil), preimageRecoveryParams...)
 
 	hintPaths := c.hintPaths
 	if hintPaths == nil {
@@ -1647,9 +1658,23 @@ func (c *testSwapServerConn) AcknowledgeOutSwapHTLC(_ context.Context,
 
 // CreateInSwap is unused in these tests.
 func (c *testSwapServerConn) CreateInSwap(context.Context, string, uint64,
-	*btcec.PublicKey) (*InSwapConfig, error) {
+	*btcec.PublicKey, *swaprpc.SwapOwnerProof) (*InSwapConfig, error) {
 
 	return nil, nil
+}
+
+// ListRecoverableSwaps returns the configured recoverable swap rows.
+func (c *testSwapServerConn) ListRecoverableSwaps(_ context.Context,
+	proof *swaprpc.SwapOwnerProof) ([]*swaprpc.RecoverableSwap, error) {
+
+	c.lastRecoverableProof = proof
+	if c.recoverableErr != nil {
+		return nil, c.recoverableErr
+	}
+
+	return append(
+		[]*swaprpc.RecoverableSwap(nil), c.recoverableRows...,
+	), nil
 }
 
 // QuoteInSwap is unused in these tests.
@@ -1870,8 +1895,8 @@ func TestReceiveSessionRetriesAdmissionHeightLookup(t *testing.T) {
 }
 
 // TestReceiveSessionUsesFullClaimWindowOnlyAtAdmission verifies an accepted
-// receive keeps pursuing its cooperative claim after the unilateral recovery
-// budget closes, until the refund path itself is imminent.
+// receive keeps its full admission budget separate from the narrower
+// cooperative-claim cutoff, without expiring a funded recovery obligation.
 func TestReceiveSessionUsesFullClaimWindowOnlyAtAdmission(t *testing.T) {
 	t.Parallel()
 
@@ -1962,8 +1987,8 @@ func TestReceiveSessionUsesFullClaimWindowOnlyAtAdmission(t *testing.T) {
 
 		daemon.blockHeight = 328
 		err = session.ensureReceiveClaimStillPossible(t.Context())
-		require.ErrorIs(t, err, errSwapExpired)
-		require.Equal(t, ReceiveStateExpired, session.State())
+		require.ErrorIs(t, err, errReceiveCooperativeDeadline)
+		require.Equal(t, ReceiveStateHTLCEventAccepted, session.State())
 	})
 }
 
@@ -2534,6 +2559,61 @@ type testDaemonConn struct {
 	lastAckSignHash   lntypes.Hash
 	lastAckSignAmount uint64
 	lastAckSignScript []byte
+
+	identityPriv        *btcec.PrivateKey
+	listRecoveriesResp  *waverpc.ListVHTLCRecoveriesResponse
+	listRecoveriesErr   error
+	identitySignature   []byte
+	identitySignErr     error
+	listRecoveriesCalls int
+	armRecoveries       []*waverpc.ArmVHTLCRecoveryRequest
+	lastListRecoveries  *waverpc.ListVHTLCRecoveriesRequest
+}
+
+// DeriveSwapPreimage models deterministic wallet derivation with a fixed test
+// ECDH base. The dedicated daemon tests exercise actual backend key operations.
+func (d *testDaemonConn) DeriveSwapPreimage(_ context.Context, params []byte) (
+	lntypes.Preimage, error) {
+
+	base := sha256.Sum256(d.receiveAuthKey)
+	if d.identityPriv != nil {
+		base = sha256.Sum256(d.identityPriv.Serialize())
+	}
+
+	return swaprecovery.Derive(
+		params, *chaincfg.RegressionNetParams.GenesisHash, base,
+	)
+}
+
+// SignIdentitySchnorr signs a tagged message with deterministic test identity
+// material.
+func (d *testDaemonConn) SignIdentitySchnorr(_ context.Context, message,
+	tag []byte) ([]byte, error) {
+
+	if d.identitySignErr != nil {
+		return nil, d.identitySignErr
+	}
+	if d.identitySignature != nil {
+		return append([]byte(nil), d.identitySignature...), nil
+	}
+
+	privKey := d.identityPriv
+	if privKey == nil {
+		seed := d.receiveAuthKey
+		if len(seed) == 0 {
+			seed = bytes.Repeat([]byte{1}, 32)
+		}
+
+		privKey, _ = btcec.PrivKeyFromBytes(seed)
+	}
+
+	digest := chainhash.TaggedHash(tag, message)
+	sig, err := schnorr.Sign(privKey, digest[:])
+	if err != nil {
+		return nil, err
+	}
+
+	return sig.Serialize(), nil
 }
 
 // BlockHeight returns the configured best block height.
@@ -2656,6 +2736,7 @@ func (d *testDaemonConn) ArmVHTLCRecovery(_ context.Context,
 
 	d.armRecoveryCalls++
 	d.lastArmRecovery = req
+	d.armRecoveries = append(d.armRecoveries, req)
 	if d.armRecoveryErr != nil {
 		return nil, d.armRecoveryErr
 	}
@@ -2729,6 +2810,17 @@ func (d *testDaemonConn) GetVHTLCRecoveryStatus(_ context.Context,
 	if d.statusErr != nil {
 		return nil, d.statusErr
 	}
+	if req.GetRequestId() != "" {
+		for _, existing := range d.listRecoveriesResp.GetStatuses() {
+			if existing.GetRequestId() == req.GetRequestId() {
+				return &waverpc.GetVHTLCRecoveryStatusResponse{
+					Found: true, Status: existing,
+				}, nil
+			}
+		}
+
+		return &waverpc.GetVHTLCRecoveryStatusResponse{}, nil
+	}
 	if d.statusResp != nil {
 		return d.statusResp, nil
 	}
@@ -2775,6 +2867,23 @@ func (d *testDaemonConn) SignVTXOForfeit(_ context.Context,
 		Pubkey:    []byte("participant-pubkey"),
 		Signature: []byte("participant-signature"),
 	}, nil
+}
+
+// ListVHTLCRecoveries records the daemon recovery list request.
+func (d *testDaemonConn) ListVHTLCRecoveries(_ context.Context,
+	req *waverpc.ListVHTLCRecoveriesRequest) (
+	*waverpc.ListVHTLCRecoveriesResponse, error) {
+
+	d.listRecoveriesCalls++
+	d.lastListRecoveries = req
+	if d.listRecoveriesErr != nil {
+		return nil, d.listRecoveriesErr
+	}
+	if d.listRecoveriesResp != nil {
+		return d.listRecoveriesResp, nil
+	}
+
+	return &waverpc.ListVHTLCRecoveriesResponse{}, nil
 }
 
 // PrepareOORWithCustomInputs records the requested package and returns
@@ -4784,9 +4893,9 @@ func TestReceiveSessionFreshClaimBoundsSpentLookupGRPCDeadline(t *testing.T) {
 	require.Equal(t, 1, daemonConn.spentLookupCalls)
 }
 
-// TestReceiveSessionClaimRejectsAfterRefundLocktime asserts a late manual
-// claim does not race the swap server's refund once the refund path is mature.
-func TestReceiveSessionClaimRejectsAfterRefundLocktime(t *testing.T) {
+// TestReceiveSessionWithholdsLateCooperativePreimage keeps a live funded
+// hashlock pending without disclosing its preimage to a competing refund.
+func TestReceiveSessionWithholdsLateCooperativePreimage(t *testing.T) {
 	t.Parallel()
 
 	senderPriv, err := btcec.NewPrivateKey()
@@ -4825,6 +4934,11 @@ func TestReceiveSessionClaimRejectsAfterRefundLocktime(t *testing.T) {
 		blockHeight: 144,
 		identityKey: receiverPriv.PubKey(),
 		operatorKey: operatorPriv.PubKey(),
+		oorSession:  completedClaimOOR(),
+		vhtlc: &VTXOInfo{
+			Outpoint:  "funding:0",
+			AmountSat: 42_000,
+		},
 		receiveInfo: &ReceiveInfo{
 			PkScript: []byte{
 				0x51,
@@ -4858,10 +4972,13 @@ func TestReceiveSessionClaimRejectsAfterRefundLocktime(t *testing.T) {
 		vhtlcAmount:   42_000,
 	}
 
-	_, err = session.Claim(t.Context(), "funding:0", 42_000)
-	require.ErrorIs(t, err, errSwapExpired)
-	require.Equal(t, ReceiveStateExpired, session.State())
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err = session.Claim(ctx, "funding:0", 42_000)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Equal(t, ReceiveStateClaimInitiated, session.State())
 	require.Zero(t, daemonConn.sendCustomCalls)
+	require.Zero(t, daemonConn.escalateCalls)
 }
 
 // TestReceiveSessionClaimRecoveryCompletionWinsAfterRefundLocktime asserts

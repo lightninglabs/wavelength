@@ -411,6 +411,19 @@ func (s *fakeStore) GetRecovery(_ context.Context, id string) (
 	return cloneRecoveryJob(job), nil
 }
 
+// GetRecoveryByRequestID models the unique SQL idempotency index.
+func (s *fakeStore) GetRecoveryByRequestID(_ context.Context,
+	requestID string) (*vhtlcrecovery.RecoveryJob, error) {
+
+	for _, job := range s.jobs {
+		if job.RequestID == requestID {
+			return cloneRecoveryJob(job), nil
+		}
+	}
+
+	return nil, fmt.Errorf("missing request %s", requestID)
+}
+
 // ListNonTerminalRecoveries implements Store by returning every non-terminal
 // in-memory row.
 func (s *fakeStore) ListNonTerminalRecoveries(context.Context) (

@@ -203,6 +203,35 @@ func (s *VHTLCRecoveryStoreDB) GetRecovery(ctx context.Context, id string) (
 	return job, nil
 }
 
+// GetRecoveryByRequestID uses the unique arm idempotency index, including
+// terminal jobs so restore cannot allocate a conflicting second destination.
+func (s *VHTLCRecoveryStoreDB) GetRecoveryByRequestID(ctx context.Context,
+	requestID string) (*vhtlcrecovery.RecoveryJob, error) {
+
+	var job *vhtlcrecovery.RecoveryJob
+	err := s.ExecTx(ctx, ReadTxOption(), func(q *sqlc.Queries) error {
+		row, err := q.GetVHTLCRecoveryJobByRequestID(ctx, requestID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrVHTLCRecoveryJobNotFound
+		}
+		if err != nil {
+			return err
+		}
+		record, err := vhtlcRecoveryJobFromRow(row)
+		if err != nil {
+			return err
+		}
+		job = &record
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return job, nil
+}
+
 // ListNonTerminalRecoveries loads every active recovery job.
 func (s *VHTLCRecoveryStoreDB) ListNonTerminalRecoveries(ctx context.Context) (
 	[]vhtlcrecovery.RecoveryJob, error) {

@@ -274,6 +274,11 @@ type swapRuntimeClient interface {
 	// ListSwapSummaries reads durable swap summaries, optionally filtering
 	// to swaps that sdk/swaps still considers pending.
 	ListSwapSummaries(context.Context, bool) ([]swaps.SwapSummary, error)
+
+	// RecoverSwapserverVHTLCs discovers swapserver-owned recoverable vHTLC
+	// rows and arms daemon-owned recovery jobs.
+	RecoverSwapserverVHTLCs(context.Context) (
+		*swaps.SwapserverRecoveryResult, error)
 }
 
 // paySwapSession is the subset of a pay swap FSM that the daemon executor
@@ -448,6 +453,29 @@ func (s *swapClientService) ResumeReceive(ctx context.Context,
 	s.startReceiveWorker(hash)
 
 	return nil
+}
+
+// RecoverVHTLCs discovers swapserver-owned recoverable vHTLC rows and arms
+// daemon-owned recovery jobs. The method satisfies waved.SwapBackend.
+func (s *swapClientService) RecoverVHTLCs(ctx context.Context) (
+	*waved.SwapRecoveryResult, error) {
+
+	result, err := s.client.RecoverSwapserverVHTLCs(ctx)
+	// Persisted recovery sessions must outlive wallet creation. Admission
+	// deduplicates jobs already owned by live workers, and startup performs
+	// the same scan after a crash. Never hand request cancellation to them.
+	go s.resumePending(s.rootCtx)
+	if result == nil {
+		return &waved.SwapRecoveryResult{}, err
+	}
+
+	// An individual row can fail after other recovery jobs were armed. Keep
+	// their counters while preserving the error for the restore warning.
+	return &waved.SwapRecoveryResult{
+		RecoveredVHTLCs:       result.RecoveredVHTLCs,
+		RecoveredVHTLCRefunds: result.RecoveredVHTLCRefunds,
+		RecoveredVHTLCClaims:  result.RecoveredVHTLCClaims,
+	}, err
 }
 
 // RegisterGateway installs the optional SwapClientService handlers on the
@@ -883,6 +911,13 @@ func (a *swapClientAdapter) ResumeReceiveViaLightning(ctx context.Context,
 	}
 
 	return &receiveSessionAdapter{session: session}, nil
+}
+
+// RecoverSwapserverVHTLCs delegates seed-restore vHTLC recovery to sdk/swaps.
+func (a *swapClientAdapter) RecoverSwapserverVHTLCs(ctx context.Context) (
+	*swaps.SwapserverRecoveryResult, error) {
+
+	return a.client.RecoverSwapserverVHTLCs(ctx)
 }
 
 // GetSwapSummary forwards direct payment-hash lookups to sdk/swaps so the

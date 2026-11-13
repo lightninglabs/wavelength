@@ -253,8 +253,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 - Actor startup order in `startWalletDependentActors`: VTXO manager, then
   round actor, the unroll subsystem (`initUnrollSubsystem`), then the OOR actor
   (`initOORActor`). The VTXO manager is constructed with a
-  `vtxo.LazyChainResolver` placeholder that `initUnrollSubsystem` fills in
-  later; anything needing that seam must run after `initUnrollSubsystem`.
+  `vtxo.LazyChainResolver` placeholder. Register all dispatch targets before
+  starting mailbox ingress. After ingress, wallet services, and authenticated
+  terms are ready, `restoreUnrollSubsystem` replays durable jobs and fills the
+  resolver before wallet-ready hooks or daemon readiness. Restoring earlier
+  can deadlock on authenticated indexer responses that ingress cannot receive.
   Because recovered VTXO actors can emit automatic refresh work as the manager
   starts, production enables `DeferAutomaticRefreshUntilRoundReady` on the
   manager. The post-round-start `ReconcileExpiryRequest` opens that gate before
@@ -316,7 +319,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   Indexed recovery skips bad
   entries so later VTXOs are examined, then returns the first authentication
   error so a partial scan is never reported as complete.
-- `initUnrollSubsystem` boot ordering is policy-preserving.
+- `restoreUnrollSubsystem` boot ordering is policy-preserving.
   `recoverySvc.RestoreNonTerminal` (in-flight vHTLC recovery jobs, each
   carrying its durable exit policy) runs **before** the chain resolver is
   `Set()`; the force-exit admissions it drives through the VTXO manager are
