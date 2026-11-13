@@ -13,12 +13,13 @@ type RelayDedup struct {
 }
 
 type RelayFeedBinding struct {
-	SourceID       string
-	SubscriptionID string
-	FeedToken      []byte
-	EventClasses   int32
-	ExpiresAt      int64
-	LastGeneration int64
+	SourceID        string
+	SubscriptionID  string
+	FeedToken       []byte
+	EventClasses    int32
+	ExpiresAt       int64
+	LastGeneration  int64
+	ScheduledCutoff int64
 }
 
 type RelayInstallation struct {
@@ -36,6 +37,8 @@ type RelayInstallation struct {
 	Deleted            bool
 	DeliveryClaimToken string
 	DeliveryLeaseUntil int64
+	NextRoundAt        int64
+	NextScheduleAt     int64
 }
 
 type RelayJob struct {

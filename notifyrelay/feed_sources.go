@@ -74,7 +74,7 @@ type FeedBindingRequest struct {
 // validSourceConfig rejects ambiguous connection/identity policy at startup.
 func validSourceConfig(c SourceConfig) (*btcec.PublicKey, error) {
 	if !validIdentifier(c.ID, 100) || !validIdentifier(c.Role, 100) ||
-		c.EventClasses == 0 || c.EventClasses&^uint32(3) != 0 {
+		c.EventClasses == 0 || c.EventClasses&^uint32(7) != 0 {
 		return nil, errors.New("invalid feed source policy")
 	}
 	host, port, err := net.SplitHostPort(c.Endpoint)

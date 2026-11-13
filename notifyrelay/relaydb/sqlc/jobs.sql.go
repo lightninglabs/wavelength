@@ -261,9 +261,12 @@ WHERE j.next_at <= $1 AND j.lease_until <= $1
     AND NOT i.disabled AND NOT i.deleted
     AND i.delivery_lease_until <= $1
     AND (j.scope != 'alert' OR s.alerts_enabled)
-    AND CASE WHEN j.scope = 'wake' THEN i.next_wake_at ELSE i.next_alert_at END
+    AND CASE j.scope WHEN 'wake' THEN i.next_wake_at
+        WHEN 'round' THEN i.next_round_at
+        WHEN 'schedule' THEN i.next_schedule_at ELSE i.next_alert_at END
         <= $1
-ORDER BY j.next_at, j.id LIMIT $3
+ORDER BY CASE WHEN j.scope = 'round' THEN 0 ELSE 1 END,
+    j.next_at, j.id LIMIT $3
 `
 
 type ListDueJobsParams struct {
@@ -389,4 +392,20 @@ func (q *Queries) ReleaseInstallation(ctx context.Context, arg ReleaseInstallati
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const setRoundJobWindow = `-- name: SetRoundJobWindow :exec
+UPDATE relay_jobs SET next_at = $2, expires_at = $3
+WHERE id = $1 AND lease_until = 0
+`
+
+type SetRoundJobWindowParams struct {
+	ID        string
+	NextAt    int64
+	ExpiresAt int64
+}
+
+func (q *Queries) SetRoundJobWindow(ctx context.Context, arg SetRoundJobWindowParams) error {
+	_, err := q.db.ExecContext(ctx, setRoundJobWindow, arg.ID, arg.NextAt, arg.ExpiresAt)
+	return err
 }

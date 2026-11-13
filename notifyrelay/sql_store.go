@@ -96,7 +96,9 @@ func loadSQLInstallation(ctx context.Context, q *sqlc.Queries,
 		TokenRevision: uint64(row.TokenRevision),
 		DeviceToken:   row.DeviceToken, TokenUpdated: row.TokenUpdated,
 		NextWakeAt: row.NextWakeAt, NextAlertAt: row.NextAlertAt,
-		Disabled: row.Disabled, Deleted: row.Deleted,
+		NextRoundAt:    row.NextRoundAt,
+		NextScheduleAt: row.NextScheduleAt,
+		Disabled:       row.Disabled, Deleted: row.Deleted,
 	}, nil
 }
 
@@ -118,7 +120,9 @@ func saveSQLInstallation(ctx context.Context, q *sqlc.Queries,
 		TokenRevision: int64(value.TokenRevision),
 		TokenUpdated:  value.TokenUpdated,
 		NextWakeAt:    value.NextWakeAt, NextAlertAt: value.NextAlertAt,
-		Disabled: value.Disabled, Deleted: value.Deleted,
+		NextRoundAt:    value.NextRoundAt,
+		NextScheduleAt: value.NextScheduleAt,
+		Disabled:       value.Disabled, Deleted: value.Deleted,
 	})
 	if err != nil {
 		return err

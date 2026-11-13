@@ -209,3 +209,22 @@ use sources whose maximum Pull wait permits four seconds; a source with a
 shorter configured cap will increase that request rate. This pacing assumes
 the authenticated producer honors the requested long-wait. Producer-side
 polling and provider acceptance latency are separate measurements.
+
+## Scheduled and urgent round jobs
+
+Schema 3 adds independent device clocks for scheduled and urgent round wakes.
+Its two leaf-table replacements copy existing feed bindings and jobs before
+replacing their class/scope constraints. Existing claims, generations, expiry
+and assertion state are preserved. This is a forward-fix rollback boundary.
+
+Only explicit class-4 source policy and wallet consent permit round jobs.
+Scheduled discovery stays inside the joined source loop; it has a two-second
+RPC budget and a separate thirty-second refresh cadence. Its failure cannot
+prevent a source pull or pending ACK. A bounded SQL page commits each route's
+cutoff marker with its future-dated job. A revoked local subscription removes
+its binding and job through the existing foreign-key ownership.
+
+Internal `round` and `schedule` lanes become the existing silent `wake` payload
+at provider construction. Neither lane can create an alert or choose a device.
+The claim-fenced provider result advances only that lane's installation clock.
+Urgent retry delay is capped at five seconds and job expiry remains authoritative.

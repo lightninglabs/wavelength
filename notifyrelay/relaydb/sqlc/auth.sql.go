@@ -98,7 +98,7 @@ func (q *Queries) GetConsumedChallenge(ctx context.Context, id string) (int64, e
 }
 
 const getInstallation = `-- name: GetInstallation :one
-SELECT id, policy, public_key, attest_receipt, assertion_counter, device_token, token_revision, token_updated, next_wake_at, next_alert_at, disabled, deleted, delivery_claim_token, delivery_lease_until FROM relay_installations WHERE id = $1
+SELECT id, policy, public_key, attest_receipt, assertion_counter, device_token, token_revision, token_updated, next_wake_at, next_alert_at, disabled, deleted, delivery_claim_token, delivery_lease_until, next_round_at, next_schedule_at FROM relay_installations WHERE id = $1
 `
 
 func (q *Queries) GetInstallation(ctx context.Context, id string) (RelayInstallation, error) {
@@ -119,6 +119,8 @@ func (q *Queries) GetInstallation(ctx context.Context, id string) (RelayInstalla
 		&i.Deleted,
 		&i.DeliveryClaimToken,
 		&i.DeliveryLeaseUntil,
+		&i.NextRoundAt,
+		&i.NextScheduleAt,
 	)
 	return i, err
 }
@@ -332,8 +334,8 @@ func (q *Queries) PruneConsumedChallenges(ctx context.Context, arg PruneConsumed
 const putInstallation = `-- name: PutInstallation :execrows
 INSERT INTO relay_installations (
     id, policy, public_key, attest_receipt, assertion_counter, device_token,
-    token_revision, token_updated, next_wake_at, next_alert_at, disabled, deleted
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    token_revision, token_updated, next_wake_at, next_alert_at, disabled, deleted, next_round_at, next_schedule_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 ON CONFLICT (id) DO UPDATE SET
     policy = excluded.policy, public_key = excluded.public_key,
     attest_receipt = excluded.attest_receipt,
@@ -341,6 +343,8 @@ ON CONFLICT (id) DO UPDATE SET
     device_token = excluded.device_token, token_revision = excluded.token_revision,
     token_updated = excluded.token_updated, next_wake_at = excluded.next_wake_at,
     next_alert_at = excluded.next_alert_at, disabled = excluded.disabled,
+    next_round_at = excluded.next_round_at,
+    next_schedule_at = excluded.next_schedule_at,
     deleted = excluded.deleted
 WHERE excluded.assertion_counter >= relay_installations.assertion_counter
     AND excluded.token_revision >= relay_installations.token_revision
@@ -359,6 +363,8 @@ type PutInstallationParams struct {
 	NextAlertAt      int64
 	Disabled         bool
 	Deleted          bool
+	NextRoundAt      int64
+	NextScheduleAt   int64
 }
 
 func (q *Queries) PutInstallation(ctx context.Context, arg PutInstallationParams) (int64, error) {
@@ -375,6 +381,8 @@ func (q *Queries) PutInstallation(ctx context.Context, arg PutInstallationParams
 		arg.NextAlertAt,
 		arg.Disabled,
 		arg.Deleted,
+		arg.NextRoundAt,
+		arg.NextScheduleAt,
 	)
 	if err != nil {
 		return 0, err

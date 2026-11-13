@@ -506,3 +506,37 @@ func (f termsSourceFunc) FreshOperatorTerms(ctx context.Context) (
 
 	return f(ctx)
 }
+
+// TestHostScheduledRegistrationBudget preserves the slot and clock margin
+// while leaving a short host window enough time to build and submit its join.
+func TestHostScheduledRegistrationBudget(t *testing.T) {
+	schedule := newTestSchedule(t)
+	cutoff := testAnchor.Add(time.Hour)
+	opens := cutoff.Add(-time.Minute)
+	for range 100 {
+		now := opens
+		published := publishedTestSchedule(t, schedule, cutoff)
+		env := &ClientEnvironment{
+			OperatorTerms: &types.OperatorTerms{
+				BatchSchedule: fn.Some(published),
+			},
+			Now:                    func() time.Time { return now },
+			RegistrationWakeJitter: time.Second,
+		}
+		s := &PendingRoundAssembly{}
+		tr, err := s.waitForScheduledSlot(t.Context(), env)
+		require.NoError(t, err)
+		delay := requireWakeup(t, s, tr)
+		require.GreaterOrEqual(t, delay, 2*time.Second)
+		require.Less(t, delay, 3*time.Second)
+		selected := env.batchSlot().UnwrapOrFail(t)
+		now = opens.Add(4 * time.Second)
+		tr, err = s.waitForScheduledSlot(t.Context(), env)
+		require.NoError(t, err)
+		require.Nil(t, tr)
+		require.Equal(t, selected, env.batchSlot().UnwrapOrFail(t))
+		now = cutoff
+		_, err = s.waitForScheduledSlot(t.Context(), env)
+		require.ErrorContains(t, err, "closed")
+	}
+}

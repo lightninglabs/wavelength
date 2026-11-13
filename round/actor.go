@@ -484,6 +484,11 @@ type RoundClientConfig struct {
 	// selects its slot. Nil keeps OperatorTerms static for every attempt.
 	OperatorTermsSource OperatorTermsSource
 
+	// RegistrationWakeJitter caps jitter after the opening margin for
+	// hosts with short execution windows. Zero keeps window/2 spreading.
+	// It never changes a pinned selection or the cutoff safety margin.
+	RegistrationWakeJitter time.Duration
+
 	// ServerConn is a reference to the ServerConnectionActor for sending
 	// messages to the Ark server.
 	ServerConn actor.TellOnlyRef[serverconn.ServerConnMsg]
@@ -635,14 +640,15 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	// (e.g., lib.NewTreeSignerSession, signing helpers). StartHeight is set
 	// to 0 here and will be set per-round when FSMs are created.
 	env := &ClientEnvironment{
-		RoundStore:      cfg.RoundStore,
-		Now:             cfg.Now,
-		VTXOStore:       cfg.VTXOStore,
-		Wallet:          cfg.Wallet,
-		SigningExecutor: cfg.SigningExecutor,
-		OperatorTerms:   cfg.OperatorTerms,
-		ChainParams:     cfg.ChainParams,
-		MaxOperatorFee:  cfg.MaxOperatorFee,
+		RoundStore:             cfg.RoundStore,
+		Now:                    cfg.Now,
+		VTXOStore:              cfg.VTXOStore,
+		Wallet:                 cfg.Wallet,
+		SigningExecutor:        cfg.SigningExecutor,
+		OperatorTerms:          cfg.OperatorTerms,
+		RegistrationWakeJitter: cfg.RegistrationWakeJitter,
+		ChainParams:            cfg.ChainParams,
+		MaxOperatorFee:         cfg.MaxOperatorFee,
 		AutoRefreshFeeFloor: cfg.
 			AutoRefreshFeeFloor,
 		AutoRefreshFeeRatePPM: cfg.
@@ -1133,16 +1139,17 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:          a.cfg.RoundStore,
-		AdmissionTimeout:    a.env.AdmissionTimeout,
-		Now:                 a.env.Now,
-		VTXOStore:           a.cfg.VTXOStore,
-		Wallet:              a.cfg.Wallet,
-		SigningExecutor:     a.env.SigningExecutor,
-		OperatorTerms:       a.cfg.OperatorTerms,
-		OperatorTermsSource: a.cfg.OperatorTermsSource,
-		ChainParams:         a.cfg.ChainParams,
-		MaxOperatorFee:      a.cfg.MaxOperatorFee,
+		RoundStore:             a.cfg.RoundStore,
+		AdmissionTimeout:       a.env.AdmissionTimeout,
+		Now:                    a.env.Now,
+		VTXOStore:              a.cfg.VTXOStore,
+		Wallet:                 a.cfg.Wallet,
+		SigningExecutor:        a.env.SigningExecutor,
+		OperatorTerms:          a.cfg.OperatorTerms,
+		OperatorTermsSource:    a.cfg.OperatorTermsSource,
+		RegistrationWakeJitter: a.cfg.RegistrationWakeJitter,
+		ChainParams:            a.cfg.ChainParams,
+		MaxOperatorFee:         a.cfg.MaxOperatorFee,
 		AutoRefreshFeeFloor: a.cfg.
 			AutoRefreshFeeFloor,
 		AutoRefreshFeeRatePPM: a.cfg.
@@ -1225,16 +1232,17 @@ func (a *RoundClientActor) createRoundWithState(ctx context.Context,
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:          a.cfg.RoundStore,
-		AdmissionTimeout:    a.env.AdmissionTimeout,
-		Now:                 a.env.Now,
-		VTXOStore:           a.cfg.VTXOStore,
-		Wallet:              a.cfg.Wallet,
-		SigningExecutor:     a.env.SigningExecutor,
-		OperatorTerms:       a.cfg.OperatorTerms,
-		OperatorTermsSource: a.cfg.OperatorTermsSource,
-		ChainParams:         a.cfg.ChainParams,
-		MaxOperatorFee:      a.cfg.MaxOperatorFee,
+		RoundStore:             a.cfg.RoundStore,
+		AdmissionTimeout:       a.env.AdmissionTimeout,
+		Now:                    a.env.Now,
+		VTXOStore:              a.cfg.VTXOStore,
+		Wallet:                 a.cfg.Wallet,
+		SigningExecutor:        a.env.SigningExecutor,
+		OperatorTerms:          a.cfg.OperatorTerms,
+		OperatorTermsSource:    a.cfg.OperatorTermsSource,
+		RegistrationWakeJitter: a.cfg.RegistrationWakeJitter,
+		ChainParams:            a.cfg.ChainParams,
+		MaxOperatorFee:         a.cfg.MaxOperatorFee,
 		AutoRefreshFeeFloor: a.cfg.
 			AutoRefreshFeeFloor,
 		AutoRefreshFeeRatePPM: a.cfg.

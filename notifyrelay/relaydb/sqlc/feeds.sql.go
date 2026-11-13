@@ -39,7 +39,7 @@ func (q *Queries) AdvanceFeedBinding(ctx context.Context, arg AdvanceFeedBinding
 }
 
 const getFeedBinding = `-- name: GetFeedBinding :one
-SELECT source_id, subscription_id, feed_token, event_classes, expires_at, last_generation FROM relay_feed_bindings WHERE source_id = $1 AND subscription_id = $2
+SELECT source_id, subscription_id, feed_token, event_classes, expires_at, last_generation, scheduled_cutoff FROM relay_feed_bindings WHERE source_id = $1 AND subscription_id = $2
 `
 
 type GetFeedBindingParams struct {
@@ -57,8 +57,74 @@ func (q *Queries) GetFeedBinding(ctx context.Context, arg GetFeedBindingParams) 
 		&i.EventClasses,
 		&i.ExpiresAt,
 		&i.LastGeneration,
+		&i.ScheduledCutoff,
 	)
 	return i, err
+}
+
+const listScheduledBindings = `-- name: ListScheduledBindings :many
+SELECT b.source_id, b.subscription_id, b.feed_token, b.event_classes, b.expires_at, b.last_generation, b.scheduled_cutoff FROM relay_feed_bindings AS b
+JOIN relay_subscriptions AS s ON s.id = b.subscription_id
+WHERE b.source_id = $1 AND (b.event_classes & 4) != 0
+    AND b.expires_at > $2 AND s.expires_at > $2
+    AND b.scheduled_cutoff < $3
+ORDER BY b.subscription_id LIMIT 64
+`
+
+type ListScheduledBindingsParams struct {
+	SourceID        string
+	ExpiresAt       int64
+	ScheduledCutoff int64
+}
+
+func (q *Queries) ListScheduledBindings(ctx context.Context, arg ListScheduledBindingsParams) ([]RelayFeedBinding, error) {
+	rows, err := q.db.QueryContext(ctx, listScheduledBindings, arg.SourceID, arg.ExpiresAt, arg.ScheduledCutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RelayFeedBinding
+	for rows.Next() {
+		var i RelayFeedBinding
+		if err := rows.Scan(
+			&i.SourceID,
+			&i.SubscriptionID,
+			&i.FeedToken,
+			&i.EventClasses,
+			&i.ExpiresAt,
+			&i.LastGeneration,
+			&i.ScheduledCutoff,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markScheduledBinding = `-- name: MarkScheduledBinding :execrows
+UPDATE relay_feed_bindings SET scheduled_cutoff = $3
+WHERE source_id = $1 AND subscription_id = $2 AND scheduled_cutoff < $3
+`
+
+type MarkScheduledBindingParams struct {
+	SourceID        string
+	SubscriptionID  string
+	ScheduledCutoff int64
+}
+
+func (q *Queries) MarkScheduledBinding(ctx context.Context, arg MarkScheduledBindingParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markScheduledBinding, arg.SourceID, arg.SubscriptionID, arg.ScheduledCutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const putFeedBinding = `-- name: PutFeedBinding :exec
