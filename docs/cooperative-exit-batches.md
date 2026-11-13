@@ -78,6 +78,10 @@ marker over the fully composed intent and applies the aggregate fee at seal
 time. `GetExitPlan` remains a unilateral recovery estimator; it does not quote
 this cooperative request or authorize batch unilateral submission.
 
+The aggregate activity holds the accepted inputs' gross principal while
+pending. At confirmation it reports the net value delivered to the destination
+as `amount_sat`, with the shared round fee recorded separately in `fee_sat`.
+
 The wallet selection and reservation paths key by exact outpoint, not original
 round ID. Each VTXO actor retains its own descriptor, ancestry, keys and expiry.
 The new round consumes their forfeits together. `LiveState.handleForfeitRequest`

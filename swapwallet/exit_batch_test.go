@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
@@ -253,6 +254,19 @@ func (r *cancelAfterBatchRPC) LeaveVTXOs(_ context.Context,
 	return r.leaveResp, nil
 }
 
+// GetUnrollStatus enforces the canonical outpoint boundary for batch inputs.
+// A prefixed activity id must fail here as it does in the real daemon.
+func (r *cancelAfterBatchRPC) GetUnrollStatus(ctx context.Context,
+	req *waverpc.GetUnrollStatusRequest) (*waverpc.GetUnrollStatusResponse,
+	error) {
+
+	if _, err := wire.NewOutPointFromString(req.GetOutpoint()); err != nil {
+		return nil, err
+	}
+
+	return r.fakeRPCServer.GetUnrollStatus(ctx, req)
+}
+
 // TestExitBatchActivitySurvivesCancellationAndRestart proves one aggregate
 // row retains principal and destination, resumes, and books a shared fee once.
 func TestExitBatchActivitySurvivesCancellationAndRestart(t *testing.T) {
@@ -322,7 +336,12 @@ func TestExitBatchActivitySurvivesCancellationAndRestart(t *testing.T) {
 		entry.Status,
 	)
 	require.EqualValues(t, 73, entry.FeeSat)
+	require.EqualValues(t, -9927, entry.AmountSat)
 	require.Equal(t, strings.Repeat("c", 64), entry.Progress.Txid)
+	rpc.mu.Lock()
+	queriedOutpoint := rpc.unrollStatusLast.GetOutpoint()
+	rpc.mu.Unlock()
+	require.Equal(t, targets[0], queriedOutpoint)
 }
 
 // TestExitBatchInventoryFailureNeverDispatches prevents missing principal

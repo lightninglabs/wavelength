@@ -90,7 +90,7 @@ func (s *Service) ExitBatch(ctx context.Context,
 		return nil, status.Errorf(codes.FailedPrecondition, "allocate "+
 			"exit activity identity: %v", err)
 	}
-	activityPrefix := "batch-exit-" + hex.EncodeToString(nonce[:]) + "-"
+	activityID := "batch-exit-" + hex.EncodeToString(nonce[:])
 
 	destination := strings.TrimSpace(req.GetOnchainAddress())
 	if destination == "" {
@@ -175,9 +175,13 @@ func (s *Service) ExitBatch(ctx context.Context,
 		amount += amounts[input.Outpoint]
 	}
 	if len(admitted) > 0 && s.runtime != nil {
+		// Keep the activity id distinct from an outpoint so
+		// reconciliation queries the real source retained in
+		// Progress.VtxoOutpoint. The selected inputs drain into leave
+		// outputs, which absorb the round fee; mark that gross amount
+		// for fee netting at confirmation.
 		entry := leaveEntryStub(
-			activityPrefix+admitted[0], admitted, destination,
-			amount, "", false,
+			activityID, admitted, destination, amount, "", true,
 		)
 		// Cancellation after admission cannot discard the row. Existing
 		// EXIT rehydration and reconciliation follow the composed
