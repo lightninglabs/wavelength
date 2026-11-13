@@ -18,7 +18,7 @@ Enroll only a typed receipt reference returned by a newly created invoice
 under current consent. A notification payload is never a source reference.
 After matching an authorized payment hint to that enrolled invoice, call
 `RunReceiptWindow` with a unique window ID, the typed reference, the consent
-creation boundary, and a mobile budget of 1 through 20 seconds.
+creation boundary, and a mobile budget of 1 through 30 seconds.
 
 The window first reads the committed local source and canonical projection.
 A missing or terminal source returns immediately. A pending source re-arms
@@ -84,6 +84,12 @@ local expiry need not produce any server message. Push delivery, coalescing and
 host scheduling do not guarantee a second wake before a round deadline. Cold
 sessions retain the runtime's authoritative recovery hold; this API does not
 reconstruct lost signing nonces or bypass wallet unlock.
+
+The native controller has a thirty-second safety ceiling. A shorter caller
+context or an exact-window cancellation takes precedence. Hosts should use the
+OS expiration callback as their primary cancellation signal and keep a fallback
+before their platform callback limit, including time spent preparing the wallet.
+The native ceiling is not an additional allowance after the host expires.
 
 ## Lifetime ownership
 

@@ -24,10 +24,10 @@ func SetHostForeground(foreground bool) error {
 }
 
 // RunReceiptWindow checks one enrolled invoice under a cooperative host budget.
-// The maximum is 20 seconds; OS expiry cancels the same unique window by ID.
+// The maximum is 30 seconds; OS expiry cancels the same unique window by ID.
 func RunReceiptWindow(reqJSON []byte, timeoutSeconds int64) ([]byte, error) {
-	if timeoutSeconds < 1 || timeoutSeconds > 20 {
-		return nil, fmt.Errorf("receipt window budget must be 1..20 " +
+	if timeoutSeconds < 1 || timeoutSeconds > 30 {
+		return nil, fmt.Errorf("receipt window budget must be 1..30 " +
 			"seconds")
 	}
 	client, parent, err := activeClient()
@@ -67,9 +67,9 @@ func CancelReceiptWindow(windowID string) error {
 func RunMaintenanceWindow(windowID string,
 	timeoutSeconds int64) ([]byte, error) {
 
-	if timeoutSeconds < 1 || timeoutSeconds > 20 {
+	if timeoutSeconds < 1 || timeoutSeconds > 30 {
 		return nil, fmt.Errorf("maintenance window budget must be " +
-			"1..20 seconds")
+			"1..30 seconds")
 	}
 	client, parent, err := activeClient()
 	if err != nil {

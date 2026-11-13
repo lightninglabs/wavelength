@@ -2,6 +2,7 @@ package waved
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -289,4 +290,74 @@ func TestReceiptWindowCanceledTransitionKeepsForeground(t *testing.T) {
 	require.NoError(t, ingress.foreground.Err())
 	require.NoError(t, controller.setForeground(t.Context(), false))
 	require.False(t, connected)
+}
+
+// TestReceiptWindowUsesHostDeadline proves both window kinds can dispatch after
+// the old twenty-second cutoff and stop at the host deadline or safety ceiling.
+func TestReceiptWindowUsesHostDeadline(t *testing.T) {
+	for _, payment := range []bool{true, false} {
+		for _, hostLimit := range []time.Duration{28 * time.Second, 0} {
+			name := fmt.Sprintf("payment=%t/host=%s", payment,
+				hostLimit)
+			t.Run(name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					verifyHostWindowDeadline(
+						t, payment, hostLimit,
+					)
+				})
+			})
+		}
+	}
+}
+
+// verifyHostWindowDeadline keeps delayed round work alive until the owning host
+// cancels, while retaining a finite ceiling when that host supplies no
+// deadline.
+func verifyHostWindowDeadline(t *testing.T, payment bool,
+	hostLimit time.Duration) {
+
+	t.Helper()
+	ingress := &windowTestIngress{}
+	controller := newWindowTestController(t, ingress)
+	controller.maintain = func(context.Context) (uint32, bool, bool) {
+		return 0, false, false
+	}
+	start := time.Now()
+	ingress.pump = func(ctx context.Context) (serverconn.IngressPumpResult,
+		error) {
+
+		select {
+		case <-time.After(25 * time.Second):
+			require.NoError(
+				t, ctx.Err(),
+				"host still owns the window",
+			)
+
+		case <-ctx.Done():
+			t.Error("native stopped before delayed round work")
+		}
+		<-ctx.Done()
+
+		return serverconn.IngressPumpResult{}, ctx.Err()
+	}
+	ctx := t.Context()
+	if hostLimit > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, hostLimit)
+		defer cancel()
+	}
+	result, err := controller.runWindow(
+		ctx, ReceiptWindowRequest{
+			WindowID: "host-window",
+		},
+		payment,
+	)
+	require.NoError(t, err)
+	require.True(t, result.Interrupted)
+	expected := hostLimit
+	if expected == 0 {
+		expected = 30 * time.Second
+	}
+	require.Equal(t, expected, time.Since(start))
+	require.Empty(t, controller.activeID)
 }
