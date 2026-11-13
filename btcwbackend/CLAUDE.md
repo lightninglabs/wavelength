@@ -12,6 +12,8 @@ or LND node.
 - `Wallet` — Top-level wallet wrapping `walletcore.Wallet` with neutrino chain service, chain backend, and boarding adapter. Constructors: `New` (owns neutrino lifecycle) and `NewWithNeutrino` (reuses pre-started service).
 - `NeutrinoService` — Manages the neutrino `ChainService`, its bbolt DB, and lifecycle. Pre-started by the daemon for early P2P sync.
 - `ChainBackend` — Implements `chainsource.ChainBackend` using neutrino's native `ChainNotifier` for confirmation tracking, spend detection, fee estimation, and optional direct package relay via `chainbackends.PackageSubmitter`.
+- `ChainBackend.EstimateFeePerKW` — The fee estimator's rate in sat/kWU,
+  without the truncation to whole sat/vB that `EstimateFee` applies.
 - `BoardingBackendAdapter` — Implements `wallet.BoardingBackend` and `wallet.OutputLeaser` by embedding `walletcore.BoardingBackendBase` and adding neutrino-backed `ListUnspent`, `GetTransaction`, `GetBlock`, `LeaseOutput`, and `ReleaseOutput`. Output leasing forwards to btcwallet's native lock table, casting `wallet.LockID` → `wtxmgr.LockID`.
 - `Config` — Embeds `walletcore.Config` and adds neutrino-specific fields (peers, fee URL, persist filters) plus an optional `PackageSubmitter` for v3 parent+child relay.
 

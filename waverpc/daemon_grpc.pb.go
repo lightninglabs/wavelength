@@ -210,7 +210,7 @@ type DaemonServiceClient interface {
 	// DepositAsset funds a boarding output holding a Taproot Asset from the
 	// tapd wallet behind assets.tapd and tracks it until its proof
 	// confirms. Retrying with the same request_id resumes the same
-	// deposit. Requires assets.backend=tapd and assets.lnd.
+	// deposit. Requires assets.backend=tapd and tapd v0.9.0 or later.
 	DepositAsset(ctx context.Context, in *DepositAssetRequest, opts ...grpc.CallOption) (*AssetDeposit, error)
 	// ListAssetDeposits returns the asset deposits of this daemon.
 	ListAssetDeposits(ctx context.Context, in *ListAssetDepositsRequest, opts ...grpc.CallOption) (*ListAssetDepositsResponse, error)
@@ -983,7 +983,7 @@ type DaemonServiceServer interface {
 	// DepositAsset funds a boarding output holding a Taproot Asset from the
 	// tapd wallet behind assets.tapd and tracks it until its proof
 	// confirms. Retrying with the same request_id resumes the same
-	// deposit. Requires assets.backend=tapd and assets.lnd.
+	// deposit. Requires assets.backend=tapd and tapd v0.9.0 or later.
 	DepositAsset(context.Context, *DepositAssetRequest) (*AssetDeposit, error)
 	// ListAssetDeposits returns the asset deposits of this daemon.
 	ListAssetDeposits(context.Context, *ListAssetDepositsRequest) (*ListAssetDepositsResponse, error)

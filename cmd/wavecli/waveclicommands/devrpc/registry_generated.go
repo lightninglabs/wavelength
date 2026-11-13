@@ -224,7 +224,7 @@ func generatedRegistry() []serviceSpec {
 					Aliases:  []string{"deposit-asset"},
 					Input:    "waverpc.DepositAssetRequest",
 					Output:   "waverpc.AssetDeposit",
-					Comments: "DepositAsset funds a boarding output holding a Taproot Asset from the\ntapd wallet behind assets.tapd and tracks it until its proof\nconfirms. Retrying with the same request_id resumes the same\ndeposit. Requires assets.backend=tapd and assets.lnd.",
+					Comments: "DepositAsset funds a boarding output holding a Taproot Asset from the\ntapd wallet behind assets.tapd and tracks it until its proof\nconfirms. Retrying with the same request_id resumes the same\ndeposit. Requires assets.backend=tapd and tapd v0.9.0 or later.",
 				},
 				{
 					Name:     "ListAssetDeposits",

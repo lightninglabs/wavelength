@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/lightninglabs/lndclient"
 	tapsdk "github.com/lightninglabs/tap-sdk"
 	tapgrpc "github.com/lightninglabs/tap-sdk/grpc"
 	"github.com/lightninglabs/tap-sdk/macaroon"
@@ -39,28 +38,6 @@ type AssetsConfig struct {
 
 	// Tapd configures the tapd node used by the "tapd" backend.
 	Tapd *TapdConfig `mapstructure:"tapd"`
-
-	// Lnd configures the lnd node behind tapd. It signs the asset deposits
-	// tapd funds, so DepositAsset requires it.
-	Lnd *AssetLndConfig `mapstructure:"lnd"`
-}
-
-// AssetLndConfig configures the connection to the lnd node behind tapd.
-type AssetLndConfig struct {
-	// Host is the network address of the lnd gRPC interface.
-	Host string `mapstructure:"host"`
-
-	// TLSPath is the path to lnd's TLS certificate file. If empty, the
-	// default lnd TLS cert location is used.
-	TLSPath string `mapstructure:"tlspath"`
-
-	// MacaroonPath is the full path to the lnd admin macaroon. If empty,
-	// the default lnd macaroon location for the active network is used.
-	MacaroonPath string `mapstructure:"macaroonpath"`
-
-	// RPCTimeout is the maximum duration for individual RPC calls to
-	// lnd. If zero, DefaultRPCTimeout is used.
-	RPCTimeout time.Duration `mapstructure:"rpctimeout"`
 }
 
 // TapdConfig configures the connection to a tapd node.
@@ -88,9 +65,6 @@ func defaultAssetsConfig() *AssetsConfig {
 		Tapd: &TapdConfig{
 			RPCTimeout: DefaultRPCTimeout,
 		},
-		Lnd: &AssetLndConfig{
-			RPCTimeout: DefaultRPCTimeout,
-		},
 	}
 }
 
@@ -101,16 +75,6 @@ func (c *Config) validateAssetsConfig() error {
 	}
 	if c.Assets.Backend == "" {
 		c.Assets.Backend = DefaultAssetBackend
-	}
-
-	depositLnd := c.Assets.Lnd != nil && c.Assets.Lnd.Host != ""
-	if depositLnd && c.Assets.Backend != AssetBackendTapd {
-		return fmt.Errorf("assets.lnd.host requires assets.backend " +
-			"tapd")
-	}
-	if depositLnd && c.Assets.Lnd.RPCTimeout < 0 {
-		return fmt.Errorf("assets.lnd.rpctimeout must not be "+
-			"negative: got %s", c.Assets.Lnd.RPCTimeout)
 	}
 
 	switch c.Assets.Backend {
@@ -249,37 +213,13 @@ func (s *Server) newAssetClaimer(client *tapgrpc.Client) (*tapassets.Claimer,
 	})
 }
 
-// startAssetDeposits starts the asset deposit service when the tapd backend
-// and the lnd node behind tapd are configured. The returned cleanup stops the
-// deposit watcher and closes the lnd connection.
+// startAssetDeposits starts the asset deposit service on the tapd backend.
+// The returned cleanup stops the deposit watcher.
 func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 	func(), error) {
 
-	lndCfg := s.cfg.Assets.Lnd
-	if s.tapdClient == nil || lndCfg == nil || lndCfg.Host == "" {
+	if s.tapdClient == nil {
 		return func() {}, nil
-	}
-
-	network, err := networkToLndclient(s.cfg.Network)
-	if err != nil {
-		return nil, err
-	}
-	rpcTimeout := lndCfg.RPCTimeout
-	if rpcTimeout == 0 {
-		rpcTimeout = DefaultRPCTimeout
-	}
-	lnd, err := lndclient.NewLndServices(&lndclient.LndServicesConfig{
-		LndAddress:            lndCfg.Host,
-		Network:               network,
-		CustomMacaroonPath:    lndCfg.MacaroonPath,
-		TLSPath:               lndCfg.TLSPath,
-		BlockUntilChainSynced: true,
-		BlockUntilUnlocked:    true,
-		CallerCtx:             ctx,
-		RPCTimeout:            rpcTimeout,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("connect asset deposit lnd: %w", err)
 	}
 
 	journal, err := tapassets.NewFileStore(
@@ -289,21 +229,20 @@ func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 		),
 	)
 	if err != nil {
-		lnd.Close()
-
 		return nil, err
 	}
 	onboarder, err := tapassets.NewOnboarder(tapassets.OnboarderConfig{
 		Wallet: tapsdk.NewWallet(
 			s.tapdClient, tapsdk.Network(s.cfg.Network),
 		),
-		Store:          journal,
-		Signer:         lndAnchorSigner(lnd.WalletKit),
+		Store: journal,
+		Funder: &depositFunder{
+			wallet:      s.depositWallet,
+			estimateFee: s.estimateDepositFee,
+		},
 		DeriveOwnerKey: s.depositOwnerKeyDeriver(),
 	})
 	if err != nil {
-		lnd.Close()
-
 		return nil, err
 	}
 
@@ -339,6 +278,5 @@ func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 	return func() {
 		cancel()
 		<-done
-		lnd.Close()
 	}, nil
 }

@@ -11,6 +11,9 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 - `LNDBackend` — Full-node backend wrapping lnd's chain notification and fee
   estimation interfaces. Accepts an optional `PackageSubmitter` for v3 CPFP
   package relay (set via `SetPackageSubmitter`).
+- `LNDBackend.EstimateFeePerKW` — The estimator's rate in sat/kWU, for
+  callers that must not lose the precision `EstimateFee` truncates to whole
+  sat/vB.
 - `TxBroadcaster` — Interface over transaction broadcasting (wraps
   lndclient.WalletKitClient or in-process lnd).
 - `PackageSubmitter` — Optional interface for v3 package relay:

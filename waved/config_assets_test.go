@@ -64,42 +64,6 @@ func TestConfigValidateAssets(t *testing.T) {
 			wantErr: "assets.tapd.rpctimeout",
 		},
 		{
-			name: "tapd with deposit lnd",
-			assets: &AssetsConfig{
-				Backend: AssetBackendTapd,
-				Tapd: &TapdConfig{
-					Host: "localhost:10029",
-				},
-				Lnd: &AssetLndConfig{
-					Host: "localhost:10009",
-				},
-			},
-			wantBackend: AssetBackendTapd,
-		},
-		{
-			name: "deposit lnd without tapd",
-			assets: &AssetsConfig{
-				Lnd: &AssetLndConfig{
-					Host: "localhost:10009",
-				},
-			},
-			wantErr: "assets.lnd.host requires assets.backend tapd",
-		},
-		{
-			name: "deposit lnd with negative timeout",
-			assets: &AssetsConfig{
-				Backend: AssetBackendTapd,
-				Tapd: &TapdConfig{
-					Host: "localhost:10029",
-				},
-				Lnd: &AssetLndConfig{
-					Host:       "localhost:10009",
-					RPCTimeout: -time.Second,
-				},
-			},
-			wantErr: "assets.lnd.rpctimeout",
-		},
-		{
 			name: "unknown backend",
 			assets: &AssetsConfig{
 				Backend: "embedded",
