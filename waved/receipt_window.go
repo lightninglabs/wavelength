@@ -173,7 +173,10 @@ func (c *receiptWindowController) runWindow(ctx context.Context,
 	error) {
 
 	result := ReceiptWindowResult{Receipts: []LightningReceipt{}}
-	windowCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	// The host's expiry cancellation and deadline take precedence. This
+	// ceiling only bounds a caller that fails to cancel its opportunity;
+	// it must not truncate the host's usable mobile execution window.
+	windowCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	unlink := context.AfterFunc(c.root, cancel)
 	defer unlink()
@@ -377,7 +380,8 @@ func (s *Server) SetHostForeground(ctx context.Context, foreground bool) error {
 	return controller.setForeground(ctx, foreground)
 }
 
-// RunReceiptWindow attempts one enrolled source under a cooperative 20s cap.
+// RunReceiptWindow attempts one enrolled source until host cancellation or a
+// cooperative 30s ceiling.
 func (s *Server) RunReceiptWindow(ctx context.Context,
 	request ReceiptWindowRequest) (ReceiptWindowResult, error) {
 
