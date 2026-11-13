@@ -144,7 +144,7 @@ func TestFeedAuthorizationBoundaries(t *testing.T) {
 		require.ErrorIs(t, err, ErrInvalidAuthorization)
 		message.ProtoReflect().SetUnknown(nil)
 	}
-	request.Mutation.EventClasses = 4
+	request.Mutation.EventClasses = 8
 	_, err := FeedSigningMessage(request)
 	require.ErrorIs(t, err, ErrInvalidAuthorization)
 	request.Mutation.EventClasses = FeedClassWake
@@ -398,4 +398,26 @@ func TestFeedGrantIdentifierShape(t *testing.T) {
 	request.Mutation.GrantId = "AAECAwQFBgcICQoLDA0ODw"
 	_, err := FeedSigningMessage(request)
 	require.NoError(t, err)
+}
+
+// TestRoundWakeDeadline requires explicit signed class consent and a finite
+// producer deadline. Ordinary protocol traffic cannot smuggle urgency.
+func TestRoundWakeDeadline(t *testing.T) {
+	event := &pb.WakeFeedEvent{
+		FeedToken: bytes.Repeat([]byte{1}, FeedTokenSize),
+		GrantId:   "AAECAwQFBgcICQoLDA0ODw", Generation: 1,
+		EventClasses:      FeedClassWake | FeedClassRound,
+		ExpiresAtUnix:     100,
+		RoundDeadlineUnix: 90,
+	}
+	require.NoError(t, ValidateFeedEvent(event))
+	event.RoundDeadlineUnix = 0
+	require.Error(t, ValidateFeedEvent(event))
+	event.RoundDeadlineUnix = 101
+	require.Error(t, ValidateFeedEvent(event))
+	event.EventClasses = FeedClassWake
+	event.RoundDeadlineUnix = 90
+	require.Error(t, ValidateFeedEvent(event))
+	event.RoundDeadlineUnix = 0
+	require.NoError(t, ValidateFeedEvent(event))
 }

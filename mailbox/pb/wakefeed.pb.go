@@ -80,6 +80,7 @@ type FeedGrantMutation struct {
 	GrantId          string                   `protobuf:"bytes,2,opt,name=grant_id,json=grantId,proto3" json:"grant_id,omitempty"`
 	SubscriberPubkey []byte                   `protobuf:"bytes,3,opt,name=subscriber_pubkey,json=subscriberPubkey,proto3" json:"subscriber_pubkey,omitempty"`
 	// Bit 0 permits protocol wakes; bit 1 permits payment-activity hints.
+	// Bit 2 opts into scheduled registration and urgent round-signing wakes.
 	// Unknown bits are rejected. These never authorize wallet operations.
 	EventClasses  uint32 `protobuf:"varint,4,opt,name=event_classes,json=eventClasses,proto3" json:"event_classes,omitempty"`
 	ExpiresAtUnix int64  `protobuf:"varint,5,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
@@ -303,9 +304,12 @@ type WakeFeedEvent struct {
 	ExpiresAtUnix int64 `protobuf:"varint,5,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
 	// Publisher-owned route ID, matching the enrolled route when binding the
 	// token. This is not the wallet identity.
-	GrantId       string `protobuf:"bytes,6,opt,name=grant_id,json=grantId,proto3" json:"grant_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	GrantId string `protobuf:"bytes,6,opt,name=grant_id,json=grantId,proto3" json:"grant_id,omitempty"`
+	// Only class bit 2 permits this deadline. It is a wake hint, never
+	// signing authority. Receivers drop round work after this UTC second.
+	RoundDeadlineUnix int64 `protobuf:"varint,7,opt,name=round_deadline_unix,json=roundDeadlineUnix,proto3" json:"round_deadline_unix,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *WakeFeedEvent) Reset() {
@@ -380,6 +384,13 @@ func (x *WakeFeedEvent) GetGrantId() string {
 	return ""
 }
 
+func (x *WakeFeedEvent) GetRoundDeadlineUnix() int64 {
+	if x != nil {
+		return x.RoundDeadlineUnix
+	}
+	return 0
+}
+
 var File_wakefeed_proto protoreflect.FileDescriptor
 
 const file_wakefeed_proto_rawDesc = "" +
@@ -405,7 +416,7 @@ const file_wakefeed_proto_rawDesc = "" +
 	"\bgrant_id\x18\x01 \x01(\tR\agrantId\x12\x1d\n" +
 	"\n" +
 	"feed_token\x18\x02 \x01(\fR\tfeedToken\x12&\n" +
-	"\x0fexpires_at_unix\x18\x03 \x01(\x03R\rexpiresAtUnix\"\xe0\x01\n" +
+	"\x0fexpires_at_unix\x18\x03 \x01(\x03R\rexpiresAtUnix\"\x90\x02\n" +
 	"\rWakeFeedEvent\x12\x1d\n" +
 	"\n" +
 	"feed_token\x18\x01 \x01(\fR\tfeedToken\x12\x1e\n" +
@@ -415,7 +426,8 @@ const file_wakefeed_proto_rawDesc = "" +
 	"\revent_classes\x18\x03 \x01(\rR\feventClasses\x12(\n" +
 	"\x10payment_event_id\x18\x04 \x01(\tR\x0epaymentEventId\x12&\n" +
 	"\x0fexpires_at_unix\x18\x05 \x01(\x03R\rexpiresAtUnix\x12\x19\n" +
-	"\bgrant_id\x18\x06 \x01(\tR\agrantId2\xbf\x01\n" +
+	"\bgrant_id\x18\x06 \x01(\tR\agrantId\x12.\n" +
+	"\x13round_deadline_unix\x18\a \x01(\x03R\x11roundDeadlineUnix2\xbf\x01\n" +
 	"\x0fWakeFeedService\x12_\n" +
 	"\x10GetFeedChallenge\x12(.mailbox.v1.NotificationChallengeRequest\x1a!.mailbox.v1.NotificationChallenge\x12K\n" +
 	"\fSetFeedGrant\x12\x1c.mailbox.v1.FeedGrantRequest\x1a\x1d.mailbox.v1.FeedGrantResponseB:Z8github.com/lightninglabs/wavelength/mailbox/pb;mailboxpbb\x06proto3"
