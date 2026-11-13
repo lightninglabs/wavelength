@@ -70,6 +70,13 @@ func operatorTermsFromResponse(resp *arkrpc.GetInfoResponse) (
 		return nil, fmt.Errorf("batch schedule: %w", err)
 	}
 
+	var assetRefs []string
+	for _, policy := range resp.Assets {
+		if policy.GetAssetRef() != "" {
+			assetRefs = append(assetRefs, policy.GetAssetRef())
+		}
+	}
+
 	// The forfeit penalty key, sweep key and sweep delay are no longer
 	// global operator terms; they are delivered per round in the batch
 	// info, so GetInfo no longer carries them.
@@ -89,6 +96,7 @@ func operatorTermsFromResponse(resp *arkrpc.GetInfoResponse) (
 		VTXOConfirmations:       vtxoConfirmations,
 		MaxOORLineageVBytes:     resp.MaxOorLineageVbytes,
 		MaxUserBalance:          btcutil.Amount(resp.MaxUserBalance),
+		AssetRefs:               assetRefs,
 	}, nil
 }
 

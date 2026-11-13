@@ -186,6 +186,9 @@ func newDepositFixture(t *testing.T) *depositFixture {
 			PubKey:            operatorKey,
 			BoardingExitDelay: 144,
 			MinVTXOAmount:     1_000,
+			AssetRefs: []string{
+				ref.String(),
+			},
 		},
 		roundFee: 300,
 		assetRef: ref.String(),
@@ -286,6 +289,25 @@ func TestAssetDepositUnsupportedBackend(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, deposits, 1)
 	require.Equal(t, db.AssetDepositFunding, deposits[0].Status)
+}
+
+// TestAssetDepositUnadmittedAsset checks that a deposit of an asset the
+// operator does not admit into rounds is refused before it is recorded.
+func TestAssetDepositUnadmittedAsset(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newDepositFixture(t)
+	f.terms.AssetRefs = nil
+
+	_, err := f.service.Deposit(ctx, f.request("alice-1"))
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.ErrorContains(t, err, "does not admit asset")
+	require.Empty(t, f.onboarder.requests)
+
+	deposits, err := f.service.List(ctx)
+	require.NoError(t, err)
+	require.Empty(t, deposits)
 }
 
 // TestAssetDepositRetry checks that a failed attempt stays funding with its

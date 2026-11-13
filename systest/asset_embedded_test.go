@@ -62,7 +62,7 @@ func testAssetDeposit(t *testing.T, walletType string) {
 		walletLnd = startEmbeddedAssetLnd(t, h)
 	}
 
-	daemon := startEmbeddedAssetDaemon(t, h, t.TempDir(), walletLnd)
+	daemon := startEmbeddedAssetDaemon(t, h, t.TempDir(), walletLnd, ref)
 	client := daemon.client
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
@@ -95,7 +95,9 @@ func testAssetDeposit(t *testing.T, walletType string) {
 
 	// After a restart the daemon still holds the change and the deposit.
 	daemon.stop()
-	daemon = startEmbeddedAssetDaemon(t, h, daemon.dataDir, walletLnd)
+	daemon = startEmbeddedAssetDaemon(
+		t, h, daemon.dataDir, walletLnd, ref,
+	)
 	client = daemon.client
 	require.EqualValues(t, 400, embeddedAssetUnits(t, client, ref))
 	deposits, err := client.ListAssetDeposits(
@@ -167,7 +169,7 @@ func TestClaimAssetDeposit(t *testing.T) {
 	issuer := newAssetTestTapd(t, h)
 	ref := mintAssetTestAsset(t, h, issuer, 1_000)
 
-	daemon := startEmbeddedAssetDaemon(t, h, t.TempDir(), nil)
+	daemon := startEmbeddedAssetDaemon(t, h, t.TempDir(), nil, ref)
 	client := daemon.client
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
@@ -201,7 +203,7 @@ func TestClaimAssetDeposit(t *testing.T) {
 	daemon.stop()
 	h.Harness.Generate(6)
 
-	daemon = startEmbeddedAssetDaemon(t, h, daemon.dataDir, nil)
+	daemon = startEmbeddedAssetDaemon(t, h, daemon.dataDir, nil, ref)
 	client = daemon.client
 	require.Eventually(t, func() bool {
 		resp, err := client.ListAssetDeposits(
@@ -281,14 +283,16 @@ func startEmbeddedAssetLnd(t *testing.T,
 }
 
 // startEmbeddedAssetDaemon runs waved with the asset engine, on
-// walletLnd if set and on a light wallet otherwise. A fresh light wallet is
-// created with funds; an existing one is unlocked.
+// walletLnd if set and on a light wallet otherwise, against an operator that
+// admits ref into rounds. A fresh light wallet is created with funds; an
+// existing one is unlocked.
 func startEmbeddedAssetDaemon(t *testing.T, h *SysTestHarness, dataDir string,
-	walletLnd *harness.LndInstance) *embeddedAssetDaemon {
+	walletLnd *harness.LndInstance,
+	ref tapsdk.AssetRef) *embeddedAssetDaemon {
 
 	t.Helper()
 
-	mailboxAddr, mailbox := startAssetTestOperator(t)
+	mailboxAddr, mailbox := startAssetTestOperator(t, ref)
 
 	cfg := waved.DefaultConfig()
 	cfg.DataDir = dataDir
