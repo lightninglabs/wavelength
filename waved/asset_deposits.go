@@ -255,6 +255,10 @@ func (d *assetDepositService) create(ctx context.Context,
 			codes.Unavailable, "operator terms are not loaded",
 		)
 	}
+	if !operatorAdmitsAsset(terms, req.AssetRef) {
+		return nil, status.Errorf(codes.FailedPrecondition, "operator "+
+			"does not admit asset %s into rounds", req.AssetRef)
+	}
 
 	roundFee, err := d.quoteBoardingFee(ctx, 2*terms.MinVTXOAmountFloor())
 	if err != nil {
@@ -293,6 +297,23 @@ func (d *assetDepositService) create(ctx context.Context,
 	}
 
 	return deposit, nil
+}
+
+// operatorAdmitsAsset reports whether the operator lists assetRef among the
+// assets it admits into rounds.
+func operatorAdmitsAsset(terms *types.OperatorTerms, assetRef string) bool {
+	ref, err := tapsdk.ParseAssetRef(assetRef)
+	if err != nil {
+		return false
+	}
+	for _, admitted := range terms.AssetRefs {
+		admittedRef, err := tapsdk.ParseAssetRef(admitted)
+		if err == nil && admittedRef.Equivalent(ref) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // fund runs the onboarding of a funding deposit and records its output. The
