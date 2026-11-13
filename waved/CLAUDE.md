@@ -134,7 +134,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   for this daemon fails before signing. `tapd` dials tapd at startup, checks
   that it runs on the daemon's network, and refuses to start otherwise.
 - `DepositAsset` exists only with `assets.backend=tapd`; without it the RPC
-  returns `FailedPrecondition`. tapd signs its own asset inputs at publish, and
+  returns `FailedPrecondition`. It also refuses, before recording anything,
+  an asset the operator does not list in `GetInfo`'s `assets`
+  (`types.OperatorTerms.AssetRefs`), since no round would admit it. tapd signs its own asset inputs at publish, and
   waved never connects to the lnd behind tapd. A tapd that
   `tapassets.TapdSignsAnchorInputs` rejects (older than v0.9.0) is refused
   with `FailedPrecondition` before the deposit is recorded. A backend that

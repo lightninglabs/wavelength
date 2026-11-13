@@ -49,7 +49,7 @@ func TestAssetDeposit(t *testing.T) {
 	skipWithoutAnchorSigning(t, tapd)
 	ref := mintAssetTestAsset(t, h, tapd, 1_000)
 
-	client, _, walletLnd := startAssetDepositDaemon(t, h)
+	client, _, walletLnd := startAssetDepositDaemon(t, h, ref)
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
@@ -131,7 +131,7 @@ func TestBoardAssetDeposit(t *testing.T) {
 	skipWithoutAnchorSigning(t, tapd)
 	ref := mintAssetTestAsset(t, h, tapd, 1_000)
 
-	client, mailbox, _ := startAssetDepositDaemon(t, h)
+	client, mailbox, _ := startAssetDepositDaemon(t, h, ref)
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
@@ -234,7 +234,7 @@ func TestClaimAssetDeposit(t *testing.T) {
 	skipWithoutExternalInputConfirm(t, tapd)
 	ref := mintAssetTestAsset(t, h, tapd, 1_000)
 
-	client, _, _ := startAssetDepositDaemon(t, h)
+	client, _, _ := startAssetDepositDaemon(t, h, ref)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 
@@ -476,10 +476,12 @@ func assetTestUtxoUnits(t *testing.T, tapd *tapgrpc.Client,
 }
 
 // startAssetDepositDaemon runs waved with the tapd asset backend, whose tapd
-// signs its own anchor inputs. The daemon wallet is a funded lnd of its own,
-// apart from the harness lnd behind tapd.
-func startAssetDepositDaemon(t *testing.T, h *SysTestHarness) (
-	waverpc.DaemonServiceClient, *fakeMailboxServer, *harness.LndInstance) {
+// signs its own anchor inputs, against an operator that admits ref into
+// rounds. The daemon wallet is a funded lnd of its own, apart from the harness
+// lnd behind tapd.
+func startAssetDepositDaemon(t *testing.T, h *SysTestHarness,
+	ref tapsdk.AssetRef) (waverpc.DaemonServiceClient, *fakeMailboxServer,
+	*harness.LndInstance) {
 
 	t.Helper()
 
@@ -513,6 +515,9 @@ func startAssetDepositDaemon(t *testing.T, h *SysTestHarness) (
 		ArkVersionPolicies: []*arkrpc.ArkVersionPolicy{{
 			Version: arkrpc.ArkProtocolVersionV1,
 			State:   arkrpc.ArkVersionPolicy_STATE_ACTIVE,
+		}},
+		Assets: []*arkrpc.AssetPolicy{{
+			AssetRef: ref.String(),
 		}},
 	}
 	mailboxAddr, mailbox, stopMailbox := startFakeMailboxServer(

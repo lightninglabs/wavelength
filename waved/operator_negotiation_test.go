@@ -212,6 +212,29 @@ func TestOperatorTermsVTXOConfirmationsLegacyFallback(t *testing.T) {
 	require.Equal(t, uint32(3), terms.VTXOConfirmations)
 }
 
+// TestOperatorTermsAssets verifies the operator's admitted assets reach the
+// terms, skipping empty references.
+func TestOperatorTermsAssets(t *testing.T) {
+	t.Parallel()
+
+	terms, err := operatorTermsFromResponse(&arkrpc.GetInfoResponse{
+		Pubkey: testOperatorPubKeyBytes(t),
+		Assets: []*arkrpc.AssetPolicy{
+			{AssetRef: "asset-a"},
+			{},
+			{AssetRef: "asset-b"},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"asset-a", "asset-b"}, terms.AssetRefs)
+
+	terms, err = operatorTermsFromResponse(&arkrpc.GetInfoResponse{
+		Pubkey: testOperatorPubKeyBytes(t),
+	})
+	require.NoError(t, err)
+	require.Empty(t, terms.AssetRefs)
+}
+
 // TestNegotiateArkBootstrapZeroSelection proves the client refuses to bootstrap
 // when the operator returns a zero selection (no common version, or a
 // pre-versioning server). There is no legacy fallback.
