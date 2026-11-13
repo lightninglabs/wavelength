@@ -17,7 +17,9 @@ back to unilateral exit.
 1. The wallet API parses the entire selection and rejects empty lists, empty or
    malformed entries, and duplicate parsed identities before address allocation.
    It canonicalizes each outpoint as `txid:index` and preserves request order.
-2. An omitted destination allocates one fresh backing-wallet address for the
+2. The wallet snapshots the selected amounts before dispatch. An unavailable
+   or incomplete snapshot refuses the request before any input is queued.
+   An omitted destination allocates one fresh backing-wallet address for the
    entire request. A supplied destination is used for every selected input.
 3. `LeaveVTXOs` validates the destination against the configured Bitcoin network
    and standard-script policy before any input reservation. Its strict explicit
@@ -30,6 +32,10 @@ back to unilateral exit.
    round-registration failure requests reservation release.
 5. The response contains one result per selected input, in request order. The
    daemon preserves per-input errors instead of discarding them at the RPC edge.
+   When at least one input is positively accepted, `activity_id` identifies one
+   aggregate EXIT row for that accepted subset. Unknown and rejected inputs are
+   excluded. The composed intent settles as one round, so its shared round fee
+   is recorded once rather than once per source input.
 
 | Outcome | Meaning | Host action |
 | --- | --- | --- |
@@ -44,8 +50,11 @@ inputs; hosts must inspect **every** result.
 
 Accepted does not mean the operator admitted or confirmed the round. Partial
 admission is possible. This API promises neither all-or-nothing execution nor
-idempotency. It adds no operation identity, durable replay record, automatic
-retry, or reconciliation service. Never infer absence from a timeout, create a
+idempotency. The activity identifier is a tracking handle, not a replay key.
+The existing activity store retains accepted principal and destination across
+restart, and the existing reconciler advances the row on confirmed forfeit.
+This adds no durable batch replay record, automatic retry, or new reconciliation
+service. Never infer absence from a timeout, create a
 replacement operation after an ambiguous response, or switch it to unilateral
 exit. If activity and input state cannot establish the result, retain unknown
 and ask for operator investigation.
@@ -68,6 +77,10 @@ subject to the existing operator fee policy. The round FSM chooses one change
 marker over the fully composed intent and applies the aggregate fee at seal
 time. `GetExitPlan` remains a unilateral recovery estimator; it does not quote
 this cooperative request or authorize batch unilateral submission.
+
+The aggregate activity holds the accepted inputs' gross principal while
+pending. At confirmation it reports the net value delivered to the destination
+as `amount_sat`, with the shared round fee recorded separately in `fee_sat`.
 
 The wallet selection and reservation paths key by exact outpoint, not original
 round ID. Each VTXO actor retains its own descriptor, ancestry, keys and expiry.
@@ -116,7 +129,8 @@ PascalCase JSON field names, as other mobile wallet verbs do:
     {"Outpoint": "<64-hex-txid>:0", "Outcome": "accepted", "Error": ""},
     {"Outpoint": "<another-64-hex-txid>:1", "Outcome": "unknown", "Error": "response lost"}
   ],
-  "Destination": "<common-onchain-address>"
+  "Destination": "<common-onchain-address>",
+  "ActivityID": "<canonical-activity-id-for-accepted-subset>"
 }
 ```
 
@@ -154,7 +168,8 @@ status means all inputs were queued locally, not confirmed.
 The REST endpoint is `POST /v1/wallet/exit-batch`, using protobuf JSON
 (`outpoints`, `onchain_address`, `results`, and enum names such as
 `EXIT_BATCH_ACCEPTED`). It requires the same on-chain write permission
-as singular `Exit`.
+as singular `Exit`. The additive `activity_id` response field is empty when no
+input is positively accepted; older clients can ignore it.
 
 ## Compatibility
 

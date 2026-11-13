@@ -39,6 +39,7 @@ func TestClientExitBatchPreservesResults(t *testing.T) {
 	failed := wavewalletrpc.ExitBatchOutcome_EXIT_BATCH_FAILED
 	wallet := &batchWalletClient{response: &wavewalletrpc.ExitBatchResponse{
 		OnchainAddress: "common-address",
+		ActivityId:     "batch-activity",
 		Results: []*wavewalletrpc.ExitBatchInputResult{
 			{
 				Outpoint: "a:0",
@@ -63,6 +64,7 @@ func TestClientExitBatchPreservesResults(t *testing.T) {
 		Destination: "common-address",
 	})
 	require.NoError(t, err)
+	require.Equal(t, "batch-activity", response.ActivityID)
 	require.Equal(t, 1, wallet.calls)
 	require.Equal(t, targets, wallet.request.Outpoints)
 	require.Equal(t, "common-address", wallet.request.OnchainAddress)
