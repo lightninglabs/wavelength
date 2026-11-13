@@ -149,6 +149,19 @@ func (s *PendingRoundAssembly) waitForScheduledSlot(ctx context.Context,
 		attempt, err := newScheduledAttempt(
 			terms.BatchSchedule.UnsafeFromSome(), env.now(),
 		)
+		if err == nil && env.RegistrationWakeJitter > 0 {
+			lo, hi := batchschedule.WakeBounds(
+				attempt.slot.Window(),
+			)
+			hi = min(hi, lo+env.RegistrationWakeJitter)
+			jitter := lo
+			if hi > lo {
+				// Public timing jitter does not require a
+				// CSPRNG.
+				jitter += rand.N(hi - lo) //nolint:gosec
+			}
+			attempt.wake = attempt.slot.Opens.Add(jitter)
+		}
 		if err != nil {
 			return nil, err
 		}

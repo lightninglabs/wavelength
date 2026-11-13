@@ -41,9 +41,12 @@ WHERE j.next_at <= sqlc.arg(now_nano) AND j.lease_until <= sqlc.arg(now_nano)
     AND NOT i.disabled AND NOT i.deleted
     AND i.delivery_lease_until <= sqlc.arg(now_nano)
     AND (j.scope != 'alert' OR s.alerts_enabled)
-    AND CASE WHEN j.scope = 'wake' THEN i.next_wake_at ELSE i.next_alert_at END
+    AND CASE j.scope WHEN 'wake' THEN i.next_wake_at
+        WHEN 'round' THEN i.next_round_at
+        WHEN 'schedule' THEN i.next_schedule_at ELSE i.next_alert_at END
         <= sqlc.arg(now_nano)
-ORDER BY j.next_at, j.id LIMIT sqlc.arg(batch_limit);
+ORDER BY CASE WHEN j.scope = 'round' THEN 0 ELSE 1 END,
+    j.next_at, j.id LIMIT sqlc.arg(batch_limit);
 
 -- name: ClaimInstallation :execrows
 UPDATE relay_installations
@@ -87,3 +90,15 @@ DELETE FROM relay_dedup WHERE (subscription_id, scope, event_hash) IN (
 -- name: DeferUnclaimedJob :exec
 UPDATE relay_jobs SET next_at = sqlc.arg(next_at)
 WHERE id = sqlc.arg(id) AND lease_until <= sqlc.arg(now_nano);
+
+-- name: SetRoundJobWindow :exec
+UPDATE relay_jobs SET next_at = $2, expires_at = $3
+WHERE id = $1 AND lease_until = 0;
+
+-- name: CountPendingJobsForScope :one
+SELECT COUNT(*) FROM relay_jobs
+WHERE scope = $1 OR (scope IN ('wake', 'alert') AND $1 IN ('wake', 'alert'));
+
+-- name: DeleteExpiredScheduleJob :exec
+DELETE FROM relay_jobs WHERE id = $1 AND scope = 'schedule'
+    AND expires_at <= $2 AND lease_until <= $2;

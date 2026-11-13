@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"math"
 	"time"
 
@@ -302,6 +303,15 @@ func (f *feedIngress) admitEvent(ctx context.Context, q *sqlc.Queries,
 		binding.LastGeneration >= int64(event.Generation) {
 		return nil
 	}
+	// Ordinary traffic cannot upgrade a legacy binding into scheduled
+	// round consent merely because publisher policy gained the new bit.
+	hadRoundConsent := err == nil &&
+		uint32(binding.EventClasses)&notification.FeedClassRound != 0
+	if event.EventClasses&notification.FeedClassRound == 0 &&
+		!hadRoundConsent {
+
+		classes &^= notification.FeedClassRound
+	}
 	// The authenticated ordered source stream is authoritative for its
 	// token. Never wait for an app round trip while holding an aggregate
 	// feed prefix.
@@ -312,7 +322,24 @@ func (f *feedIngress) admitEvent(ctx context.Context, q *sqlc.Queries,
 	}); err != nil {
 		return err
 	}
-	if classes&event.EventClasses&notification.FeedClassWake != 0 {
+	round := classes&event.EventClasses&notification.FeedClassRound != 0
+	if round && event.RoundDeadlineUnix > now.Unix() {
+		urgent := sub
+		urgent.ExpiresAt = min(
+			urgent.ExpiresAt, event.RoundDeadlineUnix,
+			now.Add(time.Minute).Unix(),
+		)
+		if err := enqueueSQLJobTx(
+			ctx, q, urgent, ScopeRound,
+			fmt.Sprintf("%x/%d", event.FeedToken, event.Generation),
+			now,
+		); err != nil {
+			return err
+		}
+	}
+	if !round &&
+		classes&event.EventClasses&notification.FeedClassWake != 0 {
+
 		if err := enqueueSQLJobTx(
 			ctx, q, sub, ScopeWake, "", now,
 		); err != nil {

@@ -20,6 +20,19 @@ func (s *Server) runFeedSource(ctx context.Context, store *SQLStore,
 			subscriber.ingress.wake = s.wake
 			phase = "ingress"
 			for ctx.Err() == nil {
+				// Scheduling has no authority over source ACK
+				// progress. A failed discovery refresh retries
+				// on its own cadence.
+				if scheduleErr := subscriber.schedule.step(
+					ctx, time.Now(),
+				); scheduleErr != nil {
+
+					s.log.DebugContext(
+						ctx, "Round wake schedule "+
+							"refresh deferred",
+						slog.String("source", id),
+					)
+				}
 				result, stepErr := subscriber.ingress.next(
 					ctx,
 				)

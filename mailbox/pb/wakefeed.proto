@@ -32,6 +32,7 @@ message FeedGrantMutation {
     string grant_id = 2;
     bytes subscriber_pubkey = 3;
     // Bit 0 permits protocol wakes; bit 1 permits payment-activity hints.
+    // Bit 2 opts into scheduled registration and urgent round-signing wakes.
     // Unknown bits are rejected. These never authorize wallet operations.
     uint32 event_classes = 4;
     int64 expires_at_unix = 5;
@@ -73,4 +74,7 @@ message WakeFeedEvent {
     // Publisher-owned route ID, matching the enrolled route when binding the
     // token. This is not the wallet identity.
     string grant_id = 6;
+    // Only class bit 2 permits this deadline. It is a wake hint, never
+    // signing authority. Receivers drop round work after this UTC second.
+    int64 round_deadline_unix = 7;
 }

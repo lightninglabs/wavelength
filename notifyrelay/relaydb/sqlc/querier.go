@@ -22,9 +22,11 @@ type Querier interface {
 	CountInstallationDedup(ctx context.Context, installationID string) (int64, error)
 	CountInstallationSubscriptions(ctx context.Context, installationID string) (int64, error)
 	CountPendingJobs(ctx context.Context) (int64, error)
+	CountPendingJobsForScope(ctx context.Context, scope string) (int64, error)
 	CountSubscriptionDedup(ctx context.Context, subscriptionID string) (int64, error)
 	DeferUnclaimedJob(ctx context.Context, arg DeferUnclaimedJobParams) error
 	DeleteClaimedJob(ctx context.Context, arg DeleteClaimedJobParams) (int64, error)
+	DeleteExpiredScheduleJob(ctx context.Context, arg DeleteExpiredScheduleJobParams) error
 	DeleteInstallationSubscriptions(ctx context.Context, installationID string) error
 	DeleteScopeJob(ctx context.Context, arg DeleteScopeJobParams) error
 	DeleteSubscription(ctx context.Context, arg DeleteSubscriptionParams) error
@@ -44,6 +46,8 @@ type Querier interface {
 	ListDueJobs(ctx context.Context, arg ListDueJobsParams) ([]RelayJob, error)
 	ListExpiredSubscriptions(ctx context.Context, arg ListExpiredSubscriptionsParams) ([]RelaySubscription, error)
 	ListInstallationSubscriptions(ctx context.Context, installationID string) ([]RelaySubscription, error)
+	ListScheduledBindings(ctx context.Context, arg ListScheduledBindingsParams) ([]RelayFeedBinding, error)
+	MarkScheduledBinding(ctx context.Context, arg MarkScheduledBindingParams) (int64, error)
 	PruneConsumedChallenges(ctx context.Context, arg PruneConsumedChallengesParams) (int64, error)
 	PruneExpiredDedup(ctx context.Context, arg PruneExpiredDedupParams) (int64, error)
 	PruneExpiredJobs(ctx context.Context, arg PruneExpiredJobsParams) (int64, error)
@@ -53,6 +57,7 @@ type Querier interface {
 	PutSubscription(ctx context.Context, arg PutSubscriptionParams) (int64, error)
 	ReleaseInstallation(ctx context.Context, arg ReleaseInstallationParams) (int64, error)
 	ReleaseSource(ctx context.Context, arg ReleaseSourceParams) error
+	SetRoundJobWindow(ctx context.Context, arg SetRoundJobWindowParams) error
 }
 
 var _ Querier = (*Queries)(nil)

@@ -31,6 +31,11 @@ const (
 	// It proves neither a completed payment nor a received amount.
 	FeedClassPayment uint32 = 2
 
+	// FeedClassRound permits schedule-aware registration and short-lived
+	// signing wakes. Both wallet and subscriber must explicitly authorize
+	// it.
+	FeedClassRound uint32 = 4
+
 	// FeedTokenSize is the length of a producer-issued correlation token.
 	// A token alone never authorizes a mailbox read or acknowledgement.
 	FeedTokenSize = 32
@@ -51,7 +56,8 @@ func validFeedGrantID(id string) bool {
 
 // validFeedClasses rejects empty masks and unsupported event classes.
 func validFeedClasses(classes uint32) bool {
-	return classes != 0 && classes&^(FeedClassWake|FeedClassPayment) == 0
+	return classes != 0 &&
+		classes&^(FeedClassWake|FeedClassPayment|FeedClassRound) == 0
 }
 
 // validateFeedMutationShape validates canonical fields without a local clock.
@@ -181,6 +187,15 @@ func ValidateFeedEvent(event *pb.WakeFeedEvent) error {
 		event.Generation > math.MaxInt64 ||
 		!validFeedClasses(event.EventClasses) ||
 		event.ExpiresAtUnix <= 0 || !validFeedGrantID(event.GrantId) {
+		return ErrInvalidAuthorization
+	}
+
+	if event.EventClasses&FeedClassRound != 0 {
+		if event.RoundDeadlineUnix <= 0 ||
+			event.RoundDeadlineUnix > event.ExpiresAtUnix {
+			return ErrInvalidAuthorization
+		}
+	} else if event.RoundDeadlineUnix != 0 {
 		return ErrInvalidAuthorization
 	}
 

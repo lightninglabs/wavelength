@@ -15,7 +15,7 @@ const (
 	OperationManage = "manage"
 )
 
-// Scope identifies the only two notification permissions a relay can issue.
+// Scope identifies a fixed delivery policy; round lanes are silent wakes.
 type Scope string
 
 const (
@@ -23,6 +23,11 @@ const (
 	ScopeWake Scope = "wake"
 	// ScopeAlert permits an authorized incoming-payment notification.
 	ScopeAlert Scope = "alert"
+	// ScopeRound is a short-lived signing wake with an independent budget.
+	ScopeRound Scope = "round"
+	// ScopeSchedule wakes an opted-in client inside a published join
+	// window.
+	ScopeSchedule Scope = "schedule"
 )
 
 // AlertPresentation selects the app-authorized treatment of payment events.

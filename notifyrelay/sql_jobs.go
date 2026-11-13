@@ -20,7 +20,8 @@ func enqueueSQLJobTx(ctx context.Context, q *sqlc.Queries,
 	if sub.ExpiresAt <= now.Unix() {
 		return ErrNotFound
 	}
-	if scope != ScopeWake && scope != ScopeAlert {
+	if scope != ScopeWake && scope != ScopeAlert &&
+		scope != ScopeRound && scope != ScopeSchedule {
 		return ErrNotFound
 	}
 	if scope == ScopeAlert && !sub.AlertsEnabled {
@@ -44,7 +45,7 @@ func enqueueSQLJobTx(ctx context.Context, q *sqlc.Queries,
 	id := string(scope) + "/" + sub.ID
 	_, err := q.GetJob(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
-		count, err := q.CountPendingJobs(ctx)
+		count, err := q.CountPendingJobsForScope(ctx, string(scope))
 		if err != nil {
 			return err
 		}
@@ -260,9 +261,14 @@ func sqlDelivery(job sqlc.RelayJob, sub sqlc.RelaySubscription,
 		),
 	}
 
+	scope := frozen.Scope
+	if scope == ScopeRound || scope == ScopeSchedule {
+		scope = ScopeWake
+	}
+
 	return &Delivery{
 		DeviceToken: owner.DeviceToken, Topic: owner.Policy.Topic,
-		Environment: owner.Policy.APNSEnvironment, Scope: frozen.Scope,
+		Environment: owner.Policy.APNSEnvironment, Scope: scope,
 		Presentation: AlertPresentation(sub.Presentation),
 		RouteID:      sub.RouteID,
 		EventHash:    job.EventHash, CollapseID: secretHash(job.ID),
@@ -320,9 +326,19 @@ func completeSQLJob(ctx context.Context, q *sqlc.Queries, sent Delivery,
 	// The installation lease owns this effect; only job retirement below
 	// depends on the surviving job claim.
 	if result.Outcome == OutcomeAccepted {
-		if sent.Scope == ScopeWake {
+		switch sent.job.Scope {
+		case ScopeWake:
 			owner.NextWakeAt = now.Add(wakeQuietPeriod).UnixNano()
-		} else {
+
+		case ScopeRound:
+			owner.NextRoundAt = now.Add(roundQuietPeriod).UnixNano()
+
+		case ScopeSchedule:
+			owner.NextScheduleAt = now.
+				Add(scheduleQuietPeriod).
+				UnixNano()
+
+		case ScopeAlert:
 			owner.NextAlertAt = now.Add(alertQuietPeriod).UnixNano()
 		}
 		if err := saveSQLInstallation(ctx, q, owner); err != nil {
@@ -381,6 +397,9 @@ func completeSQLJob(ctx context.Context, q *sqlc.Queries, sent Delivery,
 	case OutcomeRetry:
 		delay := time.Second << min(job.Attempts, int32(6))
 		delay = max(delay, result.RetryAfter)
+		if sent.job.Scope == ScopeRound {
+			delay = min(delay, roundQuietPeriod)
+		}
 		next = now.Add(min(delay, 5*time.Minute)).UnixNano()
 
 	default:

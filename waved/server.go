@@ -4724,10 +4724,18 @@ func (s *Server) initRoundActor(ctx context.Context,
 		}
 	}
 
+	// Host-driven intake may have only fifteen seconds after a push.
+	// Preserve the opening margin and spread joins over one more second.
+	var registrationWakeJitter time.Duration
+	if s.cfg.HostDrivenIngress {
+		registrationWakeJitter = time.Second
+	}
+
 	roundCfg := &round.RoundClientConfig{
-		Name:   "round-client",
-		Logger: s.subLogger(round.Subsystem),
-		Wallet: clientWallet,
+		Name:                   "round-client",
+		RegistrationWakeJitter: registrationWakeJitter,
+		Logger:                 s.subLogger(round.Subsystem),
+		Wallet:                 clientWallet,
 		SigningExecutor: round.NewSigningExecutor(
 			signingWorkers,
 		),

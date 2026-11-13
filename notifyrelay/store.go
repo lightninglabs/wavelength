@@ -29,24 +29,29 @@ const (
 	maxDedupPerRoute        = 1024
 	maxDedupPerInstallation = 1024
 	maxDedupRecords         = 100_000
-	maxPendingJobs          = 4096
+	// Existing wake/alert work shares one pool. Each new round lane has
+	// its own equally bounded pool so future schedules cannot block
+	// signing or payment delivery. Total job storage is at most 3x this.
+	maxPendingJobs = 4096
 )
 
 // installation stores public management evidence and a private APNs token.
 // TokenRevision fences invalid-token responses from an older provider request.
 type installation struct {
-	ID            string    `json:"id"`
-	Policy        AppConfig `json:"policy"`
-	PublicKey     []byte    `json:"public_key"`
-	Receipt       []byte    `json:"receipt"`
-	Counter       uint32    `json:"counter"`
-	DeviceToken   string    `json:"device_token"`
-	TokenRevision uint64    `json:"token_revision"`
-	TokenUpdated  int64     `json:"token_updated"`
-	NextWakeAt    int64     `json:"next_wake_at"`
-	NextAlertAt   int64     `json:"next_alert_at"`
-	Disabled      bool      `json:"disabled"`
-	Deleted       bool      `json:"deleted"`
+	ID             string    `json:"id"`
+	Policy         AppConfig `json:"policy"`
+	PublicKey      []byte    `json:"public_key"`
+	Receipt        []byte    `json:"receipt"`
+	Counter        uint32    `json:"counter"`
+	DeviceToken    string    `json:"device_token"`
+	TokenRevision  uint64    `json:"token_revision"`
+	TokenUpdated   int64     `json:"token_updated"`
+	NextWakeAt     int64     `json:"next_wake_at"`
+	NextRoundAt    int64     `json:"next_round_at"`
+	NextScheduleAt int64     `json:"next_schedule_at"`
+	NextAlertAt    int64     `json:"next_alert_at"`
+	Disabled       bool      `json:"disabled"`
+	Deleted        bool      `json:"deleted"`
 }
 
 // relayJob coalesces new work while a provider request is in flight. Completing

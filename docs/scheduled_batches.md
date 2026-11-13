@@ -285,3 +285,21 @@ visible through round status and logs; they do not create a wallet activity row.
   actor does not process messages for other rounds.
 - Only the client adjusts for clock offset. The operator enforces the published
   window exactly, so the published window is always the real one.
+
+## Short host execution windows
+
+Host-driven embedded runtimes cap registration jitter at one second after the
+existing two-second opening margin. Their join is therefore eligible between
+`opens + 2s` and `opens + 3s`, rather than anywhere in the first half-window.
+This leaves most of a fifteen-second background callback for wallet preparation
+and transport. Ordinary continuously running clients retain the wider spread.
+The cutoff, clock-offset estimate, pinned selection, fee authorization and
+restart nonce fence are unchanged.
+
+A publisher with explicit round-wake consent can attempt a silent wake when
+registration opens. After the join, fresh signing phases receive short-lived
+wakes independent of ordinary maintenance throttling. The app must keep the
+unlocked durable runtime and signing sessions alive across host windows. A
+process restart still takes authoritative signing recovery; it never recreates
+lost MuSig2 sessions. Successful real-device registration and signing remain
+an activation acceptance test, separate from provider acceptance and unit tests.

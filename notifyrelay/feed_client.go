@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"time"
 
+	"github.com/lightninglabs/wavelength/arkrpc"
 	pb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/lightninglabs/wavelength/rpcauth"
 	"github.com/lightninglabs/wavelength/serverconn"
@@ -17,6 +18,7 @@ import (
 // its Step loop and joins that loop before Close and database shutdown.
 // It holds a subscriber key, never wallet-signing authority.
 type FeedSubscriber struct {
+	schedule   *roundSchedule
 	ingress    *feedIngress
 	connection *grpc.ClientConn
 }
@@ -92,9 +94,16 @@ func NewFeedSubscriber(ctx context.Context, store *SQLStore,
 		signature: hex.EncodeToString(signature.Serialize()),
 	}
 
-	return &FeedSubscriber{connection: connection, ingress: &feedIngress{
-		store: store, source: source, mailbox: transport,
-	}}, nil
+	return &FeedSubscriber{
+		connection: connection,
+		schedule: &roundSchedule{
+			store: store, source: source,
+			client: arkrpc.NewArkServiceClient(connection),
+		},
+		ingress: &feedIngress{
+			store: store, source: source, mailbox: transport,
+		},
+	}, nil
 }
 
 // Step commits one bounded source prefix and its local push obligations. A

@@ -177,3 +177,47 @@ The separately configured swap connection needs its existing explicit issuer
 pin and a transport with the direct feed service. A source challenge is checked
 against that pin before the wallet signs. Registration can run before ingress
 starts, but cannot unlock a wallet or bypass identity initialization.
+
+## Opt-in round wakes
+
+Class bit 2 (`4`, `FeedClassRound`) separately authorizes scheduled registration
+and urgent round-signing hints. The signed mask covers this permission in both
+wallet delegation and publisher consent. Existing masks 1, 2 and 3 keep their
+existing transcripts and behavior. Do not offer class 4 until the producer,
+relay and host support it. A producer that lacks it rejects the new grant;
+clients must retain their existing grant rather than remove and recreate it.
+
+A producer uses class 4 only for its own interactive round events. It includes
+`round_deadline_unix`, no later than grant expiry. That deadline is a delivery
+hint, never permission to join, sign, change fees or recreate a signer session.
+Source work, the coalesced class and its latest deadline share one transaction.
+An expired phase cannot regain urgency when an ordinary event re-arms a feed
+occurrence. A receiver drops expired round hints while committing its source
+checkpoint, so stale work cannot hold up other routes.
+
+A publisher can offer mask 5 for an operator: ordinary protocol wakes plus
+round wakes. Its relay reads that configured operator's authenticated `GetInfo`
+schedule. It queues a silent wake inside the next published registration
+window for each opted-in binding. No publisher device scheduler or platform
+credential is added to the producer.
+
+The reference relay preserves the ordinary twenty-minute maintenance budget.
+Scheduled wakes have a separate twenty-minute per-device budget; dense
+schedules can therefore skip slots. Signing wakes have an independent
+five-second per-device quiet period, coalesce per route and expire within one
+minute or the earlier producer deadline. All routes on a device share that
+budget and delivery lease. Signing jobs take precedence over maintenance.
+Neither a source ACK nor APNs acceptance proves phone execution.
+
+The relay stores the selected cutoff with each local scheduled job. Duplicate
+steps and restarts cannot enqueue the same route/slot again. It processes at
+most 64 bindings per transaction, ahead of the window, and derives local times
+from the operator's reported clock. A missing or malformed schedule produces
+no guessed timetable. Future job expiry remains bounded by both the local
+subscription and the producer grant.
+
+Activate the producer first, then the capable host/SDK, then opt the publisher
+source into class 4 and renew consent. Older relays reject class-4 source policy;
+older hosts reject the new offer. They must not be enrolled through this policy.
+The new relay and producer schemas preserve existing authority and pending jobs.
+Rollback after activation requires a compatible forward fix.

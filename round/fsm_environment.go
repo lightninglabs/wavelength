@@ -61,6 +61,11 @@ type ClientEnvironment struct {
 	// as is.
 	OperatorTermsSource OperatorTermsSource
 
+	// RegistrationWakeJitter caps jitter after the opening margin for
+	// hosts with short execution windows. Zero keeps window/2 spreading.
+	// It never changes a pinned selection or the cutoff safety margin.
+	RegistrationWakeJitter time.Duration
+
 	// ChainParams are the Bitcoin network parameters.
 	ChainParams *chaincfg.Params
 
