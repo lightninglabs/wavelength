@@ -129,8 +129,8 @@ func TestMaintenanceWindowScansAfterFailedPump(t *testing.T) {
 						pumpErr
 				},
 			})
-			c.maintain = func(context.Context) (
-				uint32, bool, bool) {
+			c.maintain = func(context.Context) (uint32, bool,
+				bool) {
 
 				order = append(order, "scan")
 
