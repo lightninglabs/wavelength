@@ -148,7 +148,21 @@ func TestAssetUnrollClaimsAsset(t *testing.T) {
 		t, chainsource.DefaultFinalityDepth, submitted.TargetConfs,
 	)
 
-	txconfirmRef.emitConfirmed(t, 2, claimTx.TxHash(), 106)
+	// The spend watch on the VTXO reports the claim at its first
+	// confirmation. That is not final, so the job keeps waiting for
+	// txconfirm.
+	mustAsk(t, unrollActor.Ref(), &SpendObservedMsg{
+		Outpoint:       proof.TargetOutpoint(),
+		SpendingTxid:   claimTx.TxHash(),
+		SpendingHeight: 106,
+	})
+	stateResp, ok := mustAsk(
+		t, unrollActor.Ref(), &GetStateRequest{},
+	).(*GetStateResp)
+	require.True(t, ok)
+	require.Equal(t, PhaseSweepConfirmation, stateResp.Phase)
+
+	txconfirmRef.emitConfirmed(t, 2, claimTx.TxHash(), 111)
 	require.Eventually(t, func() bool {
 		stateResp, ok := mustAsk(
 			t, unrollActor.Ref(), &GetStateRequest{},
@@ -158,6 +172,6 @@ func TestAssetUnrollClaimsAsset(t *testing.T) {
 		return stateResp.Phase == PhaseCompleted
 	}, testTimeout, 10*time.Millisecond)
 
-	_, ok := ledgerSink.AwaitMessage(50 * time.Millisecond)
+	_, ok = ledgerSink.AwaitMessage(50 * time.Millisecond)
 	require.False(t, ok, "an asset claim books no exit cost")
 }
