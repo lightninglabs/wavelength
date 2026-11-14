@@ -2,6 +2,7 @@ package waved
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -23,6 +24,10 @@ const (
 	// AssetBackendTapd verifies Taproot Assets proofs through a tapd node.
 	AssetBackendTapd = "tapd"
 
+	// AssetBackendEmbedded runs the asset engine inside the daemon, on
+	// the daemon wallet's seed, chain backend and database.
+	AssetBackendEmbedded = "embedded"
+
 	// DefaultAssetBackend is the asset backend used when none is set.
 	DefaultAssetBackend = AssetBackendNone
 
@@ -33,11 +38,17 @@ const (
 
 // AssetsConfig selects the backend that verifies Taproot Assets.
 type AssetsConfig struct {
-	// Backend selects the asset backend: "none" or "tapd".
+	// Backend selects the asset backend: "none", "tapd" or "embedded".
 	Backend string `mapstructure:"backend"`
 
 	// Tapd configures the tapd node used by the "tapd" backend.
 	Tapd *TapdConfig `mapstructure:"tapd"`
+
+	// GroupKeys lists, as hex compressed public keys, the asset groups
+	// the "embedded" backend trusts beyond those of the assets a request
+	// names. A proof of a grouped asset verifies only for a trusted
+	// group.
+	GroupKeys []string `mapstructure:"groupkeys"`
 }
 
 // TapdConfig configures the connection to a tapd node.
@@ -93,10 +104,52 @@ func (c *Config) validateAssetsConfig() error {
 
 		return nil
 
+	case AssetBackendEmbedded:
+		// The engine derives its keys from the daemon wallet's own
+		// seed, which an lnd wallet does not expose.
+		switch c.Wallet.Type {
+		case WalletTypeLwwallet, WalletTypeBtcwallet:
+		default:
+			return fmt.Errorf("assets.backend embedded requires "+
+				"wallet.type %s or %s", WalletTypeLwwallet,
+				WalletTypeBtcwallet)
+		}
+		if c.Network != "regtest" {
+			return fmt.Errorf("assets.backend embedded is "+
+				"available on regtest only: network is %s",
+				c.Network)
+		}
+		if _, err := c.Assets.groupKeys(); err != nil {
+			return err
+		}
+
+		return nil
+
 	default:
-		return fmt.Errorf("unknown assets.backend %q (want %s or %s)",
-			c.Assets.Backend, AssetBackendNone, AssetBackendTapd)
+		return fmt.Errorf("unknown assets.backend %q (want %s, "+
+			"%s or %s)", c.Assets.Backend, AssetBackendNone,
+			AssetBackendTapd, AssetBackendEmbedded)
 	}
+}
+
+// groupKeys parses the configured trusted asset group keys.
+func (c *AssetsConfig) groupKeys() ([]tapsdk.PubKey, error) {
+	keys := make([]tapsdk.PubKey, 0, len(c.GroupKeys))
+	for _, encoded := range c.GroupKeys {
+		raw, err := hex.DecodeString(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("assets.groupkeys: %q is "+
+				"not hex: %w", encoded, err)
+		}
+		key, err := tapsdk.ParsePubKey(raw)
+		if err != nil {
+			return nil, fmt.Errorf("assets.groupkeys: %q is not a "+
+				"compressed public key: %w", encoded, err)
+		}
+		keys = append(keys, key)
+	}
+
+	return keys, nil
 }
 
 // connectAssetBackend connects the configured asset backend and returns its
@@ -114,7 +167,7 @@ func (s *Server) connectAssetBackend(ctx context.Context) (
 		return nil, nil, fmt.Errorf("connect tapd asset backend: %w",
 			err)
 	}
-	s.tapdClient = client
+	s.assetClient = client
 	cleanup := func() {
 		if err := client.Close(); err != nil {
 			s.log.DebugS(ctx, "Unable to close tapd connection",
@@ -213,27 +266,22 @@ func (s *Server) newAssetClaimer(client *tapgrpc.Client) (*tapassets.Claimer,
 	})
 }
 
-// startAssetDeposits starts the asset deposit service on the tapd backend.
-// The returned cleanup stops the deposit watcher.
+// startAssetDeposits starts the asset deposit service on the connected asset
+// backend. The returned cleanup stops the deposit watcher.
 func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 	func(), error) {
 
-	if s.tapdClient == nil {
+	if s.assetClient == nil {
 		return func() {}, nil
 	}
 
-	journal, err := tapassets.NewFileStore(
-		filepath.Join(
-			s.cfg.NetworkDir(),
-			"assets", "onboarding",
-		),
-	)
+	journal, err := s.assetDepositJournal(store)
 	if err != nil {
 		return nil, err
 	}
 	onboarder, err := tapassets.NewOnboarder(tapassets.OnboarderConfig{
 		Wallet: tapsdk.NewWallet(
-			s.tapdClient, tapsdk.Network(s.cfg.Network),
+			s.assetClient, tapsdk.Network(s.cfg.Network),
 		),
 		Store: journal,
 		Funder: &depositFunder{
@@ -250,7 +298,8 @@ func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 	s.assetDeposits = newAssetDepositService(&assetDepositConfig{
 		log:              s.log,
 		store:            depositStore,
-		tapd:             s.tapdClient,
+		backend:          s.assetClient,
+		signsAnchors:     s.embeddedAssets != nil,
 		onboarder:        onboarder,
 		terms:            s.loadOperatorTerms,
 		quoteBoardingFee: s.quoteBoardingFee,
@@ -279,4 +328,20 @@ func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 		cancel()
 		<-done
 	}, nil
+}
+
+// assetDepositJournal returns the journal that makes deposits idempotent.
+// The embedded backend keeps it in the database, since a browser has no
+// files; the tapd backend keeps its files.
+func (s *Server) assetDepositJournal(store *db.Store) (tapassets.Store, error) {
+	if s.embeddedAssets != nil {
+		return &assetJournal{store: db.NewAssetEngineStore(store)}, nil
+	}
+
+	return tapassets.NewFileStore(
+		filepath.Join(
+			s.cfg.NetworkDir(),
+			"assets", "onboarding",
+		),
+	)
 }

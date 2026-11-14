@@ -133,14 +133,48 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   default) installs no verifier, so a round that would create an asset VTXO
   for this daemon fails before signing. `tapd` dials tapd at startup, checks
   that it runs on the daemon's network, and refuses to start otherwise.
-- `DepositAsset` exists only with `assets.backend=tapd`; without it the RPC
-  returns `FailedPrecondition`. tapd signs its own asset inputs at publish, and
+  `embedded` runs tap-sdk's in-process engine and needs no tapd.
+- The embedded backend (`asset_engine.go`) is the engine on three daemon
+  resources: `db.AssetEngineStore` for its keys, proofs and transfers,
+  the wallet's `keychain.SecretKeyRing` for its keys, and the chain backend
+  for headers and broadcast. It follows a transfer's confirmation through
+  the chain source actor, which orders the events of every backend and
+  reports the confirmation final once it is buried; `assetConfWatch` hands
+  those events to the engine one at a time, and ends them on a confirmation
+  whose block the backend could not fetch, so the engine registers again.
+  It requires `wallet.type`
+  `lwwallet` or `btcwallet`, because an lnd wallet keeps its seed, and it is
+  refused outside regtest. `startEmbeddedAssets` runs after the database
+  opens and before any round starts. The wallet may still be locked then, so
+  the key ring and chain ports resolve the wallet on each call and return
+  `errAssetWalletNotReady` until it is unlocked, and the engine resumes its
+  transfers only once `WaitForWalletServicesReady` resolves. The chain port
+  needs a backend that implements `chainsource.BlockHeaderSource`.
+- A proof of a grouped asset verifies on the embedded backend only for a
+  trusted group. Trust comes from `assets.groupkeys`, from the asset a
+  caller names (`groupTrustingVerifier` for a round's asset VTXO,
+  `ImportAssetProof` for a received asset), and from the assets the wallet
+  holds. The tapd backend asks tapd instead.
+- `NewAssetReceiveKeys`, `ImportAssetProof` and `ListOwnedAssets` are the
+  asset wallet of either backend through tap-sdk: keys a sender transfers an
+  asset to, the import of that transfer's proof, and the on-chain holdings.
+  `ImportAssetProof` checks that the proof is of the asset the caller
+  names before it stores anything. The embedded backend also verifies the
+  file first. tapd verifies each proof as the import inserts it, because
+  it knows a group only after the import has inserted the issuance.
+- `NewAssetFundingAddress` hands out a backing-wallet address through
+  `NewWalletAddress`. A deposit spends the daemon wallet's coins, and a
+  wallet SDK host has no other way to learn an address of that wallet.
+- `DepositAsset` needs an asset backend; without one the RPC returns
+  `FailedPrecondition`. tapd signs its own asset inputs at publish, and
   waved never connects to the lnd behind tapd. A tapd that
   `tapassets.TapdSignsAnchorInputs` rejects (older than v0.9.0) is refused
-  with `FailedPrecondition` before the deposit is recorded. A backend that
-  tap-sdk does not report as signing them fails the deposit with
-  `FailedPrecondition` before anything is sealed, and the wallet's leased
-  coins are released. The daemon
+  with `FailedPrecondition` before the deposit is recorded. The embedded
+  engine signs its anchor inputs with keys of the daemon's seed, so no
+  version gates it, and its deposit journal lives in the database instead
+  of files, which a browser does not have. A backend that tap-sdk does not
+  report as signing them fails the deposit with `FailedPrecondition` before
+  anything is sealed, and the wallet's leased coins are released. The daemon
   wallet pays and signs the deposit's Bitcoin through `depositFunder`, over the
   same adapter that funds CPFP children: `FundTemplate` funds an outputs-only
   template without signing it, and leases its inputs all or none, and
@@ -201,6 +235,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   history. This needs a tapd that
   accepts `input_proof_files`; an older tapd refuses the publish and the
   unroll retries at the next block.
+  The embedded backend creates no claimer: `ClaimAssetDeposit` returns
+  `FailedPrecondition` there, and the exit of an asset VTXO stops at
+  `vtxo.ErrAssetVTXORequiresTransition`.
 - `Server.run` registers a deferred `actorSystem.Shutdown()` **before** the
   deferred `db.Close()` so in-flight actor DB transactions drain before the
   connection pool tears down.

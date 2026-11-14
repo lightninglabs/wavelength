@@ -58,7 +58,7 @@ func TestAssetDeposit(t *testing.T) {
 	walletBefore, err := walletLnd.Client.Client.WalletBalance(ctx)
 	require.NoError(t, err)
 
-	req, deposit := confirmAssetTestDeposit(t, h, client, ref)
+	req, deposit := confirmAssetTestDeposit(t, h, client, ref, 0)
 
 	// The deposit spends tapd's asset anchors and the daemon wallet's
 	// coins, and nothing else of the lnd behind tapd.
@@ -135,7 +135,7 @@ func TestBoardAssetDeposit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
-	_, deposit := confirmAssetTestDeposit(t, h, client, ref)
+	_, deposit := confirmAssetTestDeposit(t, h, client, ref, 0)
 	outpoint, err := wire.NewOutPointFromString(deposit.Outpoint)
 	require.NoError(t, err)
 	output := h.Harness.GetRawTransaction(
@@ -238,7 +238,7 @@ func TestClaimAssetDeposit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 
-	confirmAssetTestDeposit(t, h, client, ref)
+	confirmAssetTestDeposit(t, h, client, ref, 0)
 	require.Eventually(t, func() bool {
 		return assetTestUtxoUnits(t, tapd, ref) == 400
 	}, time.Minute, time.Second, "tapd holds no asset change")
@@ -295,10 +295,11 @@ func TestClaimAssetDeposit(t *testing.T) {
 }
 
 // confirmAssetTestDeposit deposits 600 units of ref through waved, mines the
-// deposit and waits until its proof confirms.
+// deposit and waits until its proof confirms. A zero fee rate leaves the rate
+// to the daemon's fee estimate.
 func confirmAssetTestDeposit(t *testing.T, h *SysTestHarness,
-	client waverpc.DaemonServiceClient,
-	ref tapsdk.AssetRef) (*waverpc.DepositAssetRequest,
+	client waverpc.DaemonServiceClient, ref tapsdk.AssetRef,
+	satPerVByte uint64) (*waverpc.DepositAssetRequest,
 	*waverpc.AssetDeposit) {
 
 	t.Helper()
@@ -310,6 +311,7 @@ func confirmAssetTestDeposit(t *testing.T, h *SysTestHarness,
 		RequestId:   "alice-1",
 		AssetRef:    ref.String(),
 		AssetAmount: 600,
+		SatPerVbyte: satPerVByte,
 		MaxFeeSat:   50_000,
 	}
 	deposit, err := client.DepositAsset(ctx, req)
@@ -475,29 +477,10 @@ func assetTestUtxoUnits(t *testing.T, tapd *tapgrpc.Client,
 	return units
 }
 
-// startAssetDepositDaemon runs waved with the tapd asset backend, whose tapd
-// signs its own anchor inputs. The daemon wallet is a funded lnd of its own,
-// apart from the harness lnd behind tapd.
-func startAssetDepositDaemon(t *testing.T, h *SysTestHarness) (
-	waverpc.DaemonServiceClient, *fakeMailboxServer, *harness.LndInstance) {
-
+// startAssetTestOperator runs a fake operator mailbox that quotes the test
+// round fee, and returns its address.
+func startAssetTestOperator(t *testing.T) (string, *fakeMailboxServer) {
 	t.Helper()
-
-	walletLnd := h.Harness.StartAdditionalLND("asset-depositor")
-	addr, err := walletLnd.Client.WalletKit.NextAddr(
-		t.Context(),
-		"default", walletrpc.AddressType_TAPROOT_PUBKEY, false,
-	)
-	require.NoError(t, err)
-	h.Harness.Faucet(addr.String(), assetTestWalletFunds)
-	h.Harness.GenerateAndWait(1)
-	require.Eventually(t, func() bool {
-		balance, err := walletLnd.Client.Client.WalletBalance(
-			t.Context(),
-		)
-
-		return err == nil && balance.Confirmed == assetTestWalletFunds
-	}, time.Minute, time.Second, "daemon wallet never funded")
 
 	operatorPriv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
@@ -526,6 +509,35 @@ func startAssetDepositDaemon(t *testing.T, h *SysTestHarness) (
 	mailbox.setFeeQuote(&arkrpc.EstimateFeeResponse{
 		TotalFeeSat: testOperatorFeeSat,
 	})
+
+	return mailboxAddr, mailbox
+}
+
+// startAssetDepositDaemon runs waved with the tapd asset backend, whose tapd
+// signs its own anchor inputs. The daemon wallet is a funded lnd of its own,
+// apart from the harness lnd behind tapd.
+func startAssetDepositDaemon(t *testing.T, h *SysTestHarness) (
+	waverpc.DaemonServiceClient, *fakeMailboxServer, *harness.LndInstance) {
+
+	t.Helper()
+
+	walletLnd := h.Harness.StartAdditionalLND("asset-depositor")
+	addr, err := walletLnd.Client.WalletKit.NextAddr(
+		t.Context(),
+		"default", walletrpc.AddressType_TAPROOT_PUBKEY, false,
+	)
+	require.NoError(t, err)
+	h.Harness.Faucet(addr.String(), assetTestWalletFunds)
+	h.Harness.GenerateAndWait(1)
+	require.Eventually(t, func() bool {
+		balance, err := walletLnd.Client.Client.WalletBalance(
+			t.Context(),
+		)
+
+		return err == nil && balance.Confirmed == assetTestWalletFunds
+	}, time.Minute, time.Second, "daemon wallet never funded")
+
+	mailboxAddr, mailbox := startAssetTestOperator(t)
 
 	cfg := waved.DefaultConfig()
 	cfg.DataDir = t.TempDir()

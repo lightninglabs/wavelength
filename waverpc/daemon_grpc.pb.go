@@ -52,6 +52,10 @@ const (
 	DaemonService_ListAssetDeposits_FullMethodName                              = "/waverpc.DaemonService/ListAssetDeposits"
 	DaemonService_BoardAssetDeposit_FullMethodName                              = "/waverpc.DaemonService/BoardAssetDeposit"
 	DaemonService_ClaimAssetDeposit_FullMethodName                              = "/waverpc.DaemonService/ClaimAssetDeposit"
+	DaemonService_NewAssetReceiveKeys_FullMethodName                            = "/waverpc.DaemonService/NewAssetReceiveKeys"
+	DaemonService_ImportAssetProof_FullMethodName                               = "/waverpc.DaemonService/ImportAssetProof"
+	DaemonService_ListOwnedAssets_FullMethodName                                = "/waverpc.DaemonService/ListOwnedAssets"
+	DaemonService_NewAssetFundingAddress_FullMethodName                         = "/waverpc.DaemonService/NewAssetFundingAddress"
 	DaemonService_JoinNextRound_FullMethodName                                  = "/waverpc.DaemonService/JoinNextRound"
 	DaemonService_SweepBoardingUTXOs_FullMethodName                             = "/waverpc.DaemonService/SweepBoardingUTXOs"
 	DaemonService_ListBoardingSweeps_FullMethodName                             = "/waverpc.DaemonService/ListBoardingSweeps"
@@ -208,9 +212,10 @@ type DaemonServiceClient interface {
 	// the round FSM, which emits a JoinRoundRequest to the server.
 	Board(ctx context.Context, in *BoardRequest, opts ...grpc.CallOption) (*BoardResponse, error)
 	// DepositAsset funds a boarding output holding a Taproot Asset from the
-	// tapd wallet behind assets.tapd and tracks it until its proof
+	// asset wallet of the asset backend and tracks it until its proof
 	// confirms. Retrying with the same request_id resumes the same
-	// deposit. Requires assets.backend=tapd and tapd v0.9.0 or later.
+	// deposit. Requires an asset backend; a tapd backend must run tapd
+	// v0.9.0 or later.
 	DepositAsset(ctx context.Context, in *DepositAssetRequest, opts ...grpc.CallOption) (*AssetDeposit, error)
 	// ListAssetDeposits returns the asset deposits of this daemon.
 	ListAssetDeposits(ctx context.Context, in *ListAssetDepositsRequest, opts ...grpc.CallOption) (*ListAssetDepositsResponse, error)
@@ -225,6 +230,24 @@ type DaemonServiceClient interface {
 	// Requires a tapd that confirms transfers spending assets it does not
 	// hold.
 	ClaimAssetDeposit(ctx context.Context, in *ClaimAssetDepositRequest, opts ...grpc.CallOption) (*AssetDeposit, error)
+	// NewAssetReceiveKeys derives the keys a sender needs to transfer a
+	// Taproot Asset to this daemon's asset wallet on chain: the script key
+	// that will hold the asset and the internal key of its anchor output.
+	// The sender hands over the proof file of the transfer, which
+	// ImportAssetProof adds to the wallet. Requires an asset backend.
+	NewAssetReceiveKeys(ctx context.Context, in *NewAssetReceiveKeysRequest, opts ...grpc.CallOption) (*AssetReceiveKeys, error)
+	// ImportAssetProof verifies the proof file of an asset output sent to
+	// keys from NewAssetReceiveKeys and adds the asset to the daemon's
+	// asset wallet. Importing a known proof returns the same asset.
+	// Requires an asset backend.
+	ImportAssetProof(ctx context.Context, in *ImportAssetProofRequest, opts ...grpc.CallOption) (*OwnedAsset, error)
+	// ListOwnedAssets returns the Taproot Assets the daemon's asset wallet
+	// holds on chain. Assets held in VTXOs are reported by GetBalance.
+	ListOwnedAssets(ctx context.Context, in *ListOwnedAssetsRequest, opts ...grpc.CallOption) (*ListOwnedAssetsResponse, error)
+	// NewAssetFundingAddress returns a new address of the daemon's backing
+	// wallet. Bitcoin sent to it pays for asset deposits: the value of the
+	// deposit output and the miner fee. Requires an asset backend.
+	NewAssetFundingAddress(ctx context.Context, in *NewAssetFundingAddressRequest, opts ...grpc.CallOption) (*AssetFundingAddress, error)
 	// JoinNextRound asks the client round FSM to commit any currently
 	// queued round intents and emit a JoinRoundRequest to the operator.
 	// Useful after queueing refresh or leave intents that intentionally
@@ -638,6 +661,46 @@ func (c *daemonServiceClient) ClaimAssetDeposit(ctx context.Context, in *ClaimAs
 	return out, nil
 }
 
+func (c *daemonServiceClient) NewAssetReceiveKeys(ctx context.Context, in *NewAssetReceiveKeysRequest, opts ...grpc.CallOption) (*AssetReceiveKeys, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AssetReceiveKeys)
+	err := c.cc.Invoke(ctx, DaemonService_NewAssetReceiveKeys_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ImportAssetProof(ctx context.Context, in *ImportAssetProofRequest, opts ...grpc.CallOption) (*OwnedAsset, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OwnedAsset)
+	err := c.cc.Invoke(ctx, DaemonService_ImportAssetProof_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ListOwnedAssets(ctx context.Context, in *ListOwnedAssetsRequest, opts ...grpc.CallOption) (*ListOwnedAssetsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListOwnedAssetsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListOwnedAssets_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) NewAssetFundingAddress(ctx context.Context, in *NewAssetFundingAddressRequest, opts ...grpc.CallOption) (*AssetFundingAddress, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AssetFundingAddress)
+	err := c.cc.Invoke(ctx, DaemonService_NewAssetFundingAddress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) JoinNextRound(ctx context.Context, in *JoinNextRoundRequest, opts ...grpc.CallOption) (*JoinNextRoundResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(JoinNextRoundResponse)
@@ -981,9 +1044,10 @@ type DaemonServiceServer interface {
 	// the round FSM, which emits a JoinRoundRequest to the server.
 	Board(context.Context, *BoardRequest) (*BoardResponse, error)
 	// DepositAsset funds a boarding output holding a Taproot Asset from the
-	// tapd wallet behind assets.tapd and tracks it until its proof
+	// asset wallet of the asset backend and tracks it until its proof
 	// confirms. Retrying with the same request_id resumes the same
-	// deposit. Requires assets.backend=tapd and tapd v0.9.0 or later.
+	// deposit. Requires an asset backend; a tapd backend must run tapd
+	// v0.9.0 or later.
 	DepositAsset(context.Context, *DepositAssetRequest) (*AssetDeposit, error)
 	// ListAssetDeposits returns the asset deposits of this daemon.
 	ListAssetDeposits(context.Context, *ListAssetDepositsRequest) (*ListAssetDepositsResponse, error)
@@ -998,6 +1062,24 @@ type DaemonServiceServer interface {
 	// Requires a tapd that confirms transfers spending assets it does not
 	// hold.
 	ClaimAssetDeposit(context.Context, *ClaimAssetDepositRequest) (*AssetDeposit, error)
+	// NewAssetReceiveKeys derives the keys a sender needs to transfer a
+	// Taproot Asset to this daemon's asset wallet on chain: the script key
+	// that will hold the asset and the internal key of its anchor output.
+	// The sender hands over the proof file of the transfer, which
+	// ImportAssetProof adds to the wallet. Requires an asset backend.
+	NewAssetReceiveKeys(context.Context, *NewAssetReceiveKeysRequest) (*AssetReceiveKeys, error)
+	// ImportAssetProof verifies the proof file of an asset output sent to
+	// keys from NewAssetReceiveKeys and adds the asset to the daemon's
+	// asset wallet. Importing a known proof returns the same asset.
+	// Requires an asset backend.
+	ImportAssetProof(context.Context, *ImportAssetProofRequest) (*OwnedAsset, error)
+	// ListOwnedAssets returns the Taproot Assets the daemon's asset wallet
+	// holds on chain. Assets held in VTXOs are reported by GetBalance.
+	ListOwnedAssets(context.Context, *ListOwnedAssetsRequest) (*ListOwnedAssetsResponse, error)
+	// NewAssetFundingAddress returns a new address of the daemon's backing
+	// wallet. Bitcoin sent to it pays for asset deposits: the value of the
+	// deposit output and the miner fee. Requires an asset backend.
+	NewAssetFundingAddress(context.Context, *NewAssetFundingAddressRequest) (*AssetFundingAddress, error)
 	// JoinNextRound asks the client round FSM to commit any currently
 	// queued round intents and emit a JoinRoundRequest to the operator.
 	// Useful after queueing refresh or leave intents that intentionally
@@ -1179,6 +1261,18 @@ func (UnimplementedDaemonServiceServer) BoardAssetDeposit(context.Context, *Boar
 }
 func (UnimplementedDaemonServiceServer) ClaimAssetDeposit(context.Context, *ClaimAssetDepositRequest) (*AssetDeposit, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ClaimAssetDeposit not implemented")
+}
+func (UnimplementedDaemonServiceServer) NewAssetReceiveKeys(context.Context, *NewAssetReceiveKeysRequest) (*AssetReceiveKeys, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method NewAssetReceiveKeys not implemented")
+}
+func (UnimplementedDaemonServiceServer) ImportAssetProof(context.Context, *ImportAssetProofRequest) (*OwnedAsset, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ImportAssetProof not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListOwnedAssets(context.Context, *ListOwnedAssetsRequest) (*ListOwnedAssetsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListOwnedAssets not implemented")
+}
+func (UnimplementedDaemonServiceServer) NewAssetFundingAddress(context.Context, *NewAssetFundingAddressRequest) (*AssetFundingAddress, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method NewAssetFundingAddress not implemented")
 }
 func (UnimplementedDaemonServiceServer) JoinNextRound(context.Context, *JoinNextRoundRequest) (*JoinNextRoundResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method JoinNextRound not implemented")
@@ -1855,6 +1949,78 @@ func _DaemonService_ClaimAssetDeposit_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_NewAssetReceiveKeys_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NewAssetReceiveKeysRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).NewAssetReceiveKeys(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_NewAssetReceiveKeys_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).NewAssetReceiveKeys(ctx, req.(*NewAssetReceiveKeysRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ImportAssetProof_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ImportAssetProofRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ImportAssetProof(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ImportAssetProof_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ImportAssetProof(ctx, req.(*ImportAssetProofRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ListOwnedAssets_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListOwnedAssetsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListOwnedAssets(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListOwnedAssets_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListOwnedAssets(ctx, req.(*ListOwnedAssetsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_NewAssetFundingAddress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NewAssetFundingAddressRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).NewAssetFundingAddress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_NewAssetFundingAddress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).NewAssetFundingAddress(ctx, req.(*NewAssetFundingAddressRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_JoinNextRound_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(JoinNextRoundRequest)
 	if err := dec(in); err != nil {
@@ -2346,6 +2512,22 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ClaimAssetDeposit",
 			Handler:    _DaemonService_ClaimAssetDeposit_Handler,
+		},
+		{
+			MethodName: "NewAssetReceiveKeys",
+			Handler:    _DaemonService_NewAssetReceiveKeys_Handler,
+		},
+		{
+			MethodName: "ImportAssetProof",
+			Handler:    _DaemonService_ImportAssetProof_Handler,
+		},
+		{
+			MethodName: "ListOwnedAssets",
+			Handler:    _DaemonService_ListOwnedAssets_Handler,
+		},
+		{
+			MethodName: "NewAssetFundingAddress",
+			Handler:    _DaemonService_NewAssetFundingAddress_Handler,
 		},
 		{
 			MethodName: "JoinNextRound",

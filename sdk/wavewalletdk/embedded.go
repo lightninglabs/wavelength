@@ -293,6 +293,19 @@ func applyConfigOverrides(daemonCfg *waved.Config, cfg Config) {
 	if cfg.AllowMainnet {
 		daemonCfg.AllowMainnet = true
 	}
+	if cfg.AssetsBackend != "" || len(cfg.AssetGroupKeys) != 0 {
+		if daemonCfg.Assets == nil {
+			daemonCfg.Assets = &waved.AssetsConfig{}
+		}
+		if cfg.AssetsBackend != "" {
+			daemonCfg.Assets.Backend = cfg.AssetsBackend
+		}
+		if len(cfg.AssetGroupKeys) != 0 {
+			daemonCfg.Assets.GroupKeys = append(
+				[]string(nil), cfg.AssetGroupKeys...,
+			)
+		}
+	}
 	if cfg.MaxOperatorFeeSat != 0 {
 		daemonCfg.MaxOperatorFeeSat = cfg.MaxOperatorFeeSat
 	}
@@ -432,6 +445,9 @@ func cloneDaemonConfig(cfg *waved.Config) *waved.Config {
 			tapdCfg := *cfg.Assets.Tapd
 			assetsCfg.Tapd = &tapdCfg
 		}
+		assetsCfg.GroupKeys = append(
+			[]string(nil), cfg.Assets.GroupKeys...,
+		)
 		clone.Assets = &assetsCfg
 	}
 	if cfg.FeeEstimation != nil {

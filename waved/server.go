@@ -27,7 +27,8 @@ import (
 	btcwalletpkg "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/lndclient"
-	tapgrpc "github.com/lightninglabs/tap-sdk/grpc"
+	tapsdk "github.com/lightninglabs/tap-sdk"
+	"github.com/lightninglabs/tap-sdk/embedded"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/btcwbackend"
@@ -220,9 +221,14 @@ type Server struct {
 	// backend. It is nil when assets are disabled.
 	assetVTXOVerifier round.AssetVTXOVerifier
 
-	// tapdClient is the tapd connection of the tapd asset backend, nil
-	// when assets are disabled.
-	tapdClient *tapgrpc.Client
+	// assetClient is the connected asset backend, nil when assets are
+	// disabled: the tapd connection of the tapd backend, or the engine of
+	// the embedded one.
+	assetClient tapsdk.Client
+
+	// embeddedAssets is the engine of the embedded asset backend, nil on
+	// any other backend.
+	embeddedAssets *embedded.Client
 
 	// assetClaimer claims asset deposits and asset VTXOs back to the tapd
 	// wallet, nil when assets are disabled.
@@ -1603,6 +1609,14 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	// Build the activity-log store for the wavewalletrpc subserver.
 	s.activityStore = dbStore.NewActivityStore(s.clk)
 	s.cfg.ActivityStore = s.activityStore
+
+	// The embedded asset backend lives in the database, so it starts
+	// here, still before any round can need it.
+	stopEmbeddedAssets, err := s.startEmbeddedAssets(ctx, dbStore)
+	if err != nil {
+		return err
+	}
+	defer stopEmbeddedAssets()
 
 	stopAssetDeposits, err := s.startAssetDeposits(ctx, dbStore)
 	if err != nil {

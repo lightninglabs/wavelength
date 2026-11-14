@@ -48,9 +48,9 @@ const (
 	assetDepositPollTimeout = time.Minute
 )
 
-// assetDepositTapd is the slice of the tapd client that selects and exports
-// deposit proofs.
-type assetDepositTapd interface {
+// assetDepositBackend is the slice of the asset backend client that selects
+// and exports deposit proofs.
+type assetDepositBackend interface {
 	GetInfo(context.Context) (*tapsdk.Info, error)
 
 	ListUtxos(context.Context,
@@ -111,8 +111,13 @@ type assetDepositStore interface {
 type assetDepositService struct {
 	log       btclog.Logger
 	store     assetDepositStore
-	tapd      assetDepositTapd
+	backend   assetDepositBackend
 	onboarder assetOnboarder
+
+	// signsAnchors is set for a backend that signs its own anchor inputs
+	// at publish whatever version it reports, as the embedded engine
+	// does. tapd is asked for its version.
+	signsAnchors bool
 
 	// terms returns the operator terms the deposit policy commits to.
 	terms func() *types.OperatorTerms
@@ -151,7 +156,8 @@ type assetDepositService struct {
 type assetDepositConfig struct {
 	log              btclog.Logger
 	store            assetDepositStore
-	tapd             assetDepositTapd
+	backend          assetDepositBackend
+	signsAnchors     bool
 	onboarder        assetOnboarder
 	terms            func() *types.OperatorTerms
 	quoteBoardingFee boardingFeeQuoter
@@ -168,7 +174,8 @@ func newAssetDepositService(cfg *assetDepositConfig) *assetDepositService {
 	return &assetDepositService{
 		log:              cfg.log,
 		store:            cfg.store,
-		tapd:             cfg.tapd,
+		backend:          cfg.backend,
+		signsAnchors:     cfg.signsAnchors,
 		onboarder:        cfg.onboarder,
 		terms:            cfg.terms,
 		quoteBoardingFee: cfg.quoteBoardingFee,
@@ -222,10 +229,14 @@ func (d *assetDepositService) Deposit(ctx context.Context,
 	return d.fund(ctx, deposit)
 }
 
-// checkAnchorSigning fails unless tapd signs its own anchor inputs at
-// publish, since the daemon wallet pays the rest of the deposit.
+// checkAnchorSigning fails unless the asset backend signs its own anchor
+// inputs at publish, since the daemon wallet pays the rest of the deposit.
 func (d *assetDepositService) checkAnchorSigning(ctx context.Context) error {
-	info, err := d.tapd.GetInfo(ctx)
+	if d.signsAnchors {
+		return nil
+	}
+
+	info, err := d.backend.GetInfo(ctx)
 	if err != nil || info == nil {
 		return status.Errorf(codes.Unavailable, "read tapd info: %v",
 			err)
@@ -264,7 +275,7 @@ func (d *assetDepositService) create(ctx context.Context,
 	value := depositValue(terms, roundFee)
 
 	proofs, err := tapassets.SelectOnboardingProofs(
-		ctx, d.tapd, req.AssetRef, req.AssetAmount,
+		ctx, d.backend, req.AssetRef, req.AssetAmount,
 	)
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "select "+
@@ -525,7 +536,7 @@ func (d *assetDepositService) confirmPublished(ctx context.Context) {
 		return
 	}
 	depth := max(terms.MinConfirmations, wallet.MinBoardingConfs)
-	info, err := d.tapd.GetInfo(ctx)
+	info, err := d.backend.GetInfo(ctx)
 	if err != nil || info == nil {
 		d.log.DebugS(ctx, "Unable to read the tapd chain tip",
 			btclog.Fmt("error", "%v", err),
@@ -539,7 +550,7 @@ func (d *assetDepositService) confirmPublished(ctx context.Context) {
 			continue
 		}
 		proof, height, err := tapassets.ExportOnboardedProof(
-			ctx, d.tapd, deposit.Output.Outpoint,
+			ctx, d.backend, deposit.Output.Outpoint,
 		)
 		if errors.Is(err, tapassets.ErrOnboardedProofPending) {
 			continue
