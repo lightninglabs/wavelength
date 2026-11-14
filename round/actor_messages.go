@@ -94,6 +94,20 @@ func (m *WalletBoardingConfirmed) MessageType() string {
 // RoundReceivable implements actormsg.RoundReceivable marker interface.
 func (m *WalletBoardingConfirmed) RoundReceivable() {}
 
+// TriggerRegistrationRequest commits queued intents through the local round
+// owner. Unlike a server push, it has no remote wire method or payload.
+type TriggerRegistrationRequest struct {
+	actor.BaseMessage
+}
+
+// MessageType identifies a local request to register the pending round.
+func (*TriggerRegistrationRequest) MessageType() string {
+	return "TriggerRoundRegistration"
+}
+
+// RoundReceivable admits the request to both ordinary and durable owners.
+func (*TriggerRegistrationRequest) RoundReceivable() {}
+
 // ServerMessageNotification delivers a server FSM outbox message to the client.
 type ServerMessageNotification struct {
 	// wireMethod and wirePayload retain the original validated push.

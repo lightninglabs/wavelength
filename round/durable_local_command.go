@@ -13,6 +13,9 @@ func newDurableLocalCommand(msg actormsg.RoundReceivable) (
 	m := &durableClientCommand{}
 	var err error
 	switch req := msg.(type) {
+	case *TriggerRegistrationRequest:
+		m.Kind = clientCommandRegistration
+
 	case *GetClientStateRequest:
 		m.Kind = clientCommandGetState
 
@@ -50,6 +53,9 @@ func (m *durableClientCommand) localMessage() (actormsg.RoundReceivable,
 	error) {
 
 	switch m.Kind {
+	case clientCommandRegistration:
+		return &TriggerRegistrationRequest{}, nil
+
 	case clientCommandGetState:
 		return &GetClientStateRequest{}, nil
 

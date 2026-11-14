@@ -2038,6 +2038,11 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 
 		return a.handleServerMessage(ctx, m)
 
+	case *TriggerRegistrationRequest:
+		return a.handleServerMessage(ctx, &ServerMessageNotification{
+			Message: &IntentRequested{},
+		})
+
 	case *GetClientStateRequest:
 		return a.handleGetState(ctx, m)
 

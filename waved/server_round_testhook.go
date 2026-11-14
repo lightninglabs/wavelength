@@ -36,9 +36,7 @@ func (s *Server) TriggerRoundRegistration(ctx context.Context) error {
 	askCtx := context.WithoutCancel(ctx)
 
 	roundRef := round.NewServiceKey().Ref(s.actorSystem)
-	future := roundRef.Ask(askCtx, &round.ServerMessageNotification{
-		Message: &round.IntentRequested{},
-	})
+	future := roundRef.Ask(askCtx, &round.TriggerRegistrationRequest{})
 	result := future.Await(ctx)
 	if err := result.Err(); err != nil {
 		return fmt.Errorf("failed to trigger round registration: %w",
