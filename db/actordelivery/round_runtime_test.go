@@ -205,6 +205,13 @@ func testRoundRuntimeRestart(t *testing.T, rollback bool) {
 	first := start()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
+	// Manual registration must cross the actual SQL mailbox codec. An
+	// empty queue remains a typed no-op, and its reply must not strand the
+	// owner or prevent a later intent from being committed.
+	_, err = first.Ref().Ask(
+		ctx, &round.TriggerRegistrationRequest{},
+	).Await(ctx).Unpack()
+	require.ErrorIs(t, err, round.ErrNoPendingRound)
 	baseline, err := store.LoadCheckpoint(ctx, cfg.Name)
 	require.NoError(t, err)
 	_, err = first.Ref().Ask(ctx, &round.RegisterIntentRequest{

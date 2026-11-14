@@ -32,6 +32,7 @@ const (
 	clientCommandCohort       uint64 = 11
 	clientCommandTrigger      uint64 = 12
 	clientCommandBoardReply   uint64 = 13
+	clientCommandRegistration uint64 = 14
 )
 
 // durableClientCommand owns the data required to redeliver one local command.
@@ -78,7 +79,7 @@ func (m *durableClientCommand) stream() (*tlv.Stream, error) {
 
 // validate rejects unsupported command tags and unknown presence flags.
 func (m *durableClientCommand) validate() error {
-	if m.Kind < clientCommandIntent || m.Kind > clientCommandBoardReply {
+	if m.Kind < clientCommandIntent || m.Kind > clientCommandRegistration {
 		return fmt.Errorf("unknown durable client command: %d", m.Kind)
 	}
 	if m.Flags > 1 {
