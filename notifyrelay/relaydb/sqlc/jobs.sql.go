@@ -290,7 +290,7 @@ WHERE j.next_at <= $1 AND j.lease_until <= $1
     AND (j.scope != 'alert' OR s.alerts_enabled)
     AND CASE j.scope WHEN 'wake' THEN i.next_wake_at
         WHEN 'round' THEN i.next_round_at
-        WHEN 'schedule' THEN i.next_schedule_at ELSE i.next_alert_at END
+        WHEN 'schedule' THEN 0 ELSE i.next_alert_at END
         <= $1
 ORDER BY CASE WHEN j.scope = 'round' THEN 0 ELSE 1 END,
     j.next_at, j.id LIMIT $3

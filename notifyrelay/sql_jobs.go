@@ -334,9 +334,9 @@ func completeSQLJob(ctx context.Context, q *sqlc.Queries, sent Delivery,
 			owner.NextRoundAt = now.Add(roundQuietPeriod).UnixNano()
 
 		case ScopeSchedule:
-			owner.NextScheduleAt = now.
-				Add(scheduleQuietPeriod).
-				UnixNano()
+			// The per-binding cutoff marker deduplicates this slot.
+			// Success must not postpone the next registration
+			// window.
 
 		case ScopeAlert:
 			owner.NextAlertAt = now.Add(alertQuietPeriod).UnixNano()
