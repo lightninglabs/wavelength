@@ -57,8 +57,9 @@ window is not permission to reopen its data directory.
 
 A maintenance window first pumps ready protocol messages, then runs the same
 bounded expiry scan once and continues pumping until its host deadline. If the
-first pump fails or requires foreground, maintenance remains deferred. This
-reorders work; it adds no signing permission or native owner.
+first pump fails or requires foreground, the scan still runs before that result
+returns, provided the host context is live. Its own result determines whether
+maintenance is deferred. This adds no signing permission or native owner.
 
 Receive work needs the existing worker. `RunWorkWindow` takes at most 64 trusted
 local receive references and re-arms them after the first pump, even if that

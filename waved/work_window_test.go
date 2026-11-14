@@ -101,10 +101,61 @@ func verifyWorkWindowRearm(t *testing.T, pumpErr error) {
 		require.NoError(t, err)
 	}
 	require.Equal(t, []LightningReceiptReference{first, second}, refs)
-	require.GreaterOrEqual(t, len(order), 3)
-	require.Equal(t, []string{"pump", "resume", "resume"}, order[:3])
+	require.GreaterOrEqual(t, len(order), 4)
+	require.Equal(
+		t, []string{"pump", "resume", "resume", "scan"}, order[:4],
+	)
+	require.False(t, result.MaintenanceDeferred)
 	require.Empty(t, result.Receipts)
 	require.Equal(t, foreground, result.NeedsForeground)
+}
+
+// TestMaintenanceWindowScansAfterFailedPump preserves the expiry trigger when
+// the edge is offline or the mailbox head requires foreground handling.
+func TestMaintenanceWindowScansAfterFailedPump(t *testing.T) {
+	for _, pumpErr := range []error{
+		serverconn.ErrIngressNeedsForeground,
+		errors.New("edge offline"),
+	} {
+		t.Run(pumpErr.Error(), func(t *testing.T) {
+			var order []string
+			c := newWindowTestController(t, &windowTestIngress{
+				pump: func(context.Context) (
+					serverconn.IngressPumpResult, error) {
+
+					order = append(order, "pump")
+
+					return serverconn.IngressPumpResult{},
+						pumpErr
+				},
+			})
+			c.maintain = func(context.Context) (
+				uint32, bool, bool) {
+
+				order = append(order, "scan")
+
+				return 1, false, false
+			}
+			result, err := c.runWindowWithWork(
+				t.Context(), ReceiptWindowRequest{
+					WindowID: "maintenance",
+				},
+				false, nil,
+			)
+			foreground := errors.Is(
+				pumpErr, serverconn.ErrIngressNeedsForeground,
+			)
+			if foreground {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, pumpErr)
+			}
+			require.Equal(t, []string{"pump", "scan"}, order)
+			require.Equal(t, uint32(1), result.MaintenanceChecked)
+			require.False(t, result.MaintenanceDeferred)
+			require.Equal(t, foreground, result.NeedsForeground)
+		})
+	}
 }
 
 // TestWorkWindowValidationPrecedesNativeAccess rejects an entire invalid

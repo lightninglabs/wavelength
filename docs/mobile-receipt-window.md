@@ -57,9 +57,10 @@ host background tasks can call it without any enrolled invoice. It never reads
 or resumes an invoice source and always returns an empty receipt list.
 
 First it pumps one restricted mailbox batch so ready signing and receive work
-can advance before routine scans. If that pump needs foreground or fails, the
-window returns with `maintenance_deferred` set. Otherwise it samples the
-configured chain backend's current tip. A primary-key
+can advance before routine scans. Even if that pump needs foreground or fails,
+the window attempts its bounded expiry scan before returning the pump result,
+provided the host context is still live. The scan samples the configured chain
+backend's current tip. A primary-key
 keyset query selects at most 64 persisted VTXO identities under a finite
 ceiling. The manager resolves existing owners only. The caller drives their
 ordinary expiry FSM turns outside the manager receive loop, so refresh relays

@@ -281,14 +281,6 @@ func (c *receiptWindowController) runWindowWithWork(ctx context.Context,
 			}
 			workPending = false
 		}
-		if errors.Is(err, serverconn.ErrIngressNeedsForeground) {
-			result.NeedsForeground = true
-
-			return result, nil
-		}
-		if err != nil && windowCtx.Err() == nil {
-			return result, err
-		}
 		if maintenancePending && windowCtx.Err() == nil {
 			stepCtx, stop := context.WithTimeout(
 				windowCtx, 4*time.Second,
@@ -297,6 +289,14 @@ func (c *receiptWindowController) runWindowWithWork(ctx context.Context,
 				result.MaintenanceMore = c.maintain(stepCtx)
 			stop()
 			maintenancePending = false
+		}
+		if errors.Is(err, serverconn.ErrIngressNeedsForeground) {
+			result.NeedsForeground = true
+
+			return result, nil
+		}
+		if err != nil && windowCtx.Err() == nil {
+			return result, err
 		}
 		// An empty mailbox is no completion barrier. Source workers and
 		// direct swap transport can commit after this pull returns.

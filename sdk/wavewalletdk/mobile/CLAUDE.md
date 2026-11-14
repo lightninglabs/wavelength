@@ -141,9 +141,11 @@ See [warm invoice recovery](../../../docs/mobile-receipt-window.md).
 
 ## Bounded warm maintenance
 
-The host maintenance window samples current-tip expiry for at most 64 persisted
-VTXO IDs, drives existing owners outside the manager turn, retains a finite
-keyset cursor across windows, then pumps native durable round work. It shares
+The host maintenance window first pumps native durable round work, then
+samples current-tip expiry for at most 64 persisted VTXO IDs. It drives existing
+owners outside the manager turn and retains a finite keyset cursor across
+windows. A failed or foreground-only first pump still permits the bounded scan
+while the host context is live. It shares
 the receipt controller's mode lease, cancellation fence and final-access join.
 It performs no startup repair and produces no payment proof. See
 [background windows](../../../docs/mobile-receipt-window.md).
