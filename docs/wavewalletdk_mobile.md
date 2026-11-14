@@ -361,3 +361,25 @@ records add `amount_sat` when persisted source data proves it: outgoing caller
 recipients exclude change; incoming local output bindings exclude spent inputs.
 Missing legacy or pending amounts stay absent, not zero. No PSBT is materialized
 for these amounts and no arbitrary RPC is exposed.
+
+## Bounded work windows
+
+`RunWorkWindow(requestJSON, timeoutSeconds)` shares host foreground exclusion,
+unique-ID cancellation and shutdown ownership with `RunReceiptWindow`.
+`timeoutSeconds` must be 1 through 30. The request is:
+
+```json
+{
+  "window_id": "a-new-host-invocation-id",
+  "references": [{"source": "lightning_swap", "id": "existing-local-source-id"}]
+}
+```
+
+Use zero through 64 references from trusted local invoice enrollment for the
+selected wallet. Sources are `lightning_swap` and `credit_receive`; IDs must
+contain 1 through 128 bytes. A push never supplies a source reference. The first
+restricted mailbox pump precedes a one-time targeted receive re-arm, including
+when the pump requests foreground. No history scan or pay worker is started.
+The result always contains an empty receipt list and cannot authorize a banner.
+Use `CancelReceiptWindow` with that invocation ID at OS expiry and retain the
+native owner until the call finishes. See [execution windows](mobile-receipt-window.md).

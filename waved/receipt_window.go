@@ -21,6 +21,14 @@ type ReceiptWindowRequest struct {
 	CreatedAfterUnix int64                     `json:"created_after_unix"`
 }
 
+// WorkWindowRequest re-arms a bounded set of existing local receive sources.
+// References come from trusted host enrollment, never from push payloads.
+// Unlike a payment window, work yields no receipt or presentation permission.
+type WorkWindowRequest struct {
+	WindowID   string                      `json:"window_id"`
+	References []LightningReceiptReference `json:"references"`
+}
+
 // ReceiptWindowResult reports local source proof and why a bounded attempt
 // yielded. No field asserts global reconciliation or safe suspension.
 type ReceiptWindowResult struct {
@@ -166,11 +174,20 @@ func (c *receiptWindowController) run(ctx context.Context,
 
 // runWindow shares the same lease and cancellation fence for payment and
 // maintenance work. Only payment windows read or resume enrolled sources.
-//
-//nolint:contextcheck // Link daemon shutdown as well as caller cancellation.
 func (c *receiptWindowController) runWindow(ctx context.Context,
 	request ReceiptWindowRequest, payment bool) (ReceiptWindowResult,
 	error) {
+
+	return c.runWindowWithWork(ctx, request, payment, nil)
+}
+
+// runWindowWithWork shares intake ownership with receipt windows. Sources are
+// resumed only once, after the first pump, even when intake needs foreground.
+//
+//nolint:contextcheck // Link daemon shutdown as well as caller cancellation.
+func (c *receiptWindowController) runWindowWithWork(ctx context.Context,
+	request ReceiptWindowRequest, payment bool,
+	references []LightningReceiptReference) (ReceiptWindowResult, error) {
 
 	result := ReceiptWindowResult{Receipts: []LightningReceipt{}}
 	// The host's expiry cancellation and deadline take precedence. This
@@ -205,13 +222,12 @@ func (c *receiptWindowController) runWindow(ctx context.Context,
 		},
 		CreatedAfterUnix: request.CreatedAfterUnix,
 	}
-	if !payment {
-		stepCtx, stop := context.WithTimeout(windowCtx, 4*time.Second)
-		result.MaintenanceChecked, result.MaintenanceDeferred,
-			result.MaintenanceMore = c.maintain(stepCtx)
-		stop()
-	}
+	// Give ready signing/receive messages the first turn. Routine expiry
+	// scanning must not consume the beginning of a short host opportunity.
+	maintenancePending := !payment
+	result.MaintenanceDeferred = maintenancePending
 	resumed := false
+	workPending := len(references) > 0
 	for {
 		if windowCtx.Err() != nil {
 			result.Interrupted = true
@@ -247,6 +263,33 @@ func (c *receiptWindowController) runWindow(ctx context.Context,
 			windowCtx, 1, receiptIngressPolicy(),
 		)
 		result.Batches += pumped.Batches
+		if workPending && windowCtx.Err() == nil {
+			seen := make(map[LightningReceiptReference]struct{})
+			for _, ref := range references {
+				if windowCtx.Err() != nil {
+					break
+				}
+				if _, duplicate := seen[ref]; duplicate {
+					continue
+				}
+				seen[ref] = struct{}{}
+				// Existing-source validation and duplicate
+				// worker ownership belong to the targeted
+				// resumer. A failed source stays pending; it
+				// cannot block other sources.
+				_ = c.resume(windowCtx, ref)
+			}
+			workPending = false
+		}
+		if maintenancePending && windowCtx.Err() == nil {
+			stepCtx, stop := context.WithTimeout(
+				windowCtx, 4*time.Second,
+			)
+			result.MaintenanceChecked, result.MaintenanceDeferred,
+				result.MaintenanceMore = c.maintain(stepCtx)
+			stop()
+			maintenancePending = false
+		}
 		if errors.Is(err, serverconn.ErrIngressNeedsForeground) {
 			result.NeedsForeground = true
 
@@ -412,25 +455,50 @@ func (s *Server) CancelReceiptWindow(ctx context.Context, id string) error {
 	return nil
 }
 
-// RunMaintenanceWindow samples current expiry and pumps native round work.
-// It cannot enroll invoices, produce receipts, unlock or start a cold wallet.
-// Hosts must pause foreground ingress and serialize state-creating calls first.
+// RunMaintenanceWindow pumps ready protocol work and samples current expiry.
+// It re-arms no invoice sources and cannot authorize payment presentation.
 func (s *Server) RunMaintenanceWindow(ctx context.Context, id string) (
 	ReceiptWindowResult, error) {
 
-	if id == "" || len(id) > 128 {
-		return ReceiptWindowResult{}, fmt.Errorf("invalid " +
-			"maintenance window ID")
+	return s.RunWorkWindow(ctx, WorkWindowRequest{WindowID: id})
+}
+
+// RunWorkWindow re-arms only existing local receive sources within the same
+// host lease as bounded maintenance. It never reads receipts or starts pays.
+// Hosts must pause foreground ingress and retain the handle until final access.
+func (s *Server) RunWorkWindow(ctx context.Context, request WorkWindowRequest) (
+	ReceiptWindowResult, error) {
+
+	if err := validateWorkWindow(request); err != nil {
+		return ReceiptWindowResult{}, err
 	}
+	request.References = append(
+		[]LightningReceiptReference(nil), request.References...,
+	)
 	controller, err := s.receiptController(ctx)
 	if err != nil {
 		return ReceiptWindowResult{}, err
 	}
 
-	return controller.runWindow(
-		ctx, ReceiptWindowRequest{
-			WindowID: id,
-		},
-		false,
-	)
+	return controller.runWindowWithWork(ctx, ReceiptWindowRequest{
+		WindowID: request.WindowID,
+	}, false, request.References)
+}
+
+// validateWorkWindow rejects the full request before any native lease or source
+// access. An empty source set is the ordinary maintenance contract.
+func validateWorkWindow(request WorkWindowRequest) error {
+	if request.WindowID == "" || len(request.WindowID) > 128 ||
+		len(request.References) > 64 {
+		return fmt.Errorf("invalid work window request")
+	}
+	for _, ref := range request.References {
+		if (ref.Source != LightningReceiptSwap &&
+			ref.Source != LightningReceiptCredit) ||
+			len(ref.ID) == 0 || len(ref.ID) > 128 {
+			return fmt.Errorf("invalid local work source")
+		}
+	}
+
+	return nil
 }

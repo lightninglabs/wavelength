@@ -17,12 +17,17 @@ func TestBackgroundWindowBudgetRejectsOutsidePlatformCeiling(t *testing.T) {
 		require.ErrorContains(t, err, "1..30 seconds")
 		_, err = RunMaintenanceWindow("window", seconds)
 		require.ErrorContains(t, err, "1..30 seconds")
+		_, err = RunWorkWindow(nil, seconds)
+		require.ErrorContains(t, err, "1..30 seconds")
 	}
 	for _, seconds := range []int64{1, 20, 28, 30} {
 		_, err := RunReceiptWindow(nil, seconds)
 		require.Error(t, err)
 		require.NotContains(t, err.Error(), "budget must be")
 		_, err = RunMaintenanceWindow("window", seconds)
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "budget must be")
+		_, err = RunWorkWindow(nil, seconds)
 		require.Error(t, err)
 		require.NotContains(t, err.Error(), "budget must be")
 	}

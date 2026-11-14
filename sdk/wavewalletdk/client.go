@@ -90,6 +90,9 @@ type Client struct {
 	runMaintenanceWindow func(context.Context, string) (
 		waved.ReceiptWindowResult, error)
 
+	runWorkWindow func(context.Context, waved.WorkWindowRequest) (
+		waved.ReceiptWindowResult, error)
+
 	closeFn   func(context.Context) error
 	closeOnce sync.Once
 	closeErr  error

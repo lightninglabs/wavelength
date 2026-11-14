@@ -7,16 +7,14 @@ import (
 )
 
 const (
-	// Successful silent pushes observe Apple's low-frequency background
-	// delivery guidance. Alerts have an independent per-installation
-	// budget.
-	wakeQuietPeriod  = 20 * time.Minute
+	// Work hints advance existing wallet operations. A short device-wide
+	// coalescing window bounds bursts without delaying signing or receives
+	// behind routine-maintenance pacing. Alerts have a separate budget.
+	wakeQuietPeriod  = 5 * time.Second
 	alertQuietPeriod = time.Minute
 	// Signing phases can span several host execution windows. Coalesce
 	// each device's round traffic without imposing the maintenance budget.
 	roundQuietPeriod = 5 * time.Second
-	// Scheduled maintenance remains low frequency even on dense timetables.
-	scheduleQuietPeriod = 20 * time.Minute
 )
 
 // Outcome describes a provider result without exposing credentials or tokens.

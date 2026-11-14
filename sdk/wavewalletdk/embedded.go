@@ -236,6 +236,7 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 	client.processNext = server.ProcessNext
 	client.runReceiptWindow = server.RunReceiptWindow
 	client.runMaintenanceWindow = server.RunMaintenanceWindow
+	client.runWorkWindow = server.RunWorkWindow
 	client.cancelReceiptWindow = server.CancelReceiptWindow
 	client.waitWalletServicesReady = server.WaitForWalletServicesReady
 	client.recoverWalletState = server.RecoverWalletState

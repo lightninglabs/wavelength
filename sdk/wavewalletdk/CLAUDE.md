@@ -290,9 +290,11 @@ See [warm invoice recovery](../../docs/mobile-receipt-window.md).
 
 ## Bounded warm maintenance
 
-The host maintenance window samples current-tip expiry for at most 64 persisted
-VTXO IDs, drives existing owners outside the manager turn, retains a finite
-keyset cursor across windows, then pumps native durable round work. It shares
+The host maintenance window first pumps native durable round work, then
+samples current-tip expiry for at most 64 persisted VTXO IDs. It drives existing
+owners outside the manager turn and retains a finite keyset cursor across
+windows. A failed or foreground-only first pump still permits the bounded scan
+while the host context is live. It shares
 the receipt controller's mode lease, cancellation fence and final-access join.
 It performs no startup repair and produces no payment proof. See
 [background windows](../../docs/mobile-receipt-window.md).
@@ -308,3 +310,13 @@ remote ACK. It does not prove domain completion, awaiting-peer or safe
 suspension. See [ingress ownership](../../docs/sdk-wake-ingress-architecture.md).
 
 See [single-batch host intake](../../docs/sdk-process-next.md) for the API contract.
+
+## Targeted background work
+
+`RunWorkWindow` accepts a unique window ID and 0..64 trusted local receive
+references. It shares native ownership, cancellation and final-access joins.
+The first restricted pump precedes one targeted re-arm per distinct reference,
+even if intake requires foreground. It never reads receipts, starts pays or
+returns presentation proof. Zero references is ordinary maintenance. Hosts own
+selected-wallet enrollment independently of optional banners. See the existing
+background-window guide for legacy-reference and device acceptance limits.

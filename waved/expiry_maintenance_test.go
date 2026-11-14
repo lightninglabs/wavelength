@@ -44,6 +44,11 @@ func TestMaintenanceWindowPumpsWithoutInvoice(t *testing.T) {
 		controller.maintain = func(context.Context) (uint32, bool,
 			bool) {
 
+			require.Positive(
+				t, ingress.pumps, "ready protocol work "+
+					"must run before expiry scans",
+			)
+
 			return 3, true, true
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)

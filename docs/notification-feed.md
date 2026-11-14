@@ -201,12 +201,24 @@ schedule. It queues a silent wake inside the next published registration
 window for each opted-in binding. No publisher device scheduler or platform
 credential is added to the producer.
 
-The reference relay preserves the ordinary twenty-minute maintenance budget.
-Scheduled wakes have a separate twenty-minute per-device budget; dense
-schedules can therefore skip slots. Signing wakes have an independent
-five-second per-device quiet period, coalesce per route and expire within one
-minute or the earlier producer deadline. All routes on a device share that
-budget and delivery lease. Signing jobs take precedence over maintenance.
+The reference relay treats class-1 hints as outstanding protocol work, with a
+five-second per-device coalescing window after accepted sends. Query replies
+must not create source hints. Payment banners have a separate one-minute
+presentation budget; disabling banners does not suppress the work wake.
+Signing wakes retain an independent five-second budget, priority and expiry
+within one minute or the earlier producer deadline.
+
+Scheduled wakes are eligible in every consented registration window. They have
+no post-success quiet period; the existing per-binding cutoff marker prevents
+duplicate jobs for one slot. The shared installation lease still permits only
+one provider request at a time. A future next_schedule_at value left by an old
+replica is ignored by the new eligibility query. Provider failure backoff stays
+in force.
+
+Dense timetables can produce more silent pushes. Multiple bindings on one
+installation can each produce a push for the same slot. iOS shares its execution
+budget across the app, not across these relay scopes. Publishers choose their
+schedule and enrolled routes; they must measure delivery on real devices.
 Neither a source ACK nor APNs acceptance proves phone execution.
 
 The relay stores the selected cutoff with each local scheduled job. Duplicate

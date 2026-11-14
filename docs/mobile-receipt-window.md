@@ -56,7 +56,11 @@ the original payment hint. Ordinary protocol wakes never authorize an alert.
 host background tasks can call it without any enrolled invoice. It never reads
 or resumes an invoice source and always returns an empty receipt list.
 
-First it samples the configured chain backend's current tip. A primary-key
+First it pumps one restricted mailbox batch so ready signing and receive work
+can advance before routine scans. Even if that pump needs foreground or fails,
+the window attempts its bounded expiry scan before returning the pump result,
+provided the host context is still live. The scan samples the configured chain
+backend's current tip. A primary-key
 keyset query selects at most 64 persisted VTXO identities under a finite
 ceiling. The manager resolves existing owners only. The caller drives their
 ordinary expiry FSM turns outside the manager receive loop, so refresh relays
@@ -90,6 +94,42 @@ context or an exact-window cancellation takes precedence. Hosts should use the
 OS expiration callback as their primary cancellation signal and keep a fallback
 before their platform callback limit, including time spent preparing the wallet.
 The native ceiling is not an additional allowance after the host expires.
+
+## Generic work windows with receive recovery
+
+`RunWorkWindow` takes a unique `window_id` and zero through 64 typed local
+`references`, each with `source` (`lightning_swap` or `credit_receive`) and `id`.
+The host records them when it creates an invoice, independently of optional
+banners or amount consent. References never come from the push payload. Sixty-four
+is a per-call bound, not permission to discard other pending obligations.
+
+The controller validates the full request before admission. It takes the same
+native mode lease, pumps one restricted batch, then re-arms each distinct source
+once using the existing targeted resumer. A missing, pay-direction or terminal
+source cannot create a new receive. A transient source error is logged at Debug
+and does not stop another source. A refused mailbox head still permits targeted
+re-arm before `needs_foreground` returns. Ordinary maintenance and the pump loop
+then use the remaining window. There is no history scan, pay resume, new invoice,
+receipt lookup or presentation permission. `receipts` is always empty.
+
+This repairs a warm pending receive whose worker exited after a retryable ACK
+or claim error. Ordinary waits keep their workers; duplicate resume shares the
+existing active-worker/FIFO admission. Cold wallet-ready hooks retain their
+normal recovery. A source worker remains daemon-owned, as before; cancellation
+of the bounded call does not invent a safe-suspension barrier.
+
+Use the same OS deadline and `CancelReceiptWindow(window_id)` path. Foreground,
+shutdown and another window must join the resumer's final native access. The
+legacy `RunMaintenanceWindow(id)` is the same work path with zero references.
+A host using only that older API does not gain warm receive re-arm.
+
+Persist trusted references for the selected wallet/network. Keep the enrollment
+separate from presentation deduplication and amount consent. If there are more
+than 64, rotate finite pages without evicting live obligations. Reconcile known
+references in foreground and remove only positively terminal source state;
+a UI timeout/failed overlay is not terminal financial evidence. Legacy pending
+invoices without saved references retain cold/foreground recovery, not this
+new targeted warm guarantee.
 
 ## Lifetime ownership
 
@@ -133,7 +173,7 @@ Run the focused race regressions with:
     go test -race -tags 'mobile,wavewalletrpc,swapruntime,test_sqlite' \
       ./waved ./serverconn ./mailbox/conn ./swapclientserver \
       ./swapwallet ./sdk/wavewalletdk ./sdk/wavewalletdk/mobile \
-      -run 'TestMaintenance|TestMaintainExpiry|TestReceiptWindow|TestRestrictedPump|TestCloseJoinsLocalCallbacks|TestTargetedReceiveResume'
+      -run 'TestWorkWindow|TestMaintenance|TestMaintainExpiry|TestReceiptWindow|TestRestrictedPump|TestCloseJoinsLocalCallbacks|TestTargetedReceive'
 
 They hold the pump's last access beyond cancellation, verify foreground cannot
 escape it, cancel before admission, preserve foreground lifetime after caller
