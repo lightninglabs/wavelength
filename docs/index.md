@@ -86,6 +86,7 @@ into specific topics below.
 - [Notification source selection](notification-sources.md).
 - [Signed notification subscriptions](notification-subscriptions.md).
 - [Publisher wake feeds](notification-feed.md).
+- [Mobile wake events](mobile-wake-events.md) — Required client turns, relay pacing, consent and host execution limits.
 - [Notification subscription implementation plan](notification-subscriptions-execplan.md).
 
 - [Domain shutdown ownership](domain-shutdown.md) — domain workers joined before shared store teardown.

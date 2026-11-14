@@ -205,12 +205,10 @@ func (c *receiptWindowController) runWindow(ctx context.Context,
 		},
 		CreatedAfterUnix: request.CreatedAfterUnix,
 	}
-	if !payment {
-		stepCtx, stop := context.WithTimeout(windowCtx, 4*time.Second)
-		result.MaintenanceChecked, result.MaintenanceDeferred,
-			result.MaintenanceMore = c.maintain(stepCtx)
-		stop()
-	}
+	// Give ready signing/receive messages the first turn. Routine expiry
+	// scanning must not consume the beginning of a short host opportunity.
+	maintenancePending := !payment
+	result.MaintenanceDeferred = maintenancePending
 	resumed := false
 	for {
 		if windowCtx.Err() != nil {
@@ -254,6 +252,15 @@ func (c *receiptWindowController) runWindow(ctx context.Context,
 		}
 		if err != nil && windowCtx.Err() == nil {
 			return result, err
+		}
+		if maintenancePending && windowCtx.Err() == nil {
+			stepCtx, stop := context.WithTimeout(
+				windowCtx, 4*time.Second,
+			)
+			result.MaintenanceChecked, result.MaintenanceDeferred,
+				result.MaintenanceMore = c.maintain(stepCtx)
+			stop()
+			maintenancePending = false
 		}
 		// An empty mailbox is no completion barrier. Source workers and
 		// direct swap transport can commit after this pull returns.

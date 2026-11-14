@@ -56,7 +56,10 @@ the original payment hint. Ordinary protocol wakes never authorize an alert.
 host background tasks can call it without any enrolled invoice. It never reads
 or resumes an invoice source and always returns an empty receipt list.
 
-First it samples the configured chain backend's current tip. A primary-key
+First it pumps one restricted mailbox batch so ready signing and receive work
+can advance before routine scans. If that pump needs foreground or fails, the
+window returns with `maintenance_deferred` set. Otherwise it samples the
+configured chain backend's current tip. A primary-key
 keyset query selects at most 64 persisted VTXO identities under a finite
 ceiling. The manager resolves existing owners only. The caller drives their
 ordinary expiry FSM turns outside the manager receive loop, so refresh relays

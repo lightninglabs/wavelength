@@ -213,9 +213,13 @@ free to proceed. The provider claim transaction must reserve replay evidence
 first. Deferred candidates retain the ordinary expiry and may expire without a
 banner. These bounds do not replace paid/resource admission at an open producer.
 
-A device has a 20-minute silent-wake quiet period and a separate one-minute
-payment period after accepted sends. SQL job and installation leases prevent
-replicas from bypassing those periods through different routes. Completion
+A device coalesces protocol-work wakes for five seconds after an accepted send.
+Payment presentation has a separate one-minute quiet period. Round signing
+retains its own five-second budget and deadline priority. A scheduled job is
+eligible in every consented registration window, with one job per binding and
+cutoff; no accepted send suppresses the next slot. Provider retry backoff and
+the shared installation lease still prevent concurrent sends through different
+routes. Completion
 fences claims, generations and token revisions. A late provider response cannot
 disable a rotated token or erase newer work. Disabled destinations retain
 bounded jobs for signed token recovery instead of blocking an aggregate feed.
@@ -312,3 +316,17 @@ Every successful no-op still consumes its management challenge and advances
 the assertion counter. Reusing that proof remains a replay error. This lets a
 client finish cleanup after a revoke reply is lost without disclosing who owns
 a subscription ID.
+
+## Pacing upgrades
+
+This change preserves feed masks, signatures, payloads and database schema.
+Publishers can upgrade independently. Previously persisted work-wake quiet
+values remain in force until their old deadline, at most twenty minutes after
+the last old accepted wake; subsequent sends use five seconds. New schedule
+eligibility ignores the old schedule-quiet column, including values written by
+an old replica during a rolling upgrade. An old replica can still apply its old
+pacing while it serves jobs. Complete the publisher upgrade before accepting
+new-policy device tests. An old publisher continues its previous behavior.
+
+See [mobile wake events](mobile-wake-events.md) for work categories and host
+execution limits. Increased request frequency is not proof of OS execution.
