@@ -3,6 +3,7 @@ package waved
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/db"
@@ -148,7 +149,17 @@ func (s *Server) resumeLightningReceipt(ctx context.Context,
 		return fmt.Errorf("targeted receipt recovery unavailable")
 	}
 
-	return s.lightningReceiptResume(ctx, ref)
+	err := s.lightningReceiptResume(ctx, ref)
+	if err != nil && ctx.Err() == nil {
+		s.subLogger(Subsystem).DebugS(
+			ctx,
+			"Background receive source remains pending",
+			slog.String("source", string(ref.Source)),
+			slog.String("err", err.Error()),
+		)
+	}
+
+	return err
 }
 
 // ResumeCreditReceipt re-drives one existing receive through its durable actor.

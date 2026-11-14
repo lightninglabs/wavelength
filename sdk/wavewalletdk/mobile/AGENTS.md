@@ -155,3 +155,13 @@ JSON. The host passes a unique ID and uses `CancelReceiptWindow(id)` for early
 expiry. It retains the native daemon through final access and shares its route
 guard. It supplies no payment proof, awaiting-peer or suspension guarantee.
 See [single-batch host intake](../../../docs/sdk-process-next.md).
+
+## Targeted background work
+
+`RunWorkWindow` accepts a unique window ID and 0..64 trusted local receive
+references. It shares native ownership, cancellation and final-access joins.
+The first restricted pump precedes one targeted re-arm per distinct reference,
+even if intake requires foreground. It never reads receipts, starts pays or
+returns presentation proof. Zero references is ordinary maintenance. Hosts own
+selected-wallet enrollment independently of optional banners. See the existing
+background-window guide for legacy-reference and device acceptance limits.

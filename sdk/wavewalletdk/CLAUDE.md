@@ -308,3 +308,13 @@ remote ACK. It does not prove domain completion, awaiting-peer or safe
 suspension. See [ingress ownership](../../docs/sdk-wake-ingress-architecture.md).
 
 See [single-batch host intake](../../docs/sdk-process-next.md) for the API contract.
+
+## Targeted background work
+
+`RunWorkWindow` accepts a unique window ID and 0..64 trusted local receive
+references. It shares native ownership, cancellation and final-access joins.
+The first restricted pump precedes one targeted re-arm per distinct reference,
+even if intake requires foreground. It never reads receipts, starts pays or
+returns presentation proof. Zero references is ordinary maintenance. Hosts own
+selected-wallet enrollment independently of optional banners. See the existing
+background-window guide for legacy-reference and device acceptance limits.

@@ -60,10 +60,15 @@ bounded expiry scan once and continues pumping until its host deadline. If the
 first pump fails or requires foreground, maintenance remains deferred. This
 reorders work; it adds no signing permission or native owner.
 
-Receive work needs the existing worker. Cold startup has wallet-ready resume
-hooks; targeted receipt windows resume a locally enrolled receive. A generic
-wake alone does not prove an exited warm receive worker resumed. Test that path
-before claiming full warm/cold background receive support.
+Receive work needs the existing worker. `RunWorkWindow` takes at most 64 trusted
+local receive references and re-arms them after the first pump, even if that
+pump needs foreground. It reads no receipt and returns no amount proof.
+Cold startup keeps its wallet-ready resume hooks. Legacy generic maintenance
+with zero references cannot re-arm an exited warm receive. Hosts must persist
+work references independently of optional banners, retain obligations beyond
+one finite page and reconcile them in foreground. Legacy invoices lacking a
+saved reference retain cold/foreground recovery. Physical warm/cold execution
+still needs a device test.
 
 The host must state its selected-wallet/network policy. Push data must not
 choose a new wallet, identity or endpoint. This SDK change adds no inactive

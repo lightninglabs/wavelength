@@ -74,7 +74,7 @@ func TestCloseJoinsLocalCallbacks(t *testing.T) {
 		"host-mode",
 		"receipt-window",
 		"ingress-step",
-		"maintenance-window",
+		"maintenance-window", "work-window",
 		"cancel-window",
 	} {
 		t.Run(source, func(t *testing.T) {
@@ -288,6 +288,22 @@ func shutdownCallbackInvoke(t *testing.T, client *Client, source string,
 			_, err := client.RunMaintenanceWindow(
 				t.Context(),
 				"window",
+			)
+
+			return err
+		}
+
+	case "work-window":
+		client.runWorkWindow = func(ctx context.Context,
+			_ waved.WorkWindowRequest) (waved.ReceiptWindowResult,
+			error) {
+
+			return waved.ReceiptWindowResult{}, callback(ctx)
+		}
+
+		return func() error {
+			_, err := client.RunWorkWindow(
+				t.Context(), WorkWindowRequest{},
 			)
 
 			return err
