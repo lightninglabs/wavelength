@@ -204,8 +204,9 @@ ORDER BY created_at_unix ASC;
 
 -- name: AdmitPayAuthorization :exec
 INSERT INTO pay_authorizations (
-    payment_hash, invoice, account_pubkey, max_fee_sat, max_credit_sat
-) VALUES ($1, $2, $3, $4, $5)
+    payment_hash, invoice, account_pubkey, max_fee_sat, max_credit_sat,
+    amount_sat
+) VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (payment_hash) DO NOTHING;
 
 -- name: GetPayAuthorization :one

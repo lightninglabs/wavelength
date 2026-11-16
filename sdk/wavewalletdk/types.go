@@ -269,9 +269,13 @@ type ReceiveResult struct {
 type PrepareSendRequest struct {
 	Invoice        string
 	OnchainAddress string
-	AmountSat      uint64
-	Note           string
-	MaxFeeSat      uint64
+
+	// AmountSat is required for amountless invoices and bounded onchain
+	// sends. Zero keeps a fixed invoice's signed amount. It never overrides
+	// that amount.
+	AmountSat uint64
+	Note      string
+	MaxFeeSat uint64
 
 	// MaxCreditSat caps the total server credit this invoice send may
 	// reserve, including credit funded by a top-up. Zero disables credit

@@ -11,8 +11,9 @@ import (
 
 const AdmitPayAuthorization = `-- name: AdmitPayAuthorization :exec
 INSERT INTO pay_authorizations (
-    payment_hash, invoice, account_pubkey, max_fee_sat, max_credit_sat
-) VALUES ($1, $2, $3, $4, $5)
+    payment_hash, invoice, account_pubkey, max_fee_sat, max_credit_sat,
+    amount_sat
+) VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (payment_hash) DO NOTHING
 `
 
@@ -22,6 +23,7 @@ type AdmitPayAuthorizationParams struct {
 	AccountPubkey []byte
 	MaxFeeSat     string
 	MaxCreditSat  string
+	AmountSat     string
 }
 
 func (q *Queries) AdmitPayAuthorization(ctx context.Context, arg AdmitPayAuthorizationParams) error {
@@ -31,12 +33,13 @@ func (q *Queries) AdmitPayAuthorization(ctx context.Context, arg AdmitPayAuthori
 		arg.AccountPubkey,
 		arg.MaxFeeSat,
 		arg.MaxCreditSat,
+		arg.AmountSat,
 	)
 	return err
 }
 
 const GetPayAuthorization = `-- name: GetPayAuthorization :one
-SELECT payment_hash, invoice, account_pubkey, max_fee_sat, max_credit_sat FROM pay_authorizations WHERE payment_hash = $1
+SELECT payment_hash, invoice, account_pubkey, max_fee_sat, max_credit_sat, amount_sat FROM pay_authorizations WHERE payment_hash = $1
 `
 
 func (q *Queries) GetPayAuthorization(ctx context.Context, paymentHash []byte) (PayAuthorization, error) {
@@ -48,6 +51,7 @@ func (q *Queries) GetPayAuthorization(ctx context.Context, paymentHash []byte) (
 		&i.AccountPubkey,
 		&i.MaxFeeSat,
 		&i.MaxCreditSat,
+		&i.AmountSat,
 	)
 	return i, err
 }

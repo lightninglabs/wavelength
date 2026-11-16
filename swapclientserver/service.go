@@ -30,6 +30,7 @@ import (
 	"github.com/lightninglabs/wavelength/rpc/restclient"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	sdkark "github.com/lightninglabs/wavelength/sdk/ark"
+	"github.com/lightninglabs/wavelength/sdk/bolt11"
 	"github.com/lightninglabs/wavelength/sdk/swaps"
 	"github.com/lightninglabs/wavelength/serverconn"
 	"github.com/lightninglabs/wavelength/swaprpc"
@@ -875,6 +876,37 @@ func (a *swapClientAdapter) StartPayViaLightningWithCredits(ctx context.Context,
 	)
 }
 
+// StartPayViaLightningWithAmount forwards the selected invoice amount.
+func (a *swapClientAdapter) StartPayViaLightningWithAmount(ctx context.Context,
+	invoice string, maxFeeSat, maxCreditSat, amountSat uint64) (
+	paySwapSession, error) {
+
+	return a.client.StartPayViaLightningWithAmount(
+		ctx, invoice, maxFeeSat, maxCreditSat, amountSat,
+	)
+}
+
+// QuotePayViaLightningWithAmount previews the selected invoice amount.
+func (a *swapClientAdapter) QuotePayViaLightningWithAmount(ctx context.Context,
+	invoice string, maxFeeSat, maxCreditSat, amountSat uint64) (
+	*swaps.InSwapQuote, error) {
+
+	return a.client.QuotePayViaLightningWithAmount(
+		ctx, invoice, maxFeeSat, maxCreditSat, amountSat,
+	)
+}
+
+// ValidatePayAuthorizationWithAmount rejects changed amounts on pending
+// retries.
+func (a *swapClientAdapter) ValidatePayAuthorizationWithAmount(
+	ctx context.Context, invoice string, maxFeeSat, maxCreditSat,
+	amountSat uint64) error {
+
+	return a.client.ValidatePayAuthorizationWithAmount(
+		ctx, invoice, maxFeeSat, maxCreditSat, amountSat,
+	)
+}
+
 // QuotePayViaLightning previews a pay swap without creating durable state.
 func (a *swapClientAdapter) QuotePayViaLightning(ctx context.Context,
 	invoice string, maxFeeSat uint64) (*swaps.InSwapQuote, error) {
@@ -1439,8 +1471,8 @@ func defaultInSwapMaxFeeSat(amountSat uint64) uint64 {
 // used to size the proportional cap; if the invoice cannot be decoded the
 // caller's zero is preserved so the existing downstream validation surfaces the
 // original error.
-func (s *swapClientService) effectiveMaxFeeSat(requested uint64,
-	invoice string) uint64 {
+func (s *swapClientService) effectiveMaxFeeSat(requested uint64, invoice string,
+	callerAmount ...uint64) uint64 {
 
 	if requested != 0 {
 		return requested
@@ -1449,7 +1481,9 @@ func (s *swapClientService) effectiveMaxFeeSat(requested uint64,
 		return requested
 	}
 
-	amountSat, err := payInvoiceAmountSat(invoice, s.chainParams)
+	amountSat, err := payInvoiceAmountSat(
+		invoice, s.chainParams, callerAmount...,
+	)
 	if err != nil {
 		return requested
 	}
@@ -1487,19 +1521,22 @@ func wrapInSwapFeeError(err error, maxFeeSat uint64) error {
 // payInvoiceAmountSat decodes the BOLT-11 invoice amount in whole satoshis.
 // The swap pay path funds one Ark vHTLC of this value, so a nil, zero, or
 // millisatoshi-only invoice cannot be admitted through the daemon subserver.
-func payInvoiceAmountSat(invoice string,
-	chainParams *chaincfg.Params) (uint64, error) {
+func payInvoiceAmountSat(invoice string, chainParams *chaincfg.Params,
+	callerAmount ...uint64) (uint64, error) {
 
 	decoded, err := zpay32.Decode(invoice, chainParams)
 	if err != nil {
 		return 0, err
 	}
 
-	if decoded.MilliSat == nil {
-		return 0, fmt.Errorf("invoice amount is required")
+	var amountSat uint64
+	if len(callerAmount) > 0 {
+		amountSat = callerAmount[0]
 	}
-
-	amountMSat := uint64(*decoded.MilliSat)
+	amountMSat, err := bolt11.AmountMSat(decoded, amountSat)
+	if err != nil {
+		return 0, err
+	}
 	if amountMSat == 0 {
 		return 0, fmt.Errorf("invoice amount must be positive")
 	}
@@ -1513,7 +1550,7 @@ func payInvoiceAmountSat(invoice string,
 // validatePayInvoiceAmount rejects locally-impossible pay invoices before the
 // SDK persists a swap session and starts a background worker.
 func (s *swapClientService) validatePayInvoiceAmount(ctx context.Context,
-	invoice string) error {
+	invoice string, callerAmount ...uint64) error {
 
 	if s.payMinAmount == nil {
 		return nil
@@ -1526,7 +1563,9 @@ func (s *swapClientService) validatePayInvoiceAmount(ctx context.Context,
 		)
 	}
 
-	amountSat, err := payInvoiceAmountSat(invoice, s.chainParams)
+	amountSat, err := payInvoiceAmountSat(
+		invoice, s.chainParams, callerAmount...,
+	)
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "invoice amount "+
 			"preflight failed: %v", err)
@@ -1553,7 +1592,26 @@ func (s *swapClientService) validatePayInvoiceAmount(ctx context.Context,
 // when the SDK client supports credits so a sub-dust or credit-assisted pay is
 // quoted against the caller's credit balance.
 func (s *swapClientService) quotePay(ctx context.Context, invoice string,
-	maxFeeSat uint64, maxCreditSat uint64) (*swaps.InSwapQuote, error) {
+	maxFeeSat uint64, maxCreditSat uint64, callerAmount ...uint64) (
+	*swaps.InSwapQuote, error) {
+
+	if len(callerAmount) > 0 && callerAmount[0] != 0 {
+		client, ok := s.client.(interface {
+			QuotePayViaLightningWithAmount(context.Context, string,
+				uint64, uint64,
+				uint64) (*swaps.InSwapQuote, error)
+		})
+		if !ok {
+			return nil, status.Error(
+				codes.Unimplemented,
+				"payer amounts are unsupported",
+			)
+		}
+
+		return client.QuotePayViaLightningWithAmount(
+			ctx, invoice, maxFeeSat, maxCreditSat, callerAmount[0],
+		)
+	}
 
 	if client, ok := s.client.(interface {
 		QuotePayViaLightningWithCredits(context.Context, string, uint64,
@@ -1568,7 +1626,25 @@ func (s *swapClientService) quotePay(ctx context.Context, invoice string,
 }
 
 func (s *swapClientService) startPay(ctx context.Context, invoice string,
-	maxFeeSat uint64, maxCreditSat uint64) (paySwapSession, error) {
+	maxFeeSat uint64, maxCreditSat uint64, callerAmount ...uint64) (
+	paySwapSession, error) {
+
+	if len(callerAmount) > 0 && callerAmount[0] != 0 {
+		client, ok := s.client.(interface {
+			StartPayViaLightningWithAmount(context.Context, string,
+				uint64, uint64, uint64) (paySwapSession, error)
+		})
+		if !ok {
+			return nil, status.Error(
+				codes.Unimplemented,
+				"payer amounts are unsupported",
+			)
+		}
+
+		return client.StartPayViaLightningWithAmount(
+			ctx, invoice, maxFeeSat, maxCreditSat, callerAmount[0],
+		)
+	}
 
 	if client, ok := s.client.(interface {
 		StartPayViaLightningWithCredits(context.Context, string, uint64,
@@ -1602,18 +1678,19 @@ func (s *swapClientService) QuotePay(ctx context.Context,
 	// credits cover the amount.
 	if req.GetMaxCreditSat() == 0 {
 		if err := s.validatePayInvoiceAmount(
-			ctx, req.GetInvoice(),
+			ctx, req.GetInvoice(), req.GetAmountSat(),
 		); err != nil {
 			return nil, err
 		}
 	}
 
 	maxFeeSat := s.effectiveMaxFeeSat(
-		req.GetMaxFeeSat(), req.GetInvoice(),
+		req.GetMaxFeeSat(), req.GetInvoice(), req.GetAmountSat(),
 	)
 
 	quote, err := s.quotePay(
 		ctx, req.GetInvoice(), maxFeeSat, req.GetMaxCreditSat(),
+		req.GetAmountSat(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("quote pay swap: %w", wrapInSwapFeeError(
@@ -1642,9 +1719,12 @@ func (s *swapClientService) StartPay(ctx context.Context,
 			"idempotency_key is reserved for future use",
 		)
 	}
-	maxFeeSat := s.effectiveMaxFeeSat(req.GetMaxFeeSat(), req.GetInvoice())
+	maxFeeSat := s.effectiveMaxFeeSat(
+		req.GetMaxFeeSat(), req.GetInvoice(), req.GetAmountSat(),
+	)
 	existing, ok, err := s.pendingSwapForInvoice(
 		ctx, req.GetInvoice(), maxFeeSat, req.GetMaxCreditSat(),
+		req.GetAmountSat(),
 	)
 	if err != nil {
 		return nil, err
@@ -1655,6 +1735,7 @@ func (s *swapClientService) StartPay(ctx context.Context,
 
 	session, err := s.startPay(
 		ctx, req.GetInvoice(), maxFeeSat, req.GetMaxCreditSat(),
+		req.GetAmountSat(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("start pay swap: %w", wrapInSwapFeeError(
@@ -1874,8 +1955,8 @@ func (s *swapClientService) ListCredits(ctx context.Context,
 // used by tests, or malformed invoices that sdk/swaps must reject later, skip
 // this best-effort preflight so the existing validation path is preserved.
 func (s *swapClientService) pendingSwapForInvoice(ctx context.Context,
-	invoice string, maxFeeSat, maxCreditSat uint64) (
-	*swapclientrpc.StartPayResponse, bool, error) {
+	invoice string, maxFeeSat, maxCreditSat uint64,
+	callerAmount ...uint64) (*swapclientrpc.StartPayResponse, bool, error) {
 
 	if s.chainParams == nil {
 		return nil, false, nil
@@ -1908,7 +1989,23 @@ func (s *swapClientService) pendingSwapForInvoice(ctx context.Context,
 		return nil, false, nil
 	}
 
-	if validator, ok := s.client.(interface {
+	if len(callerAmount) > 0 && callerAmount[0] != 0 {
+		validator, ok := s.client.(interface {
+			ValidatePayAuthorizationWithAmount(context.Context,
+				string, uint64, uint64, uint64) error
+		})
+		if !ok {
+			return nil, false, status.Error(
+				codes.Unimplemented,
+				"payer amounts are unsupported",
+			)
+		}
+		if err := validator.ValidatePayAuthorizationWithAmount(
+			ctx, invoice, maxFeeSat, maxCreditSat, callerAmount[0],
+		); err != nil {
+			return nil, false, err
+		}
+	} else if validator, ok := s.client.(interface {
 		ValidatePayAuthorization(context.Context, string, uint64,
 			uint64) error
 	}); ok {

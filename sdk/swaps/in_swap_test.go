@@ -47,6 +47,7 @@ type testInSwapServerConn struct {
 	quoteCalls          int
 	quoteInvoice        string
 	quoteMaxFeeSat      uint64
+	payerAmountSat      uint64
 	createCalls         int
 	createAccountKey    []byte
 	createMaxCreditSat  uint64
@@ -480,8 +481,7 @@ func TestValidateInSwapQuoteRejectsServerMismatches(t *testing.T) {
 }
 
 // TestValidateInSwapQuoteRejectsAmountlessInvoice verifies pay swaps require a
-// fixed BOLT-11 amount because the client cannot safely infer it from the
-// server quote.
+// payer-chosen amount because the client cannot infer it from a server quote.
 func TestValidateInSwapQuoteRejectsAmountlessInvoice(t *testing.T) {
 	t.Parallel()
 

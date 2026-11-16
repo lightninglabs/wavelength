@@ -313,3 +313,10 @@ Host mode transitions retain the daemon and join ingress ownership. Restricted
 pumps validate full batches before waiter delivery; request provenance comes
 from send-time registration. Targeted resume only re-arms existing receives.
 See [warm invoice recovery](../docs/mobile-receipt-window.md).
+
+## Amountless invoice sends
+
+Invoice prepare accepts a positive caller `amt_sat` when the signed invoice
+omits its amount. It preserves fixed invoice amounts and carries the chosen
+amount in both quote and single-use dispatch. Credit actors retain their full
+principal before dispatch. See [amountless invoices](../docs/amountless-invoices.md).

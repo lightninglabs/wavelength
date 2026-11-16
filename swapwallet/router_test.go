@@ -103,6 +103,9 @@ func testPreparedInvoiceOnNet(t *testing.T, params *chaincfg.Params,
 		zpay32.Description(description),
 	)
 	require.NoError(t, err)
+	if amountSat < 0 {
+		invoice.MilliSat = nil
+	}
 
 	paymentRequest, err := invoice.Encode(zpay32.MessageSigner{
 		SignCompact: func(msg []byte) ([]byte, error) {
@@ -164,7 +167,7 @@ func TestRouterPrepareSendInvoiceReturnsRemoteQuote(t *testing.T) {
 			Destination: &wavewalletrpc.PrepareSendRequest_Invoice{
 				Invoice: invoice,
 			},
-			AmtSat:    99_999,
+			AmtSat:    0,
 			MaxFeeSat: 25,
 		},
 	)
@@ -1062,4 +1065,60 @@ func TestRouterSendInvoicePreservesStartPayStatusCode(t *testing.T) {
 		t, status.Convert(err).Message(),
 		"receive intent already used",
 	)
+}
+
+// TestRouterAmountlessBindsQuoteAndSend verifies prepare and dispatch use the
+// same caller amount, and consuming the intent still forbids duplicate sends.
+func TestRouterAmountlessBindsQuoteAndSend(t *testing.T) {
+	r, swap, _ := newRouterFixture(t)
+	invoice, hash := testPreparedInvoice(t, -1, "Coffee with Alex")
+	swap.quotePayResp = &swapclientrpc.QuotePayResponse{
+		PaymentHash:      hash,
+		InvoiceAmountSat: 25000,
+		AmountSat:        25012,
+		FeeSat:           12,
+		SettlementType: swapclientrpc.
+			SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING,
+	}
+	swap.startPayResp = &swapclientrpc.StartPayResponse{
+		Swap: &swapclientrpc.SwapSummary{
+			PaymentHash: hash,
+			AmountSat:   25000,
+		},
+	}
+	request := &wavewalletrpc.PrepareSendRequest{
+		Destination: &wavewalletrpc.PrepareSendRequest_Invoice{
+			Invoice: invoice,
+		},
+		AmtSat: 25000,
+	}
+	prepared, err := r.PrepareSend(t.Context(), request)
+	require.NoError(t, err)
+	require.Equal(t, int64(25000), prepared.AmountSat)
+	require.Equal(t, int64(25012), prepared.ExpectedTotalOutflowSat)
+	require.Equal(t, uint64(25000), swap.quotePayLastReq.AmountSat)
+	_, err = sendPrepared(t, r, prepared)
+	require.NoError(t, err)
+	require.Equal(t, uint64(25000), swap.startPayLastReq.AmountSat)
+	require.Equal(t, invoice, swap.startPayLastReq.Invoice)
+	_, err = sendPrepared(t, r, prepared)
+	require.Error(t, err)
+	require.Equal(t, 1, swap.startPayCalls)
+}
+
+// TestRouterFixedInvoiceRejectsReplacement preserves the signed amount even
+// when a host accidentally retains a previous amountless invoice's input.
+func TestRouterFixedInvoiceRejectsReplacement(t *testing.T) {
+	r, swap, _ := newRouterFixture(t)
+	invoice, _ := testPreparedInvoice(t, 25000, "fixed")
+	_, err := r.PrepareSend(
+		t.Context(), &wavewalletrpc.PrepareSendRequest{
+			Destination: &wavewalletrpc.PrepareSendRequest_Invoice{
+				Invoice: invoice,
+			},
+			AmtSat: 26000,
+		},
+	)
+	require.Error(t, err)
+	require.Zero(t, swap.quotePayCalls)
 }

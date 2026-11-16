@@ -16,6 +16,7 @@ import (
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/sdk/bolt11"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/zpay32"
 	"google.golang.org/grpc/codes"
@@ -119,7 +120,7 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 		return nil, err
 	}
 
-	amountSat, err := extractPreparedInvoiceAmountSat(decoded)
+	amountSat, err := preparedInvoiceAmountSat(decoded, req.GetAmtSat())
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +146,7 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 	quote, err := r.deps.SwapService.QuotePay(
 		ctx, &swapclientrpc.QuotePayRequest{
 			Invoice:      invoice,
+			AmountSat:    req.GetAmtSat(),
 			MaxFeeSat:    req.GetMaxFeeSat(),
 			MaxCreditSat: req.GetMaxCreditSat(),
 		},
@@ -159,6 +161,7 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 		kind:              preparedSendInvoice,
 		invoice:           invoice,
 		amountSat:         amountSat,
+		callerAmountSat:   req.GetAmtSat(),
 		note:              req.GetNote(),
 		maxFeeSat:         req.GetMaxFeeSat(),
 		maxCreditSat:      req.GetMaxCreditSat(),
@@ -215,6 +218,7 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 	startResp, err := r.deps.SwapService.StartPay(
 		ctx, &swapclientrpc.StartPayRequest{
 			Invoice:      intent.invoice,
+			AmountSat:    intent.callerAmountSat,
 			MaxFeeSat:    intent.maxFeeSat,
 			MaxCreditSat: intent.maxCreditSat,
 		},
@@ -704,7 +708,23 @@ func decodePreparedInvoice(invoice string,
 	return decoded, nil
 }
 
-func extractPreparedInvoiceAmountSat(decoded *zpay32.Invoice) (uint64, error) {
+// preparedInvoiceAmountSat binds a payer amount without rewriting the invoice.
+func preparedInvoiceAmountSat(decoded *zpay32.Invoice,
+	amountSat uint64) (uint64, error) {
+
+	if decoded != nil && decoded.MilliSat == nil && amountSat > 0 {
+		msat, err := bolt11.AmountMSat(decoded, amountSat)
+		if err != nil {
+			return 0, fmt.Errorf("%w: %w", ErrAmountInvalid, err)
+		}
+
+		return msat / 1000, nil
+	}
+	if decoded != nil && decoded.MilliSat != nil {
+		if _, err := bolt11.AmountMSat(decoded, amountSat); err != nil {
+			return 0, fmt.Errorf("%w: %w", ErrAmountInvalid, err)
+		}
+	}
 	if decoded == nil || decoded.MilliSat == nil {
 		return 0, fmt.Errorf("%w: invoice amount is required",
 			ErrAmountRequired)

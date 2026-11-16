@@ -16,6 +16,7 @@ import (
 	"github.com/lightninglabs/wavelength/sdk/swaps"
 	"github.com/lightninglabs/wavelength/waved"
 	"github.com/lightninglabs/wavelength/waverpc"
+	"github.com/lightningnetwork/lnd/zpay32"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -160,12 +161,39 @@ func (b *creditServerBridge) RedeemCredit(ctx context.Context,
 func (b *creditServerBridge) StartPay(ctx context.Context, invoice string,
 	maxFeeSat, maxCreditSat uint64) error {
 
+	return b.StartPayWithAmount(ctx, invoice, maxFeeSat, maxCreditSat, 0)
+}
+
+// StartPayWithAmount uses the credit actor's durable principal during retries.
+func (b *creditServerBridge) StartPayWithAmount(ctx context.Context,
+	invoice string, maxFeeSat, maxCreditSat, amountSat uint64) error {
+
+	// The actor stores a satoshi principal for both invoice kinds. Only an
+	// amountless invoice needs an explicit override on the wire.
+	if amountSat != 0 && b.svc.chainParams != nil {
+		decoded, err := zpay32.Decode(invoice, b.svc.chainParams)
+		if err != nil {
+			return err
+		}
+		if decoded.MilliSat != nil {
+			amountSat = 0
+		}
+	}
+
 	_, err := b.svc.StartPay(ctx, &swapclientrpc.StartPayRequest{
 		Invoice:      invoice,
+		AmountSat:    amountSat,
 		MaxFeeSat:    maxFeeSat,
 		MaxCreditSat: maxCreditSat,
 	})
 	if errors.Is(err, swaps.ErrPayAuthorizationMismatch) {
+		// A known amountless payment cannot stand in for this actor's
+		// exact request. Another prepared intent may have won admission
+		// at a different amount while this credit operation was topping
+		// up.
+		if amountSat != 0 {
+			return fmt.Errorf("%w: %w", credit.ErrPayRejected, err)
+		}
 		// A different request may already own this invoice. Observe
 		// that existing obligation without changing its authority or
 		// reissuing create; the credit-only ledger check still enforces

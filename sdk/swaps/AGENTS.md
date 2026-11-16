@@ -341,3 +341,12 @@ plugins. See [seed restore](../../docs/seed_restore_recovery.md).
 - [docs/credit_system.md](../../docs/credit_system.md) — Credit ledger
   semantics and dust-clearing model.
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.
+
+## Payer-chosen invoice amounts
+
+`QuotePayViaLightningWithAmount` and `StartPayViaLightningWithAmount` carry
+the whole-satoshi payer amount separately from the signed invoice. Quote and
+config validation bind the returned principal to it. Schema 3 retains this
+amount in immutable pay authorization before remote admission and reloads it on
+session reconstruction. Fixed invoices normalize to the existing zero-override
+wire contract. See [amountless invoices](../../docs/amountless-invoices.md).

@@ -10,6 +10,7 @@ type PayAuthorization struct {
 	AccountPubkey []byte
 	MaxFeeSat     string
 	MaxCreditSat  string
+	AmountSat     string
 }
 
 type PaySwap struct {

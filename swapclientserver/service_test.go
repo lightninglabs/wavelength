@@ -1793,6 +1793,10 @@ func testStartPayInvoice(t *testing.T, hash lntypes.Hash,
 	)
 	require.NoError(t, err)
 
+	if amountSat == 0 {
+		invoice.MilliSat = nil
+	}
+
 	privKey, _ := btcec.PrivKeyFromBytes([]byte{77})
 	encoded, err := invoice.Encode(zpay32.MessageSigner{
 		SignCompact: func(msg []byte) ([]byte, error) {

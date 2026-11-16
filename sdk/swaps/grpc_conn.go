@@ -216,6 +216,20 @@ func (g *GRPCSwapServerConn) CreateInSwapWithCredits(ctx context.Context,
 	accountPubKey []byte, maxCreditSat uint64,
 	ownerProof *swaprpc.SwapOwnerProof) (*InSwapConfig, error) {
 
+	return g.CreateInSwapWithAmount(
+		ctx, invoice, maxFeeSat, clientVhtlcPubkey, accountPubKey,
+		maxCreditSat, ownerProof, 0,
+	)
+}
+
+// CreateInSwapWithAmount carries a payer amount separately from the signed
+// invoice.
+func (g *GRPCSwapServerConn) CreateInSwapWithAmount(ctx context.Context,
+	invoice string, maxFeeSat uint64, clientVhtlcPubkey *btcec.PublicKey,
+	accountPubKey []byte, maxCreditSat uint64,
+	ownerProof *swaprpc.SwapOwnerProof, amountSat uint64) (*InSwapConfig,
+	error) {
+
 	if clientVhtlcPubkey == nil {
 		return nil, fmt.Errorf("client vHTLC pubkey must be provided")
 	}
@@ -228,6 +242,7 @@ func (g *GRPCSwapServerConn) CreateInSwapWithCredits(ctx context.Context,
 		AccountPubkey: append([]byte(nil), accountPubKey...),
 		MaxCreditSat:  maxCreditSat,
 		OwnerProof:    ownerProof,
+		AmountSat:     amountSat,
 	}
 	if ownerProof != nil {
 		supported, err := g.supportsRecoveryMetadata(ctx)
@@ -345,11 +360,22 @@ func (g *GRPCSwapServerConn) QuoteInSwapWithCredits(ctx context.Context,
 	invoice string, maxFeeSat uint64, accountPubKey []byte,
 	maxCreditSat uint64) (*InSwapQuote, error) {
 
+	return g.QuoteInSwapWithAmount(
+		ctx, invoice, maxFeeSat, accountPubKey, maxCreditSat, 0,
+	)
+}
+
+// QuoteInSwapWithAmount previews the exact payer-selected amount.
+func (g *GRPCSwapServerConn) QuoteInSwapWithAmount(ctx context.Context,
+	invoice string, maxFeeSat uint64, accountPubKey []byte, maxCreditSat,
+	amountSat uint64) (*InSwapQuote, error) {
+
 	req := &swaprpc.QuoteInSwapRequest{
 		Invoice:       invoice,
 		MaxFeeSat:     maxFeeSat,
 		AccountPubkey: append([]byte(nil), accountPubKey...),
 		MaxCreditSat:  maxCreditSat,
+		AmountSat:     amountSat,
 	}
 	if len(accountPubKey) > 0 {
 		if err := g.authorizeCreditAccountRequest(

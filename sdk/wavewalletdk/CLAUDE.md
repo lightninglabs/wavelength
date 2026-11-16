@@ -333,3 +333,11 @@ even if intake requires foreground. It never reads receipts, starts pays or
 returns presentation proof. Zero references is ordinary maintenance. Hosts own
 selected-wallet enrollment independently of optional banners. See the existing
 background-window guide for legacy-reference and device acceptance limits.
+
+## Invoice inspection
+
+`DecodeInvoice` validates BOLT11 locally against an explicit network without a
+running wallet. `InvoiceDetails.AmountSat == nil` denotes an amountless invoice;
+invalid and expired invoices return errors. `PrepareSendRequest.AmountSat`
+supplies the chosen whole-satoshi amount for such invoices. See
+[amountless invoices](../../docs/amountless-invoices.md).

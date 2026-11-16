@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/lightninglabs/wavelength/sdk/bolt11"
 	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/zpay32"
 )
 
@@ -31,19 +31,6 @@ func decodePayInvoice(invoice string,
 	return decoded, nil
 }
 
-func extractInvoiceAmountMsat(msat *lnwire.MilliSatoshi) (uint64, error) {
-	if msat == nil {
-		return 0, fmt.Errorf("invoice amount is required")
-	}
-
-	amountMSat := uint64(*msat)
-	if amountMSat == 0 {
-		return 0, fmt.Errorf("invoice amount must be positive")
-	}
-
-	return amountMSat, nil
-}
-
 func ceilMsatToSat(msat uint64) uint64 {
 	if msat == 0 {
 		return 0
@@ -66,12 +53,55 @@ func (c *SwapClient) QuotePayViaLightningWithCredits(ctx context.Context,
 	invoice string, maxFeeSat uint64, maxCreditSat uint64) (*InSwapQuote,
 	error) {
 
+	return c.QuotePayViaLightningWithAmount(
+		ctx, invoice, maxFeeSat, maxCreditSat, 0,
+	)
+}
+
+// QuotePayViaLightningWithAmount previews an amountless invoice at the chosen
+// amount.
+func (c *SwapClient) QuotePayViaLightningWithAmount(ctx context.Context,
+	invoice string, maxFeeSat, maxCreditSat, amountSat uint64) (
+	*InSwapQuote, error) {
+
 	if c == nil || c.server == nil {
 		return nil, fmt.Errorf("swap server is required")
 	}
 
+	decoded, err := decodePayInvoice(invoice, c.chainParams)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := bolt11.AmountMSat(decoded, amountSat); err != nil {
+		return nil, err
+	}
+	if decoded.MilliSat != nil {
+		amountSat = 0
+	}
+
 	var quote *InSwapQuote
-	if server, ok := c.server.(interface {
+	if amountSat != 0 {
+		server, ok := c.server.(interface {
+			QuoteInSwapWithAmount(context.Context, string, uint64,
+				[]byte, uint64, uint64) (*InSwapQuote, error)
+		})
+		if !ok {
+			return nil, fmt.Errorf("swap transport does not " +
+				"support payer amounts")
+		}
+		accountKey, err := c.daemon.IdentityPubKey(ctx)
+		if err != nil {
+			return nil, err
+		}
+		quote, err = server.QuoteInSwapWithAmount(
+			ctx, invoice, maxFeeSat,
+			accountKey.SerializeCompressed(), maxCreditSat,
+			amountSat,
+		)
+		if err != nil {
+			return nil, err
+		}
+	} else if server, ok := c.server.(interface {
 		QuoteInSwapWithCredits(context.Context, string, uint64, []byte,
 			uint64) (*InSwapQuote, error)
 	}); ok {
@@ -98,7 +128,7 @@ func (c *SwapClient) QuotePayViaLightningWithCredits(ctx context.Context,
 	}
 
 	if err := validateInSwapPreview(
-		invoice, quote, maxCreditSat, c.chainParams,
+		invoice, quote, maxCreditSat, c.chainParams, amountSat,
 	); err != nil {
 		return nil, err
 	}
@@ -109,7 +139,8 @@ func (c *SwapClient) QuotePayViaLightningWithCredits(ctx context.Context,
 // validateInSwapPreview verifies that a server quote is bound to the caller's
 // invoice and credit cap before the wallet renders a user-visible preview.
 func validateInSwapPreview(invoice string, quote *InSwapQuote,
-	maxCreditSat uint64, chainParams *chaincfg.Params) error {
+	maxCreditSat uint64, chainParams *chaincfg.Params,
+	callerAmount ...uint64) error {
 
 	if quote == nil {
 		return fmt.Errorf("in-swap quote is required")
@@ -141,7 +172,7 @@ func validateInSwapPreview(invoice string, quote *InSwapQuote,
 			"invoice")
 	}
 
-	amountMsat, err := extractInvoiceAmountMsat(decoded.MilliSat)
+	amountMsat, err := bolt11.AmountMSat(decoded, firstAmount(callerAmount))
 	if err != nil {
 		return err
 	}
@@ -193,7 +224,8 @@ func validateInSwapPreview(invoice string, quote *InSwapQuote,
 // validateInSwapQuote verifies that the server quote is bound to the caller's
 // invoice, fee limit and credit cap before accepting completion or funding.
 func validateInSwapQuote(invoice string, maxFeeSat, maxCreditSat uint64,
-	cfg *InSwapConfig, chainParams *chaincfg.Params) error {
+	cfg *InSwapConfig, chainParams *chaincfg.Params,
+	callerAmount ...uint64) error {
 
 	if cfg == nil {
 		return fmt.Errorf("in-swap config is required")
@@ -216,7 +248,7 @@ func validateInSwapQuote(invoice string, maxFeeSat, maxCreditSat uint64,
 		return fmt.Errorf("in-swap payment hash does not match invoice")
 	}
 
-	amountMsat, err := extractInvoiceAmountMsat(decoded.MilliSat)
+	amountMsat, err := bolt11.AmountMSat(decoded, firstAmount(callerAmount))
 	if err != nil {
 		return err
 	}
@@ -333,4 +365,13 @@ func validatePayCredit(settlement SettlementType, quote *CreditQuote,
 	}
 
 	return nil
+}
+
+// firstAmount supplies zero for legacy fixed-amount callers.
+func firstAmount(amounts []uint64) uint64 {
+	if len(amounts) == 0 {
+		return 0
+	}
+
+	return amounts[0]
 }
