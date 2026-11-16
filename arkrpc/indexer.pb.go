@@ -1932,9 +1932,15 @@ type ListVTXOsByScriptsRequest struct {
 	// It is only valid with the same scripts and status_filter values.
 	Cursor []byte `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
 	// limit bounds the number of results returned.
-	Limit         uint32 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Limit uint32 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
+	// wait_for_match_ms waits up to this duration for a nonempty result,
+	// capped at 30000 ms. Zero preserves the immediate query. A wait requires
+	// one script, one explicit LIVE or SPENT status, an empty cursor and
+	// limit=1. The same script proof is required; no registration is created.
+	// Servers subscribe before reading and reread committed state after wakes.
+	WaitForMatchMs uint32 `protobuf:"varint,5,opt,name=wait_for_match_ms,json=waitForMatchMs,proto3" json:"wait_for_match_ms,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ListVTXOsByScriptsRequest) Reset() {
@@ -1995,6 +2001,13 @@ func (x *ListVTXOsByScriptsRequest) GetLimit() uint32 {
 	return 0
 }
 
+func (x *ListVTXOsByScriptsRequest) GetWaitForMatchMs() uint32 {
+	if x != nil {
+		return x.WaitForMatchMs
+	}
+	return 0
+}
+
 type ListVTXOsByScriptsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// vtxos carries every indexer VTXO matching the queried scripts in the
@@ -2003,7 +2016,11 @@ type ListVTXOsByScriptsResponse struct {
 	// build the index they want locally; the wire format stays neutral.
 	Vtxos []*VTXO `protobuf:"bytes,1,rep,name=vtxos,proto3" json:"vtxos,omitempty"`
 	// next_cursor is empty when the result set is exhausted.
-	NextCursor    []byte `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	NextCursor []byte `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	// wait_supported confirms the nonzero wait was honored. An empty result
+	// with this bit set means the bounded wait elapsed, not a spurious wake.
+	// Old servers leave this false; callers retain their polling fallback.
+	WaitSupported bool `protobuf:"varint,3,opt,name=wait_supported,json=waitSupported,proto3" json:"wait_supported,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2050,6 +2067,13 @@ func (x *ListVTXOsByScriptsResponse) GetNextCursor() []byte {
 		return x.NextCursor
 	}
 	return nil
+}
+
+func (x *ListVTXOsByScriptsResponse) GetWaitSupported() bool {
+	if x != nil {
+		return x.WaitSupported
+	}
+	return false
 }
 
 type GetOORSessionByTxidRequest struct {
@@ -2874,16 +2898,18 @@ const file_indexer_proto_rawDesc = "" +
 	"\x0eancestry_paths\x18\x12 \x03(\v2\x14.arkrpc.AncestryPathR\rancestryPaths\x12'\n" +
 	"\x0foperator_pubkey\x18\x13 \x01(\fR\x0eoperatorPubkey\x121\n" +
 	"\x14construction_version\x18\x14 \x01(\rR\x13constructionVersion\x12F\n" +
-	"\x11ancestry_packages\x18\x15 \x03(\v2\x19.arkrpc.OORSessionPackageR\x10ancestryPackages\"\xb1\x01\n" +
+	"\x11ancestry_packages\x18\x15 \x03(\v2\x19.arkrpc.OORSessionPackageR\x10ancestryPackages\"\xdc\x01\n" +
 	"\x19ListVTXOsByScriptsRequest\x12-\n" +
 	"\ascripts\x18\x01 \x03(\v2\x13.arkrpc.ScriptScopeR\ascripts\x127\n" +
 	"\rstatus_filter\x18\x02 \x03(\x0e2\x12.arkrpc.VTXOStatusR\fstatusFilter\x12\x16\n" +
 	"\x06cursor\x18\x03 \x01(\fR\x06cursor\x12\x14\n" +
-	"\x05limit\x18\x04 \x01(\rR\x05limit\"a\n" +
+	"\x05limit\x18\x04 \x01(\rR\x05limit\x12)\n" +
+	"\x11wait_for_match_ms\x18\x05 \x01(\rR\x0ewaitForMatchMs\"\x88\x01\n" +
 	"\x1aListVTXOsByScriptsResponse\x12\"\n" +
 	"\x05vtxos\x18\x01 \x03(\v2\f.arkrpc.VTXOR\x05vtxos\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\fR\n" +
-	"nextCursor\"l\n" +
+	"nextCursor\x12%\n" +
+	"\x0ewait_supported\x18\x03 \x01(\bR\rwaitSupported\"l\n" +
 	"\x1aGetOORSessionByTxidRequest\x12+\n" +
 	"\x06script\x18\x01 \x01(\v2\x13.arkrpc.ScriptScopeR\x06script\x12!\n" +
 	"\fsession_txid\x18\x02 \x01(\fR\vsessionTxid\"c\n" +
