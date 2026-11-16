@@ -2307,6 +2307,13 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 func (b *behavior) ackPreSignedExitSpend(ctx context.Context,
 	ax actor.Exec[unrollTx], msg *SpendObservedMsg) (bool, error) {
 
+	// Standard timeout exits have no immutable pre-signed final spend.
+	// Avoid policy resolution so asset sweep safety cannot prevent a
+	// foreign spend from terminalizing the job.
+	if b.exitPolicyKind() == StandardVTXOTimeoutExitPolicyKind {
+		return false, nil
+	}
+
 	spentOutpoint := msg.Outpoint
 	if spentOutpoint == (wire.OutPoint{}) {
 		spentOutpoint = b.cfg.TargetOutpoint
