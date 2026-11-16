@@ -288,7 +288,28 @@ func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
 	return info, nil
 }
 
-// CreateWallet creates or imports the embedded daemon wallet.
+// GenerateSeed prepares fresh aezeed recovery words without creating a wallet.
+// Only an uninitialized self-managed wallet supports this operation. Abandoned
+// words can be discarded safely; the daemon does not retain them. Back up the
+// returned words before supplying them to CreateWallet.
+func (c *Client) GenerateSeed(ctx context.Context, req GenerateSeedRequest) (
+	*GenerateSeedResult, error) {
+
+	seed, err := c.daemon.GenSeed(ctx, &waverpc.GenSeedRequest{
+		SeedPassphrase: bytes.Clone(req.SeedPassphrase),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("generate wallet seed: %w", err)
+	}
+
+	return &GenerateSeedResult{
+		Mnemonic: append([]string(nil), seed.GetMnemonic()...),
+	}, nil
+}
+
+// CreateWallet creates or imports the embedded daemon wallet. When Mnemonic is
+// empty, its generated words are returned only after initialization succeeds.
+// Backup-first hosts should use GenerateSeed before calling this method.
 func (c *Client) CreateWallet(ctx context.Context, req CreateWalletRequest) (
 	*CreateWalletResult, error) {
 

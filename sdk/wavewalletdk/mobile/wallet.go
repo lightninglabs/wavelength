@@ -112,6 +112,31 @@ func GetInfo() ([]byte, error) {
 	return marshal(info)
 }
 
+// GenerateSeed prepares recovery words without creating a wallet. reqJSON
+// decodes to wavewalletdk.GenerateSeedRequest; the response is
+// wavewalletdk.GenerateSeedResult. Keep the response private, back it up, and
+// pass its exact Mnemonic to CreateWallet. A timeout leaves no new wallet.
+func GenerateSeed(reqJSON []byte) ([]byte, error) {
+	client, parentCtx, err := activeClient()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := readContext(parentCtx)
+	defer cancel()
+
+	var req wavewalletdk.GenerateSeedRequest
+	if err := decode(reqJSON, &req); err != nil {
+		return nil, err
+	}
+
+	res, err := client.GenerateSeed(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return marshal(res)
+}
+
 // CreateWallet creates or imports the embedded wallet. reqJSON decodes to
 // wavewalletdk.CreateWalletRequest; the response is
 // wavewalletdk.CreateWalletResult.

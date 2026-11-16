@@ -85,7 +85,16 @@ Use `GetInfo` to decide whether to create or unlock the daemon wallet:
 ```go
 password := []byte("correct horse battery staple")
 
+prepared, err := client.GenerateSeed(ctx, wavewalletdk.GenerateSeedRequest{})
+if err != nil {
+	panic(err)
+}
+
+// Show prepared.Mnemonic privately and wait for backup acknowledgment.
+// Do not log, persist, copy to the clipboard, or share these words.
+
 created, err := client.CreateWallet(ctx, wavewalletdk.CreateWalletRequest{
+	Mnemonic:       prepared.Mnemonic,
 	WalletPassword: password,
 })
 if err != nil {
@@ -93,8 +102,15 @@ if err != nil {
 }
 
 fmt.Println("identity:", created.IdentityPubKey)
-fmt.Println("mnemonic:", created.Mnemonic)
 ```
+
+`GenerateSeed` leaves the wallet uninitialized. If the host exits before
+backup acknowledgment, discard the words and return to setup. Once backed up,
+pass those exact words to `CreateWallet`; a later startup failure can leave a
+wallet database behind, so reconcile `GetInfo` and unlock that wallet instead
+of generating a replacement. Empty-mnemonic `CreateWallet` remains supported
+for existing callers, but only returns its words after initialization succeeds.
+No stored recovery-word copy or schema migration is added.
 
 For an existing wallet:
 
