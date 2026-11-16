@@ -758,7 +758,16 @@ func (c *Client) WaitForVTXOByScriptTaproot(ctx context.Context,
 	}
 	req.WaitForMatchMs = min(waitMS, 30000)
 
-	return c.rpc.ListVTXOsByScripts(ctx, req)
+	// The operator may acknowledge an ephemeral wait before replying.
+	// Bound a lost reply after restart instead of inheriting the mailbox
+	// registry's much longer stale-waiter retention. Caller deadlines win.
+	waitCtx, cancel := context.WithTimeout(
+		ctx, time.Duration(req.WaitForMatchMs)*time.Millisecond+
+			5*time.Second,
+	)
+	defer cancel()
+
+	return c.rpc.ListVTXOsByScripts(waitCtx, req)
 }
 
 // BuildGetOORSessionByTxidTaprootRequest builds the proof-gated indexer
