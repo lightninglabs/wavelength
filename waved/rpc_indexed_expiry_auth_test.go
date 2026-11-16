@@ -123,10 +123,12 @@ func TestIndexedExpiryRPCUsesConfirmedDeadline(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Close() })
 	client := waverpc.NewDaemonServiceClient(conn)
 
+	var waitMS uint32
 	lookup := func() error {
 		response, err := client.GetIndexedVTXOByPkScript(
 			t.Context(), &waverpc.GetIndexedVTXOByPkScriptRequest{
-				PkScript: script,
+				PkScript:       script,
+				WaitForMatchMs: waitMS,
 				StatusFilter: []waverpc.VTXOStatus{
 					waverpc.VTXOStatus_VTXO_STATUS_LIVE,
 				},
@@ -147,6 +149,16 @@ func TestIndexedExpiryRPCUsesConfirmedDeadline(t *testing.T) {
 			t, testExpiryStatusUnknown,
 			response.GetVtxo().GetExpiryInfo().GetStatus(),
 		)
+
+		stub.mu.Lock()
+		last, ok := stub.lastReq.(*arkrpc.ListVTXOsByScriptsRequest)
+		require.True(t, ok)
+		require.Equal(t, waitMS, last.WaitForMatchMs)
+		require.Equal(
+			t, waitMS > 0 && stub.waitSupported,
+			response.WaitSupported,
+		)
+		stub.mu.Unlock()
 
 		return nil
 	}
@@ -180,6 +192,16 @@ func TestIndexedExpiryRPCUsesConfirmedDeadline(t *testing.T) {
 	server.expiryAuthenticator = authenticate
 	server.markWalletServicesReady(nil)
 	require.NoError(t, lookup())
+	// Both old and wait-capable operators still pass the same signed
+	// ancestry and confirmed-expiry authentication before returning rows.
+	waitMS = 2000
+	for _, supported := range []bool{false, true} {
+		stub.mu.Lock()
+		stub.waitSupported = supported
+		stub.mu.Unlock()
+		require.NoError(t, lookup())
+	}
+	waitMS = 0
 	require.NoError(t, expiry())
 
 	// A ready service with broken wiring must not disguise that defect as

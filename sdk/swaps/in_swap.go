@@ -1383,10 +1383,14 @@ func (s *paySession) waitForClaimPreimage(ctx context.Context) error {
 			return err
 		}
 
-		preimage, spentVHTLC, err :=
-			s.client.waitForInSwapClaimObservation(
-				ctx, s.cfg.PaymentHash, s.vhtlcPkScript,
-			)
+		queryStart := time.Now()
+		preimage, spentVHTLC, waited, err := s.waitForIndexedClaim(ctx)
+		retryElapsed := time.Duration(0)
+		if err != nil {
+			retryElapsed = time.Since(queryStart)
+		} else if waited {
+			retryElapsed = s.client.waitPollInterval
+		}
 		if err != nil {
 			s.client.log.DebugS(
 				ctx,
@@ -1478,7 +1482,10 @@ func (s *paySession) waitForClaimPreimage(ctx context.Context) error {
 			)
 		}
 
-		if err := s.waitForNextPoll(ctx); err != nil {
+		if err := s.waitForNextPollAfter(
+			ctx, retryElapsed,
+		); err != nil {
+
 			if errors.Is(err, errSwapExpired) {
 				return s.initiateRefund(
 					ctx, "claim deadline elapsed",
@@ -2222,12 +2229,23 @@ func (s *paySession) observeLiveVHTLC(ctx context.Context) (bool, error) {
 // waitForNextPoll sleeps until the next poll interval or the swap deadline,
 // whichever arrives first.
 func (s *paySession) waitForNextPoll(ctx context.Context) error {
+	return s.waitForNextPollAfter(ctx, 0)
+}
+
+// waitForNextPollAfter credits time already consumed by a bounded query while
+// preserving the deadline check before another funding or refund iteration.
+func (s *paySession) waitForNextPollAfter(ctx context.Context,
+	elapsed time.Duration) error {
+
 	if !s.cfg.Expiry.IsZero() &&
 		!s.client.currentTime().Before(s.cfg.Expiry) {
 		return errSwapExpired
 	}
 
-	wait := s.client.waitPollInterval
+	wait := s.client.waitPollInterval - elapsed
+	if elapsed > 0 && wait <= 0 {
+		return nil
+	}
 	if !s.cfg.Expiry.IsZero() {
 		until := s.cfg.Expiry.Sub(s.client.currentTime())
 		if until < wait {
@@ -2256,13 +2274,27 @@ func (c *SwapClient) waitForInSwapClaimObservation(ctx context.Context,
 	paymentHash lntypes.Hash, pkScript []byte) (*lntypes.Preimage,
 	*VTXOInfo, error) {
 
+	return c.waitForClaimObservation(ctx, paymentHash, pkScript,
+		func(ctx context.Context) (*VTXOInfo, error) {
+			return c.daemon.FindSpentVTXOByPkScript(ctx, pkScript)
+		},
+	)
+}
+
+// waitForClaimObservation preserves the checkpoint catch-up policy while
+// allowing the first remote read to wait for a committed spend.
+func (c *SwapClient) waitForClaimObservation(ctx context.Context,
+	paymentHash lntypes.Hash, pkScript []byte,
+	lookup func(context.Context) (*VTXOInfo, error)) (*lntypes.Preimage,
+	*VTXOInfo, error) {
+
 	var (
 		spentVHTLC  *VTXOInfo
 		maxAttempts = defaultClaimPreimageLookupAttempts
 	)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		preimage, spent, err := c.findInSwapClaimObservation(
-			ctx, paymentHash, pkScript,
+		preimage, spent, err := c.findInSwapClaimObservationWithLookup(
+			ctx, paymentHash, pkScript, lookup,
 		)
 		if err != nil || preimage != nil || spent == nil {
 			return preimage, spent, err
@@ -2294,6 +2326,21 @@ func (c *SwapClient) findInSwapClaimObservation(ctx context.Context,
 	paymentHash lntypes.Hash, pkScript []byte) (*lntypes.Preimage,
 	*VTXOInfo, error) {
 
+	return c.findInSwapClaimObservationWithLookup(
+		ctx, paymentHash, pkScript,
+		func(ctx context.Context) (*VTXOInfo, error) {
+			return c.daemon.FindSpentVTXOByPkScript(ctx, pkScript)
+		},
+	)
+}
+
+// findInSwapClaimObservationWithLookup verifies the same local and indexed
+// claim evidence regardless of whether the remote read waited for a match.
+func (c *SwapClient) findInSwapClaimObservationWithLookup(ctx context.Context,
+	paymentHash lntypes.Hash, pkScript []byte,
+	lookup func(context.Context) (*VTXOInfo, error)) (*lntypes.Preimage,
+	*VTXOInfo, error) {
+
 	pkScriptHex := hex.EncodeToString(pkScript)
 
 	spentVTXOs, err := c.daemon.ListSpentVTXOs(ctx)
@@ -2312,7 +2359,7 @@ func (c *SwapClient) findInSwapClaimObservation(ctx context.Context,
 		return preimage, nil, nil
 	}
 
-	vtxo, err := c.daemon.FindSpentVTXOByPkScript(ctx, pkScript)
+	vtxo, err := lookup(ctx)
 	if err != nil {
 		return nil, nil, err
 	}

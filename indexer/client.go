@@ -742,6 +742,25 @@ func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
 	return resp, nil
 }
 
+// WaitForVTXOByScriptTaproot performs the same proof-gated query with a
+// bounded wait for one matching row. Older operators return immediately with
+// wait_supported=false, leaving fallback pacing to the caller.
+func (c *Client) WaitForVTXOByScriptTaproot(ctx context.Context,
+	scope TaprootScriptScope, state arkrpc.VTXOStatus, waitMS uint32) (
+	*arkrpc.ListVTXOsByScriptsResponse, error) {
+
+	req, err := c.BuildListVTXOsByScriptsTaprootRequest(
+		ctx, []TaprootScriptScope{scope}, nil, 1,
+		[]arkrpc.VTXOStatus{state},
+	)
+	if err != nil {
+		return nil, err
+	}
+	req.WaitForMatchMs = min(waitMS, 30000)
+
+	return c.rpc.ListVTXOsByScripts(ctx, req)
+}
+
 // BuildGetOORSessionByTxidTaprootRequest builds the proof-gated indexer
 // request body for one script-scoped OOR session lookup.
 func (c *Client) BuildGetOORSessionByTxidTaprootRequest(ctx context.Context,

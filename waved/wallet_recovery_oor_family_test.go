@@ -68,11 +68,12 @@ func (b *recoveryKeyBackend) ProofSigner(
 // recoveryIndexerStub answers indexer queries from a fixed script-to-VTXO map,
 // so a scan only finds a VTXO if it actually asked about the right script.
 type recoveryIndexerStub struct {
-	mu        sync.Mutex
-	byScript  map[string]*arkrpc.VTXO
-	lastReq   proto.Message
-	askedFor  [][]byte
-	registers int
+	waitSupported bool
+	mu            sync.Mutex
+	byScript      map[string]*arkrpc.VTXO
+	lastReq       proto.Message
+	askedFor      [][]byte
+	registers     int
 }
 
 // SendRPC records the outgoing request and returns a static correlation pair.
@@ -122,6 +123,8 @@ func (s *recoveryIndexerStub) AwaitRPC(_ context.Context, _ string,
 	if !ok {
 		return nil
 	}
+
+	listResp.WaitSupported = s.waitSupported
 
 	for _, scope := range listReq.GetScripts() {
 		indexed, ok := s.byScript[string(scope.GetPkScript())]
