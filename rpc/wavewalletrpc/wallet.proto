@@ -365,12 +365,9 @@ message PrepareSendRequest {
         string onchain_address = 2;
     }
 
-    // amt_sat is required for onchain sends. For onchain sends amt_sat
-    // must be strictly positive unless sweep_all is set, in which case
-    // it must be zero. For invoice sends amt_sat is ignored: v1 requires
-    // an amount-bearing BOLT-11 invoice; amountless invoices are rejected
-    // at the wallet layer until plumbing for caller-supplied amounts
-    // lands in the swap subserver.
+    // amt_sat is positive for bounded onchain sends and amountless invoices.
+    // Zero uses a fixed invoice's signed amount, or onchain sweep_all.
+    // A supplied amount cannot replace a fixed invoice's signed amount.
     uint64 amt_sat = 3;
 
     // note is an optional caller-supplied label persisted alongside the
