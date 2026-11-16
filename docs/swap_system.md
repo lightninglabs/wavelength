@@ -672,10 +672,11 @@ that the receiver's own daemon may materialise locally, the receive flow keeps a
 fallback — `localLiveVTXOByPkScript` (out_swap.go:2017) — that consults the local
 live VTXO set in addition to the remote indexer.
 
-Cancellation needs no special case here. An in-Ark swap rides the same six-leaf
-vHTLC as a Lightning-bridged one, so the receiver still arms a claim recovery and
-the sender still has the cooperative-refund and unilateral-exit leaves: the
-ladder of §5 applies unchanged, only without a Lightning HTLC behind it.
+An in-Ark swap uses the same six-leaf vHTLC as a Lightning-bridged one. The
+receiver still arms claim recovery, and the sender retains timeout refunds and
+unilateral exits. The SDK skips the immediate cooperative-refund probe: there
+is no failed Lightning attempt for the swap server to authorize. An already
+submitted refund still reconciles through the normal recovery path.
 
 ---
 
