@@ -1063,9 +1063,13 @@ func paySessionFromRow(ctx context.Context, c *SwapClient,
 	if err != nil {
 		return nil, err
 	}
-	var maxCreditSat uint64
+	var maxCreditSat, amountSat uint64
 	auth, err := c.store.queries.GetPayAuthorization(ctx, row.PaymentHash)
 	if err == nil {
+		amountSat, err = strconv.ParseUint(auth.AmountSat, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("decode pay amount: %w", err)
+		}
 		maxCreditSat, err = strconv.ParseUint(auth.MaxCreditSat, 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("decode pay authorization: %w",
@@ -1080,6 +1084,7 @@ func paySessionFromRow(ctx context.Context, c *SwapClient,
 		invoice:       row.Invoice,
 		maxFeeSat:     uint64(row.MaxFeeSat),
 		maxCreditSat:  maxCreditSat,
+		amountSat:     amountSat,
 		state:         state,
 		cfg:           cfg,
 		vhtlcPolicy:   policy,

@@ -106,3 +106,6 @@ into specific topics below.
 - [Notification relay implementation plan](notification-relay-execplan.md).
 
 - [Notification relay SQL storage](notification-relay-sql.md) — Dedicated publisher persistence and transaction rules.
+
+- [Amountless invoice payments](amountless-invoices.md) — payer amounts,
+  quote binding, durable authorization and mobile inspection.

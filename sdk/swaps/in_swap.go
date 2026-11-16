@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	loopfsm "github.com/lightninglabs/loop/fsm"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/sdk/bolt11"
 	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -256,6 +257,7 @@ type paySession struct {
 	client *SwapClient
 
 	invoice      string
+	amountSat    uint64
 	maxFeeSat    uint64
 	maxCreditSat uint64
 	state        PayState
@@ -508,6 +510,17 @@ func (c *SwapClient) StartPayViaLightningWithCredits(ctx context.Context,
 	invoice string, maxFeeSat uint64, maxCreditSat uint64) (*PaySession,
 	error) {
 
+	return c.StartPayViaLightningWithAmount(
+		ctx, invoice, maxFeeSat, maxCreditSat, 0,
+	)
+}
+
+// StartPayViaLightningWithAmount persists the exact amount before server
+// admission.
+func (c *SwapClient) StartPayViaLightningWithAmount(ctx context.Context,
+	invoice string, maxFeeSat, maxCreditSat, amountSat uint64) (*PaySession,
+	error) {
+
 	key, err := c.daemon.IdentityPubKey(ctx)
 	if err != nil {
 		return nil, newRetryableActionError(
@@ -521,13 +534,21 @@ func (c *SwapClient) StartPayViaLightningWithCredits(ctx context.Context,
 	if decoded.PaymentHash == nil {
 		return nil, fmt.Errorf("invoice payment hash is required")
 	}
+	if _, err := bolt11.AmountMSat(decoded, amountSat); err != nil {
+		return nil, err
+	}
+	if decoded.MilliSat != nil {
+		amountSat = 0
+	}
+
 	if c.store != nil {
 		row, err := c.store.queries.GetPaySwap(
 			ctx, decoded.PaymentHash[:],
 		)
 		if err == nil {
-			if err := c.ValidatePayAuthorization(
+			if err := c.ValidatePayAuthorizationWithAmount(
 				ctx, invoice, maxFeeSat, maxCreditSat,
+				amountSat,
 			); err != nil {
 				return nil, err
 			}
@@ -538,14 +559,16 @@ func (c *SwapClient) StartPayViaLightningWithCredits(ctx context.Context,
 			return nil, err
 		}
 	}
-	if _, err := c.authorizePay(ctx, invoice, maxFeeSat, maxCreditSat,
-		key); err != nil {
+	if _, err := c.authorizePay(
+		ctx, invoice, maxFeeSat, maxCreditSat, key, amountSat,
+	); err != nil {
 		return nil, err
 	}
 
 	session := &paySession{
 		client:       c,
 		invoice:      invoice,
+		amountSat:    amountSat,
 		maxFeeSat:    maxFeeSat,
 		maxCreditSat: maxCreditSat,
 		state:        PayStateCreated,
@@ -624,23 +647,49 @@ func (s *paySession) createSwap(ctx context.Context) error {
 
 	if _, err := s.client.authorizePay(
 		ctx, s.invoice, s.maxFeeSat, s.maxCreditSat, clientKey,
+		s.amountSat,
 	); err != nil {
 		return err
 	}
 
 	// The recovery proof also binds the participant script key even though
 	// it currently equals the daemon identity key.
+	ownerFields := [][]byte{
+		clientKey.SerializeCompressed(),
+		[]byte(s.invoice),
+		recoveryUint64Field(s.maxFeeSat),
+	}
+	if s.amountSat != 0 {
+		ownerFields = append(
+			ownerFields, recoveryUint64Field(s.amountSat),
+		)
+	}
 	ownerProof, err := newSwapOwnerProof(
 		ctx, s.client.daemon, clientKey, swapRecoveryAuthCreateIn,
-		s.client.currentTime().Unix(), clientKey.SerializeCompressed(),
-		[]byte(s.invoice), recoveryUint64Field(s.maxFeeSat),
+		s.client.currentTime().Unix(), ownerFields...,
 	)
 	if err != nil {
 		return fmt.Errorf("create owner proof: %w", err)
 	}
 
 	var cfg *InSwapConfig
-	if server, ok := s.client.server.(interface {
+	if s.amountSat != 0 {
+		server, ok := s.client.server.(interface {
+			CreateInSwapWithAmount(context.Context, string, uint64,
+				*btcec.PublicKey, []byte, uint64,
+				*swaprpc.SwapOwnerProof,
+				uint64) (*InSwapConfig, error)
+		})
+		if !ok {
+			return fmt.Errorf("swap transport does not support " +
+				"payer amounts")
+		}
+		cfg, err = server.CreateInSwapWithAmount(
+			ctx, s.invoice, s.maxFeeSat, clientKey,
+			clientKey.SerializeCompressed(), s.maxCreditSat,
+			ownerProof, s.amountSat,
+		)
+	} else if server, ok := s.client.server.(interface {
 		CreateInSwapWithCredits(context.Context, string, uint64,
 			*btcec.PublicKey, []byte, uint64,
 			*swaprpc.SwapOwnerProof) (*InSwapConfig, error)
@@ -668,7 +717,7 @@ func (s *paySession) createSwap(ctx context.Context) error {
 
 	err = validateInSwapQuote(
 		s.invoice, s.maxFeeSat, s.maxCreditSat, cfg,
-		s.client.chainParams,
+		s.client.chainParams, s.amountSat,
 	)
 	if err != nil {
 		return fmt.Errorf("validate in-swap quote: %w", err)

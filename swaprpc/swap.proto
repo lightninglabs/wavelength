@@ -432,6 +432,10 @@ message CreateInSwapRequest {
     // in-swap for seed recovery. Rows created without this proof remain usable
     // but are not returned by ListRecoverableSwaps.
     SwapOwnerProof owner_proof = 7;
+
+    // amount_sat supplies the payer amount for an amountless invoice.
+    // Zero uses the signed invoice amount. A signed amount cannot change.
+    uint64 amount_sat = 8;
 }
 
 // RecoverableSwapDirection identifies which recovery path a row belongs to.
@@ -562,6 +566,9 @@ message QuoteInSwapRequest {
     // account_authorization proves control of account_pubkey for this exact
     // request whenever account_pubkey is set.
     CreditAccountAuthorization account_authorization = 5;
+
+    // amount_sat supplies the payer amount for an amountless invoice.
+    uint64 amount_sat = 6;
 }
 
 // QuoteInSwapResponse returns the non-binding preview for one invoice send.

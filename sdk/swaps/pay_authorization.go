@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/lightninglabs/wavelength/sdk/bolt11"
 	swapsqlc "github.com/lightninglabs/wavelength/sdk/swaps/sqlc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/grpc/codes"
@@ -26,9 +27,10 @@ var ErrPayAuthorizationMismatch = status.Error(
 // response, to the original invoice, account and caps. Concurrent requests with
 // different terms cannot replace the winning authorization.
 func (c *SwapClient) authorizePay(ctx context.Context, invoice string,
-	maxFeeSat, maxCreditSat uint64, account *btcec.PublicKey) (lntypes.Hash,
-	error) {
+	maxFeeSat, maxCreditSat uint64, account *btcec.PublicKey,
+	callerAmount ...uint64) (lntypes.Hash, error) {
 
+	amountSat := firstAmount(callerAmount)
 	decoded, err := decodePayInvoice(invoice, c.chainParams)
 	if err != nil {
 		return lntypes.Hash{}, err
@@ -36,6 +38,12 @@ func (c *SwapClient) authorizePay(ctx context.Context, invoice string,
 	if decoded.PaymentHash == nil {
 		return lntypes.Hash{}, fmt.Errorf("invoice payment hash is " +
 			"required")
+	}
+	if _, err := bolt11.AmountMSat(decoded, amountSat); err != nil {
+		return lntypes.Hash{}, err
+	}
+	if decoded.MilliSat != nil {
+		amountSat = 0
 	}
 	hash := lntypes.Hash(*decoded.PaymentHash)
 	if c.store == nil {
@@ -65,6 +73,7 @@ func (c *SwapClient) authorizePay(ctx context.Context, invoice string,
 		AccountPubkey: account.SerializeCompressed(),
 		MaxFeeSat:     strconv.FormatUint(maxFeeSat, 10),
 		MaxCreditSat:  strconv.FormatUint(maxCreditSat, 10),
+		AmountSat:     strconv.FormatUint(amountSat, 10),
 	}
 	if err := c.store.queries.AdmitPayAuthorization(
 		ctx, terms,
@@ -76,6 +85,7 @@ func (c *SwapClient) authorizePay(ctx context.Context, invoice string,
 		return hash, fmt.Errorf("load pay authorization: %w", err)
 	}
 	if stored.Invoice != terms.Invoice ||
+		stored.AmountSat != terms.AmountSat ||
 		stored.MaxFeeSat != terms.MaxFeeSat ||
 		stored.MaxCreditSat != terms.MaxCreditSat ||
 		!bytes.Equal(stored.AccountPubkey, terms.AccountPubkey) {
@@ -92,12 +102,28 @@ func (c *SwapClient) authorizePay(ctx context.Context, invoice string,
 func (c *SwapClient) ValidatePayAuthorization(ctx context.Context,
 	invoice string, maxFeeSat, maxCreditSat uint64) error {
 
+	return c.ValidatePayAuthorizationWithAmount(
+		ctx, invoice, maxFeeSat, maxCreditSat, 0,
+	)
+}
+
+// ValidatePayAuthorizationWithAmount binds retries to the original payer
+// amount.
+func (c *SwapClient) ValidatePayAuthorizationWithAmount(ctx context.Context,
+	invoice string, maxFeeSat, maxCreditSat, amountSat uint64) error {
+
 	decoded, err := decodePayInvoice(invoice, c.chainParams)
 	if err != nil {
 		return err
 	}
 	if decoded.PaymentHash == nil || c.store == nil {
 		return fmt.Errorf("durable pay authorization is required")
+	}
+	if _, err := bolt11.AmountMSat(decoded, amountSat); err != nil {
+		return err
+	}
+	if decoded.MilliSat != nil {
+		amountSat = 0
 	}
 	key, err := c.creditAccountKey(ctx)
 	if err != nil {
@@ -117,7 +143,7 @@ func (c *SwapClient) ValidatePayAuthorization(ctx context.Context,
 		if err != nil {
 			return fmt.Errorf("load historical pay: %w", err)
 		}
-		if row.Invoice != invoice ||
+		if amountSat != 0 || row.Invoice != invoice ||
 			!bytes.Equal(row.ClientPubkey, key) {
 			return ErrPayAuthorizationMismatch
 		}
@@ -128,6 +154,7 @@ func (c *SwapClient) ValidatePayAuthorization(ctx context.Context,
 		return fmt.Errorf("load original pay authorization: %w", err)
 	}
 	if stored.Invoice != invoice ||
+		stored.AmountSat != strconv.FormatUint(amountSat, 10) ||
 		stored.MaxFeeSat != strconv.FormatUint(maxFeeSat, 10) ||
 		stored.MaxCreditSat != strconv.FormatUint(maxCreditSat, 10) ||
 		!bytes.Equal(stored.AccountPubkey, key) {

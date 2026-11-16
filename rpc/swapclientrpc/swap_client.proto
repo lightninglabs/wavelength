@@ -118,6 +118,9 @@ message QuotePayRequest {
     // use for this quote. Zero means only required-credit shortfalls are
     // reported.
     uint64 max_credit_sat = 3;
+
+    // amount_sat supplies the payer amount for an amountless invoice.
+    uint64 amount_sat = 4;
 }
 
 message QuotePayResponse {
@@ -163,6 +166,9 @@ message StartPayRequest {
     // max_credit_sat is the maximum credit amount the caller authorizes this
     // pay to reserve.
     uint64 max_credit_sat = 4;
+
+    // amount_sat supplies the payer amount for an amountless invoice.
+    uint64 amount_sat = 5;
 }
 
 message StartPayResponse {

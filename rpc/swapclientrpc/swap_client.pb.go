@@ -398,7 +398,9 @@ type QuotePayRequest struct {
 	// max_credit_sat is the maximum credit amount the caller is willing to
 	// use for this quote. Zero means only required-credit shortfalls are
 	// reported.
-	MaxCreditSat  uint64 `protobuf:"varint,3,opt,name=max_credit_sat,json=maxCreditSat,proto3" json:"max_credit_sat,omitempty"`
+	MaxCreditSat uint64 `protobuf:"varint,3,opt,name=max_credit_sat,json=maxCreditSat,proto3" json:"max_credit_sat,omitempty"`
+	// amount_sat supplies the payer amount for an amountless invoice.
+	AmountSat     uint64 `protobuf:"varint,4,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -450,6 +452,13 @@ func (x *QuotePayRequest) GetMaxFeeSat() uint64 {
 func (x *QuotePayRequest) GetMaxCreditSat() uint64 {
 	if x != nil {
 		return x.MaxCreditSat
+	}
+	return 0
+}
+
+func (x *QuotePayRequest) GetAmountSat() uint64 {
+	if x != nil {
+		return x.AmountSat
 	}
 	return 0
 }
@@ -576,7 +585,9 @@ type StartPayRequest struct {
 	IdempotencyKey string `protobuf:"bytes,3,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	// max_credit_sat is the maximum credit amount the caller authorizes this
 	// pay to reserve.
-	MaxCreditSat  uint64 `protobuf:"varint,4,opt,name=max_credit_sat,json=maxCreditSat,proto3" json:"max_credit_sat,omitempty"`
+	MaxCreditSat uint64 `protobuf:"varint,4,opt,name=max_credit_sat,json=maxCreditSat,proto3" json:"max_credit_sat,omitempty"`
+	// amount_sat supplies the payer amount for an amountless invoice.
+	AmountSat     uint64 `protobuf:"varint,5,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -635,6 +646,13 @@ func (x *StartPayRequest) GetIdempotencyKey() string {
 func (x *StartPayRequest) GetMaxCreditSat() uint64 {
 	if x != nil {
 		return x.MaxCreditSat
+	}
+	return 0
+}
+
+func (x *StartPayRequest) GetAmountSat() uint64 {
+	if x != nil {
+		return x.AmountSat
 	}
 	return 0
 }
@@ -2252,11 +2270,13 @@ var File_swap_client_proto protoreflect.FileDescriptor
 
 const file_swap_client_proto_rawDesc = "" +
 	"\n" +
-	"\x11swap_client.proto\x12\rswapclientrpc\"q\n" +
+	"\x11swap_client.proto\x12\rswapclientrpc\"\x90\x01\n" +
 	"\x0fQuotePayRequest\x12\x18\n" +
 	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12\x1e\n" +
 	"\vmax_fee_sat\x18\x02 \x01(\x04R\tmaxFeeSat\x12$\n" +
-	"\x0emax_credit_sat\x18\x03 \x01(\x04R\fmaxCreditSat\"\xf6\x02\n" +
+	"\x0emax_credit_sat\x18\x03 \x01(\x04R\fmaxCreditSat\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x04 \x01(\x04R\tamountSat\"\xf6\x02\n" +
 	"\x10QuotePayResponse\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\tR\vpaymentHash\x12,\n" +
 	"\x12invoice_amount_sat\x18\x02 \x01(\x04R\x10invoiceAmountSat\x12\x1d\n" +
@@ -2266,12 +2286,14 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x0fsettlement_type\x18\x05 \x01(\x0e2!.swapclientrpc.SwapSettlementTypeR\x0esettlementType\x12&\n" +
 	"\x0fexpires_at_unix\x18\x06 \x01(\x03R\rexpiresAtUnix\x12&\n" +
 	"\x0fexceeds_max_fee\x18\a \x01(\bR\rexceedsMaxFee\x12=\n" +
-	"\fcredit_quote\x18\b \x01(\v2\x1a.swapclientrpc.CreditQuoteR\vcreditQuote\"\x9a\x01\n" +
+	"\fcredit_quote\x18\b \x01(\v2\x1a.swapclientrpc.CreditQuoteR\vcreditQuote\"\xb9\x01\n" +
 	"\x0fStartPayRequest\x12\x18\n" +
 	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12\x1e\n" +
 	"\vmax_fee_sat\x18\x02 \x01(\x04R\tmaxFeeSat\x12'\n" +
 	"\x0fidempotency_key\x18\x03 \x01(\tR\x0eidempotencyKey\x12$\n" +
-	"\x0emax_credit_sat\x18\x04 \x01(\x04R\fmaxCreditSat\"e\n" +
+	"\x0emax_credit_sat\x18\x04 \x01(\x04R\fmaxCreditSat\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x05 \x01(\x04R\tamountSat\"e\n" +
 	"\x10StartPayResponse\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\tR\vpaymentHash\x12.\n" +
 	"\x04swap\x18\x02 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xad\x01\n" +

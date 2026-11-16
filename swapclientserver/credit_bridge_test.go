@@ -619,3 +619,35 @@ func TestCreditBridgeAuthorizationConflict(t *testing.T) {
 		})
 	}
 }
+
+// TestCreditBridgeAmountlessConflictRejectsHandoff proves a different known
+// payment cannot complete the credit actor's chosen-amount handoff. The old
+// fixed-invoice observation behavior remains covered separately.
+func TestCreditBridgeAmountlessConflictRejectsHandoff(t *testing.T) {
+	hash := testHash(78)
+	invoice := testStartPayInvoice(t, hash, 0)
+	bridge, runtime := newTestCreditBridge(
+		t, swaps.ErrPayAuthorizationMismatch, swaps.SwapSummary{
+			Direction:   swaps.SwapDirectionPay,
+			PaymentHash: hash,
+			Invoice:     invoice,
+			AmountSat:   25000,
+			State:       "Completed",
+		},
+	)
+	// The amount-aware adapter returns the conflict from its owning SDK.
+	bridge.svc.client = &amountConflictRuntime{fakeSwapRuntime: runtime}
+	err := bridge.StartPayWithAmount(t.Context(), invoice, 25, 500, 26000)
+	require.ErrorIs(t, err, credit.ErrPayRejected)
+	require.ErrorIs(t, err, swaps.ErrPayAuthorizationMismatch)
+}
+
+type amountConflictRuntime struct{ *fakeSwapRuntime }
+
+// StartPayViaLightningWithAmount reproduces an existing amount's refusal of a
+// differently authorized request without creating another swap.
+func (r *amountConflictRuntime) StartPayViaLightningWithAmount(context.Context,
+	string, uint64, uint64, uint64) (paySwapSession, error) {
+
+	return nil, swaps.ErrPayAuthorizationMismatch
+}

@@ -1131,12 +1131,9 @@ type PrepareSendRequest struct {
 	//	*PrepareSendRequest_Invoice
 	//	*PrepareSendRequest_OnchainAddress
 	Destination isPrepareSendRequest_Destination `protobuf_oneof:"destination"`
-	// amt_sat is required for onchain sends. For onchain sends amt_sat
-	// must be strictly positive unless sweep_all is set, in which case
-	// it must be zero. For invoice sends amt_sat is ignored: v1 requires
-	// an amount-bearing BOLT-11 invoice; amountless invoices are rejected
-	// at the wallet layer until plumbing for caller-supplied amounts
-	// lands in the swap subserver.
+	// amt_sat is positive for bounded onchain sends and amountless invoices.
+	// Zero uses a fixed invoice's signed amount, or onchain sweep_all.
+	// A supplied amount cannot replace a fixed invoice's signed amount.
 	AmtSat uint64 `protobuf:"varint,3,opt,name=amt_sat,json=amtSat,proto3" json:"amt_sat,omitempty"`
 	// note is an optional caller-supplied label persisted alongside the
 	// entry. It is never interpreted by the daemon.

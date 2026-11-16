@@ -47,6 +47,7 @@ type preparedSendIntent struct {
 	invoice           string
 	onchainAddress    string
 	amountSat         uint64
+	callerAmountSat   uint64
 	note              string
 	maxFeeSat         uint64
 	maxCreditSat      uint64

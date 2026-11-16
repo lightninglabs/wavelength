@@ -212,10 +212,22 @@ func (topupAwaitingCreditState) ProcessEvent(ctx context.Context, _ CreditEvent,
 func (payingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 	b *opBehavior) (*CreditTransition, error) {
 
-	err := b.cfg.Server.StartPay(
-		ctx, b.rec.Invoice, uint64(b.rec.MaxFeeSat),
-		uint64(b.rec.MaxCreditSat),
-	)
+	var err error
+	if server, ok := b.cfg.Server.(interface {
+		StartPayWithAmount(context.Context, string, uint64, uint64,
+			uint64) error
+	}); ok {
+
+		err = server.StartPayWithAmount(
+			ctx, b.rec.Invoice, uint64(b.rec.MaxFeeSat),
+			uint64(b.rec.MaxCreditSat), uint64(b.rec.AmountSat),
+		)
+	} else {
+		err = b.cfg.Server.StartPay(
+			ctx, b.rec.Invoice, uint64(b.rec.MaxFeeSat),
+			uint64(b.rec.MaxCreditSat),
+		)
+	}
 	if errors.Is(err, ErrPayRejected) {
 		return b.fail(ctx, fmt.Sprintf("start pay rejected: %v", err))
 	}

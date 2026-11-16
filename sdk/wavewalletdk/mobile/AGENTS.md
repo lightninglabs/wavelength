@@ -175,3 +175,10 @@ even if intake requires foreground. It never reads receipts, starts pays or
 returns presentation proof. Zero references is ordinary maintenance. Hosts own
 selected-wallet enrollment independently of optional banners. See the existing
 background-window guide for legacy-reference and device acceptance limits.
+
+## Invoice inspection
+
+`DecodeInvoice` is a wallet-independent JSON verb. It accepts `Invoice` and
+`Network`, and returns the SDK's validated `InvoiceDetails`. Missing `AmountSat`
+is distinct from a decoding error. Hosts must obtain a new send quote when the
+chosen amount changes.
