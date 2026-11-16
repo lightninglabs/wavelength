@@ -486,6 +486,13 @@ message ListVTXOsByScriptsRequest {
 
     // limit bounds the number of results returned.
     uint32 limit = 4;
+
+    // wait_for_match_ms waits up to this duration for a nonempty result,
+    // capped at 30000 ms. Zero preserves the immediate query. A wait requires
+    // one script, one explicit LIVE or SPENT status, an empty cursor and
+    // limit=1. The same script proof is required; no registration is created.
+    // Servers subscribe before reading and reread committed state after wakes.
+    uint32 wait_for_match_ms = 5;
 }
 
 message ListVTXOsByScriptsResponse {
@@ -497,6 +504,11 @@ message ListVTXOsByScriptsResponse {
 
     // next_cursor is empty when the result set is exhausted.
     bytes next_cursor = 2;
+
+    // wait_supported confirms the nonzero wait was honored. An empty result
+    // with this bit set means the bounded wait elapsed, not a spurious wake.
+    // Old servers leave this false; callers retain their polling fallback.
+    bool wait_supported = 3;
 }
 
 message GetOORSessionByTxidRequest {
