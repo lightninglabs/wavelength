@@ -1426,6 +1426,13 @@ func TestSessionActorTerminalCommitNotifiesRegistry(t *testing.T) {
 		t, store, &fakePackageStore{},
 		func(context.Context, []wire.OutPoint) error { return nil },
 	)
+	var observed []SessionID
+	b.cfg.TerminalObserver = func(id SessionID) {
+		row, err := store.GetSession(ctx, chainhash.Hash(id))
+		require.NoError(t, err)
+		require.True(t, row.Status.IsTerminal())
+		observed = append(observed, id)
+	}
 	b.cfg.Registry = registryRef
 	b.cfg.ServerConn = fakeServerConnRef{}
 
@@ -1441,6 +1448,7 @@ func TestSessionActorTerminalCommitNotifiesRegistry(t *testing.T) {
 	}, ax)
 	require.True(t, res.IsOk(), res.Err())
 	require.False(t, b.terminalCommitted)
+	require.Empty(t, observed)
 
 	// The finalize acceptance drives the session to Completed; the commit
 	// is terminal and the registry must hear about it.
@@ -1450,6 +1458,7 @@ func TestSessionActorTerminalCommitNotifiesRegistry(t *testing.T) {
 	}, ax)
 	require.True(t, res.IsOk(), res.Err())
 	require.True(t, b.terminalCommitted)
+	require.Equal(t, []SessionID{sessionID}, observed)
 
 	// The notification is fired asynchronously so a full registry mailbox
 	// can never wedge the child's turn.
@@ -2133,4 +2142,25 @@ func TestSessionActorFinalizeReloadsAfterSpendFailure(t *testing.T) {
 	sent, ok := sink.msgs[0].(*ledger.VTXOSentMsg)
 	require.True(t, ok, "expected VTXOSentMsg, got %T", sink.msgs[0])
 	require.Equal(t, [32]byte(sessionID), sent.SessionID)
+}
+
+// TestSessionActorTerminalObserverSkipsFailedCommit verifies an advanced FSM
+// cannot wake status readers until its terminal snapshot has committed.
+func TestSessionActorTerminalObserverSkipsFailedCommit(t *testing.T) {
+	t.Parallel()
+	store := &failingUpsertStore{newFakeRegistryStore()}
+	b, sessionID, _ := finalizeBehavior(
+		t, store, &fakePackageStore{},
+		func(context.Context, []wire.OutPoint) error { return nil },
+	)
+	observed := false
+	b.cfg.TerminalObserver = func(SessionID) {
+		observed = true
+	}
+	res := b.Receive(t.Context(), &DriveEventRequest{
+		SessionID: sessionID,
+		Event:     &FinalizeAcceptedEvent{},
+	}, fakeExec{})
+	require.True(t, res.IsErr())
+	require.False(t, observed)
 }

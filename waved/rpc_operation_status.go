@@ -135,7 +135,17 @@ func (r *RPCServer) GetOORSession(ctx context.Context,
 			codes.NotFound, "OOR session not found",
 		)
 	}
+	// Register before reading so a commit between the read and the wait
+	// cannot be lost. The registration belongs to this bounded RPC.
+	wake, unsubscribe := r.server.oorTerminalWaiters.subscribe(
+		oor.SessionID(sessionID),
+	)
+	defer unsubscribe()
+
 	summary, err := store.Get(ctx, sessionID)
+	if ctx.Err() != nil {
+		return nil, status.FromContextError(ctx.Err()).Err()
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, status.Error(
 			codes.NotFound, "OOR session not found",
@@ -146,9 +156,41 @@ func (r *RPCServer) GetOORSession(ctx context.Context,
 			"session: %v", err)
 	}
 
+	info := r.oorStatusToProto(ctx, summary)
+	wait := min(
+		time.Duration(req.WaitForTerminalMs)*time.Millisecond,
+		30*time.Second,
+	)
+	if wait > 0 && !oorStatusTerminal(info) {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, status.FromContextError(ctx.Err()).Err()
+
+		case <-wake:
+		case <-timer.C:
+		}
+
+		// Notifications are hints. Re-read durable status after either
+		// wakeup or timeout; neither event itself proves completion.
+		return r.GetOORSession(ctx, &waverpc.GetOORSessionRequest{
+			SessionId: req.SessionId,
+		})
+	}
+
 	return &waverpc.GetOORSessionResponse{
-		Session: r.oorStatusToProto(ctx, summary),
+		Session:               info,
+		TerminalWaitSupported: true,
 	}, nil
+}
+
+// oorStatusTerminal reports statuses for which waiting cannot add progress.
+func oorStatusTerminal(info *waverpc.OORSessionInfo) bool {
+	return info.GetStatus() ==
+		waverpc.OORSessionStatus_OOR_SESSION_STATUS_COMPLETED ||
+		info.GetStatus() ==
+			waverpc.OORSessionStatus_OOR_SESSION_STATUS_FAILED
 }
 
 // newOORStatusStore reads the same durable registry state the OOR actor uses

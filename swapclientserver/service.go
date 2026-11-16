@@ -35,6 +35,7 @@ import (
 	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waved"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -213,6 +214,20 @@ func (d *liveOperatorDaemonConn) OperatorPubKey(ctx context.Context) (
 	*btcec.PublicKey, error) {
 
 	return d.operatorPubKey(ctx)
+}
+
+// WaitOORSession preserves the optional event-driven wait through this adapter.
+func (d *liveOperatorDaemonConn) WaitOORSession(ctx context.Context,
+	sessionID string, wait time.Duration) (*waverpc.OORSessionInfo, bool,
+	error) {
+
+	if waiter, ok := d.DaemonConn.(swaps.OORSessionWaiter); ok {
+		return waiter.WaitOORSession(ctx, sessionID, wait)
+	}
+
+	info, err := d.GetOORSession(ctx, sessionID)
+
+	return info, false, err
 }
 
 // daemonWithLiveOperatorKey wraps daemon so swap policy construction does not
