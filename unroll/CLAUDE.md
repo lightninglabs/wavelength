@@ -432,7 +432,9 @@ wallet. The claim pays no fee, so `startSweep` hands it to txconfirm for CPFP
 and follows it like a sweep, replacing any staged sweep. tapd leaves the
 claim's relay to the job, so the job asks txconfirm for
 `chainsource.DefaultFinalityDepth` confirmations and stays open, resuming the
-relay after a restart, until the claim is final. The claimer returns the same
+relay after a restart, until the claim is final. The VTXO's spend watch sees
+the claim at its first confirmation; that does not complete the job, only
+txconfirm's report at the finality depth does. The claimer returns the same
 claim on every call; one it cannot produce yet is retried at the next block.
 A claim books no exit cost, because the carrier's satoshis leave for the
 asset wallet, which the ledger does not track. `PlanExitFunding` prices an
