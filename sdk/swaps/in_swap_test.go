@@ -2205,6 +2205,19 @@ func TestPaySessionRefundLocktimePollInterval(t *testing.T) {
 // and sweep the vHTLC back as soon as the timeout branch is spendable.
 func TestPaySessionRefundsWhenRefundLocktimePassesBeforeClaim(t *testing.T) {
 	t.Parallel()
+	for _, settlement := range []SettlementType{
+		SettlementTypeLightning, SettlementTypeInArk,
+	} {
+		t.Run(string(settlement), func(t *testing.T) {
+			testPayRefundAfterLocktime(t, settlement)
+		})
+	}
+}
+
+// testPayRefundAfterLocktime checks the full timeout refund for one settlement
+// path, including durable recovery and the submitted custom-input spend.
+func testPayRefundAfterLocktime(t *testing.T, settlement SettlementType) {
+	t.Helper()
 
 	store := newTestSwapStore(t)
 
@@ -2225,10 +2238,11 @@ func TestPaySessionRefundsWhenRefundLocktimePassesBeforeClaim(t *testing.T) {
 
 	serverConn := &testInSwapServerConn{
 		cfg: &InSwapConfig{
-			PaymentHash:  preimage.Hash(),
-			AmountSat:    testInSwapAmountSat,
-			FeeSat:       testInSwapFeeSat,
-			ServerPubkey: serverPriv.PubKey(),
+			SettlementType: settlement,
+			PaymentHash:    preimage.Hash(),
+			AmountSat:      testInSwapAmountSat,
+			FeeSat:         testInSwapFeeSat,
+			ServerPubkey:   serverPriv.PubKey(),
 			VHTLCConfig: VHTLCConfig{
 				RefundLocktime:                       100,
 				UnilateralClaimDelay:                 12,
@@ -4255,4 +4269,32 @@ func TestPayRefundWaitsWhenHeightLookupFails(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, PayStateWaitingForClaim, restored.State())
+}
+
+// TestInArkSkipsCooperativeRefund verifies same-Ark settlement never probes
+// funding or prepares an early refund, while an accepted refund still resumes.
+func TestInArkSkipsCooperativeRefund(t *testing.T) {
+	t.Parallel()
+
+	// A nil daemon makes an accidental funding/refund RPC fail immediately.
+	client := NewSwapClient(nil, nil, nil, nil)
+	session := &paySession{
+		client: client,
+		cfg: &InSwapConfig{
+			SettlementType: SettlementTypeInArk,
+		},
+		state: PayStateWaitingForClaim,
+	}
+	refunded, err := session.tryCooperativeRefund(t.Context())
+	require.NoError(t, err)
+	require.False(t, refunded)
+	require.Equal(t, PayStateWaitingForClaim, session.state)
+
+	// Existing accepted refunds retain their recovery path even if a
+	// restored row identifies same-Ark settlement.
+	session.refundSessionID = "accepted-refund"
+	session.state = PayStateRefundInitiated
+	refunded, err = session.tryCooperativeRefund(t.Context())
+	require.NoError(t, err)
+	require.True(t, refunded)
 }

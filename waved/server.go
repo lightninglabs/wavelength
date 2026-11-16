@@ -202,6 +202,10 @@ type Server struct {
 	// actor owns all writes.
 	oorSessionStore oor.SessionRegistryStore
 
+	// oorTerminalWaiters holds only active RPC registrations. Durable
+	// status remains authoritative across restart or missed notifications.
+	oorTerminalWaiters oorTerminalWaiters
+
 	// metricsSrv is the optional Prometheus metrics HTTP server. It is
 	// nil until startMetricsServer runs and stays effectively disabled
 	// (no listener) unless Metrics.ListenAddr is set.
@@ -5146,6 +5150,7 @@ func (s *Server) initOORActor(ctx context.Context,
 	s.oorSessionStore = registryStore
 
 	s.oorRegistry, err = oor.NewOORRegistryActor(oor.OORRegistryConfig{
+		TerminalObserver: s.oorTerminalWaiters.notify,
 		Log:              fn.Some(s.subLogger(oor.Subsystem)),
 		Signer:           oorSigner,
 		IncomingHandler:  outboxHandler,

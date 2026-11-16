@@ -1702,6 +1702,13 @@ func (s *paySession) tryCooperativeRefund(ctx context.Context) (bool, error) {
 		)
 	}
 
+	// Same-Ark settlement has no Lightning attempt whose failure could
+	// authorize an early cooperative refund. Keep the timeout refund path
+	// and reconciliation of an already submitted refund above unchanged.
+	if s.cfg.SettlementType == SettlementTypeInArk {
+		return false, nil
+	}
+
 	funded, err := s.observeRefundableVHTLC(ctx)
 	if err != nil {
 		return false, newRetryableActionError(

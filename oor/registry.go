@@ -125,6 +125,10 @@ const detachedWaitTimeout = 5 * time.Minute
 // the registry's own wiring is a per-session dependency forwarded verbatim into
 // each child actor via childConfig.
 type OORRegistryConfig struct {
+	// TerminalObserver is forwarded to each session's post-commit hook.
+	// It must not block or perform I/O.
+	TerminalObserver func(SessionID)
+
 	Log                  fn.Option[btclog.Logger]
 	Signer               input.Signer
 	IncomingHandler      OutboxHandler
@@ -1887,6 +1891,7 @@ func (r *oorRegistryBehavior) childConfig(sessionID SessionID,
 
 	return SessionActorConfig{
 		workers:                 &r.workers,
+		TerminalObserver:        r.cfg.TerminalObserver,
 		SessionID:               sessionID,
 		Direction:               direction,
 		Log:                     r.cfg.Log,

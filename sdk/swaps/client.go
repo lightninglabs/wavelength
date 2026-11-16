@@ -749,6 +749,18 @@ type SwapServerConn interface {
 	Close() error
 }
 
+// OORSessionWaiter optionally supplements DaemonConn with a bounded wait for
+// local OOR terminal status. The bool is false when the remote daemon ignored
+// the wait; callers must then retain their polling delay. A true pending result
+// means the wait elapsed and can be queried again without an additional sleep.
+// Notifications never replace the returned durable status as completion proof.
+type OORSessionWaiter interface {
+	// WaitOORSession returns durable status and whether the daemon honored
+	// the bounded wait, or an error that leaves the outcome unresolved.
+	WaitOORSession(ctx context.Context, sessionID string,
+		wait time.Duration) (*waverpc.OORSessionInfo, bool, error)
+}
+
 // DaemonConn abstracts the connection to the client's own daemon for wallet
 // operations such as OOR sends and indexed VTXO lookups.
 //

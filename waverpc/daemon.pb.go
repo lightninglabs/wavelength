@@ -9130,9 +9130,13 @@ func (x *ListOORSessionsResponse) GetNextPageToken() string {
 type GetOORSessionRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// session_id identifies the OOR session to fetch.
-	SessionId     string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// wait_for_terminal_ms waits for a terminal durable status for at most
+	// this many milliseconds (capped at 30000). Zero is an immediate read.
+	// Missing sessions still return NotFound immediately.
+	WaitForTerminalMs uint32 `protobuf:"varint,2,opt,name=wait_for_terminal_ms,json=waitForTerminalMs,proto3" json:"wait_for_terminal_ms,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *GetOORSessionRequest) Reset() {
@@ -9172,12 +9176,22 @@ func (x *GetOORSessionRequest) GetSessionId() string {
 	return ""
 }
 
+func (x *GetOORSessionRequest) GetWaitForTerminalMs() uint32 {
+	if x != nil {
+		return x.WaitForTerminalMs
+	}
+	return 0
+}
+
 type GetOORSessionResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// session is the matching OOR operation status.
-	Session       *OORSessionInfo `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Session *OORSessionInfo `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
+	// terminal_wait_supported confirms this daemon honors the wait field.
+	// Older daemons omit it; callers must retain their polling delay.
+	TerminalWaitSupported bool `protobuf:"varint,2,opt,name=terminal_wait_supported,json=terminalWaitSupported,proto3" json:"terminal_wait_supported,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *GetOORSessionResponse) Reset() {
@@ -9215,6 +9229,13 @@ func (x *GetOORSessionResponse) GetSession() *OORSessionInfo {
 		return x.Session
 	}
 	return nil
+}
+
+func (x *GetOORSessionResponse) GetTerminalWaitSupported() bool {
+	if x != nil {
+		return x.TerminalWaitSupported
+	}
+	return false
 }
 
 // EstimateFeeRequest asks the operator to estimate the fee for a
@@ -12862,12 +12883,14 @@ const file_daemon_proto_rawDesc = "" +
 	"\rstatus_filter\x18\x04 \x01(\x0e2\x19.waverpc.OORSessionStatusR\fstatusFilter\"v\n" +
 	"\x17ListOORSessionsResponse\x123\n" +
 	"\bsessions\x18\x01 \x03(\v2\x17.waverpc.OORSessionInfoR\bsessions\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"5\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"f\n" +
 	"\x14GetOORSessionRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"J\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12/\n" +
+	"\x14wait_for_terminal_ms\x18\x02 \x01(\rR\x11waitForTerminalMs\"\x82\x01\n" +
 	"\x15GetOORSessionResponse\x121\n" +
-	"\asession\x18\x01 \x01(\v2\x17.waverpc.OORSessionInfoR\asession\"\x7f\n" +
+	"\asession\x18\x01 \x01(\v2\x17.waverpc.OORSessionInfoR\asession\x126\n" +
+	"\x17terminal_wait_supported\x18\x02 \x01(\bR\x15terminalWaitSupported\"\x7f\n" +
 	"\x12EstimateFeeRequest\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x01 \x01(\x03R\tamountSat\x12\x1f\n" +

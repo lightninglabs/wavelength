@@ -989,6 +989,27 @@ func (c *Client) GetOORSession(ctx context.Context, sessionID string) (
 	return resp.GetSession(), nil
 }
 
+// WaitOORSession waits up to the given duration for a terminal durable OOR
+// status. The bool reports daemon support: false means an older daemon ignored
+// the wait and the caller must retain its polling delay. Pending responses from
+// a supporting daemon have already waited. The daemon caps waits at 30 seconds.
+func (c *Client) WaitOORSession(ctx context.Context, sessionID string,
+	wait time.Duration) (*waverpc.OORSessionInfo, bool, error) {
+
+	wait = max(0, min(wait, 30*time.Second))
+	resp, err := c.daemon.GetOORSession(ctx,
+		&waverpc.GetOORSessionRequest{
+			SessionId:         sessionID,
+			WaitForTerminalMs: uint32(wait.Milliseconds()),
+		},
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("wait oor session: %w", err)
+	}
+
+	return resp.GetSession(), resp.GetTerminalWaitSupported(), nil
+}
+
 // SendVTXO submits an in-round send request through the daemon. Passing nil
 // uses an empty request.
 func (c *Client) SendVTXO(ctx context.Context, req *waverpc.SendVTXORequest) (

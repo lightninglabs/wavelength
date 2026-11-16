@@ -30,6 +30,10 @@ const terminalNotifyTimeout = 10 * time.Second
 // builds one of these per session via its childConfig, so every field except
 // SessionID/Direction is shared across all sessions owned by the same daemon.
 type SessionActorConfig struct {
+	// TerminalObserver wakes local status readers after a terminal snapshot
+	// commits. It must not block or perform I/O.
+	TerminalObserver func(SessionID)
+
 	// workers joins children and their detached notifications at the
 	// registry.
 	workers *sync.WaitGroup
@@ -629,6 +633,9 @@ func (b *sessionBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 			slog.Int("direction", int(b.direction)),
 		)
 
+		if b.cfg.TerminalObserver != nil {
+			b.cfg.TerminalObserver(b.sessionID)
+		}
 		b.notifyTerminal()
 	}
 

@@ -1844,8 +1844,28 @@ func (s *ReceiveSession) completeIndexedClaim(ctx context.Context) error {
 // a co-signed spend of the vHTLC behind, so a second claim could conflict with
 // it. That case stops for intervention with the recovery still armed.
 func (s *ReceiveSession) resolveClaimSession(ctx context.Context) error {
-	session, err := s.client.daemon.GetOORSession(ctx, s.claimSessionID)
+	var (
+		session *waverpc.OORSessionInfo
+		waited  bool
+		err     error
+	)
+	if waiter, ok := s.client.daemon.(OORSessionWaiter); ok {
+		session, waited, err = waiter.WaitOORSession(
+			ctx, s.claimSessionID, s.client.waitPollInterval,
+		)
+	} else {
+		session, err = s.client.daemon.GetOORSession(
+			ctx, s.claimSessionID,
+		)
+	}
 	if err != nil {
+		// gRPC cancellation statuses do not unwrap to context errors.
+		// Preserve caller cancellation rather than reporting a
+		// retryable failure when the worker stops during the long poll.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		return newRetryableActionError(
 			fmt.Errorf("get claim OOR session: %w", err),
 		)
@@ -1886,6 +1906,10 @@ func (s *ReceiveSession) resolveClaimSession(ctx context.Context) error {
 			slog.String("phase", session.GetPhase()),
 			slog.String("status", session.GetStatus().String()),
 		)
+
+		if waited {
+			return nil
+		}
 
 		return waitForFixedPoll(ctx, s.client.waitPollInterval)
 	}

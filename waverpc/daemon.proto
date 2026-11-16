@@ -2523,11 +2523,20 @@ message ListOORSessionsResponse {
 message GetOORSessionRequest {
     // session_id identifies the OOR session to fetch.
     string session_id = 1;
+
+    // wait_for_terminal_ms waits for a terminal durable status for at most
+    // this many milliseconds (capped at 30000). Zero is an immediate read.
+    // Missing sessions still return NotFound immediately.
+    uint32 wait_for_terminal_ms = 2;
 }
 
 message GetOORSessionResponse {
     // session is the matching OOR operation status.
     OORSessionInfo session = 1;
+
+    // terminal_wait_supported confirms this daemon honors the wait field.
+    // Older daemons omit it; callers must retain their polling delay.
+    bool terminal_wait_supported = 2;
 }
 
 // EstimateFeeRequest asks the operator to estimate the fee for a
