@@ -20,6 +20,11 @@ import (
 // non-BIP-65-final until the absolute locktime is reached.
 var ErrExitSpendNotMatured = errors.New("exit spend not matured")
 
+// ErrExitSpendDust means the current fee quote leaves a payout below its
+// script's relay dust threshold. Callers retain the claim and defer submission
+// without consuming the terminal build-failure budget.
+var ErrExitSpendDust = errors.New("sweep output is below dust threshold")
+
 // ProofAssembler resolves the immutable local recovery proof for one target
 // outpoint.
 type ProofAssembler interface {
@@ -141,6 +146,8 @@ type ExitSpendPolicy interface {
 // same transaction. heightHint bounds the scan for the confirmations of the
 // VTXO's tree path.
 type AssetClaimer interface {
+	// ClaimAssetVTXO builds or retrieves the stable claim transaction for
+	// the matured exit leaf.
 	ClaimAssetVTXO(ctx context.Context, desc *vtxo.Descriptor,
 		heightHint uint32) (*wire.MsgTx, error)
 }

@@ -30,7 +30,8 @@ parent package.
 ## Relationships
 
 - **Depends on**: `vhtlcrecovery` (RecoveryJob types and state constants),
-  `unroll` (ExitSpendPolicy interface, `ErrExitSpendNotMatured`),
+  `unroll` (ExitSpendPolicy interface, `ErrExitSpendNotMatured`,
+  `ErrExitSpendDust`),
   `lib/arkscript` (vHTLC policy template construction), `lib/tx/arktx`
   (transaction version for sweep tx).
 - **Depended on by**: `waved` (constructs `ExitSpendPolicyResolver`,
@@ -59,6 +60,9 @@ parent package.
 - The wrapping VTXO descriptor's `RelativeExpiry` must be greater than or
   equal to the policy's `CSVDelay` for the leaf being spent. Violated invariant
   causes the unroll actor to fail fast.
+- Both claim and refund policies reject nonpositive or script-specific dust
+  payouts before signing. They return `unroll.ErrExitSpendDust` so the
+  executor retains the obligation without consuming its failure budget.
 - Fee-cap checks happen before building the signed final spend. Persistence and
   broadcast remain owned by `unroll`.
 

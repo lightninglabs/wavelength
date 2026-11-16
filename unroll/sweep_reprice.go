@@ -15,8 +15,9 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
-// repriceSweep builds a higher-fee candidate for the same target and wallet
-// destination. The existing candidate remains authoritative until its signed
+// repriceSweep builds a relayable candidate for the same target and wallet
+// destination. Valid candidates require a higher replacement fee; a legacy
+// dust payout instead needs a lower fee. The old candidate remains until its
 // replacement and history are staged. A flat estimate, exhausted fee budget,
 // unavailable signer, or changed policy leaves the obligation pending.
 func (b *behavior) repriceSweep(ctx context.Context) (bool, error) {
@@ -43,11 +44,9 @@ func (b *behavior) repriceSweep(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	oldFee := target.Value - old.TxOut[0].Value
-	// Both current spend policies price against estimatedSweepVBytes.
-	// Skip signing when that estimate cannot improve the previous fee.
-	if rate*estimatedSweepVBytes <= oldFee {
-		return false, nil
-	}
+	dust := sweepHasDustOutput(old)
+	// Policies own their fee budgets. Judge the returned candidate's actual
+	// fee below rather than assuming the standard policy's size estimate.
 	candidate, err := policy.BuildSpendTx(ctx, ExitSpendRequest{
 		TargetOutpoint: b.cfg.TargetOutpoint,
 		TargetOutput:   target,
@@ -79,16 +78,86 @@ func (b *behavior) repriceSweep(ctx context.Context) (bool, error) {
 	// Apply the direct-spend equivalents of txconfirm's replacement
 	// floors: strictly higher feerate and at least 1 sat/vB of additional
 	// relay fee. A stricter node can reject again without losing ownership.
-	if newFee-oldFee < newSize || newFee*oldSize <= oldFee*newSize ||
-		txrules.IsDustOutput(
-			candidate.TxOut[0], txrules.DefaultRelayFeePerKb,
-		) {
+	if sweepHasDustOutput(candidate) {
+		return false, nil
+	}
+	if !dust && (newFee-oldFee < newSize ||
+		newFee*oldSize <= oldFee*newSize) {
 		return false, nil
 	}
 	b.replacedSweeps = append(b.replacedSweeps, old.Copy())
 	b.sweepTx = candidate
 
 	return true, nil
+}
+
+// sweepHasDustOutput identifies the direct one-input, one-output sweeps that
+// cannot relay under the default dust policy. Anchored exports and asset claims
+// have different fee ownership and are excluded by the caller.
+func sweepHasDustOutput(tx *wire.MsgTx) bool {
+	return tx != nil && len(tx.TxIn) == 1 && len(tx.TxOut) == 1 &&
+		(tx.TxOut[0].Value <= 0 || txrules.IsDustOutput(
+			tx.TxOut[0], txrules.DefaultRelayFeePerKb,
+		))
+}
+
+// deferDustSweep checkpoints local rejection before routing cancellation.
+// The signed bytes and source spend watch remain available if a miner accepts
+// the nonstandard transaction. Later blocks may repair it at a lower fee; an
+// unavailable or still uneconomic quote never consumes the failure budget.
+func (b *behavior) deferDustSweep(ctx context.Context,
+	ax actor.Exec[unrollTx]) (bool, error) {
+
+	if b.isAssetExit() || !sweepHasDustOutput(b.sweepTx) {
+		return false, nil
+	}
+	state, err := b.currentState()
+	if err != nil {
+		return false, err
+	}
+	job := stateJob(state)
+	txid := b.sweepTx.TxHash()
+	if job.RejectedSweep.IsNone() ||
+		job.RejectedSweep.UnsafeFromSome() != txid || job.RetrySame {
+
+		if err := b.driveEvent(ctx, ax, &SweepDustEvent{
+			Txid: txid,
+		}); err != nil {
+			return false, err
+		}
+		state, err = b.currentState()
+		if err != nil {
+			return false, err
+		}
+		job = stateJob(state)
+		b.log.InfoS(ctx, "Deferring persisted dust sweep",
+			slog.String("txid", txid.String()),
+		)
+	}
+
+	return job.Height <= job.RepriceAfter, nil
+}
+
+// cancelSweepInterest stops this exit's retry loop without losing its claim.
+func (b *behavior) cancelSweepInterest(ctx context.Context,
+	txid chainhash.Hash) error {
+
+	if b.cancelledSweep.IsSome() &&
+		b.cancelledSweep.UnsafeFromSome() == txid {
+		return nil
+	}
+
+	//actor:allow-await ordered cancel ACK; no subscriber callback
+	_, err := b.cfg.TxConfirmRef.Ask(ctx, &txconfirm.CancelInterestReq{
+		Txid:         txid,
+		SubscriberID: b.notificationRef().ID(),
+	}).Await(ctx).Unpack()
+	if err != nil {
+		return fmt.Errorf("cancel rejected sweep interest: %w", err)
+	}
+	b.cancelledSweep = fn.Some(txid)
+
+	return nil
 }
 
 // stopRejectedSweep relinquishes the rejected candidate's active broadcaster
@@ -99,14 +168,10 @@ func (b *behavior) repriceSweep(ctx context.Context) (bool, error) {
 func (b *behavior) stopRejectedSweep(ctx context.Context,
 	txid chainhash.Hash) error {
 
-	_, err := b.cfg.TxConfirmRef.Ask(ctx, &txconfirm.CancelInterestReq{
-		Txid:         txid,
-		SubscriberID: b.notificationRef().ID(),
-	}).Await(ctx).Unpack()
-	if err != nil {
-		return fmt.Errorf("cancel rejected sweep interest: %w", err)
+	if err := b.cancelSweepInterest(ctx, txid); err != nil {
+		return err
 	}
-	_, err = b.cfg.ChainSource.Ask(ctx, &chainsource.RemoveTxRequest{
+	_, err := b.cfg.ChainSource.Ask(ctx, &chainsource.RemoveTxRequest{
 		Txid: txid,
 	}).Await(ctx).Unpack()
 	if err != nil {

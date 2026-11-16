@@ -311,14 +311,33 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
 - **Persist-before-broadcast.** `startSweep` stages the signed candidate and
   prior candidate history before cleanup or `txconfirm.Ask`. A restart or
   route retry reuses that staged transaction and wallet destination.
-- **Reprice only explicit fee rejection.** `TxFailedMsg.Class` distinguishes
-  fee rejection from permanent invalidity and unknown errors. Fee rejection
-  records the rejected txid and height without consuming `SweepAttempts`.
+- **Reject dust before signing.** Standard and vHTLC policies check the
+  destination script against `txrules.DefaultRelayFeePerKb`, including a positive payout
+  below dust. A shared post-policy check also keeps an unchecked direct
+  payout out of persistence and broadcast. `ErrExitSpendDust` defers
+  uneconomic quotes without consuming `SweepAttempts`.
+  Restored direct dust sweeps are durably marked pending before cancelling
+  their txconfirm retry interest, including a staged-but-unsubmitted sweep.
+  Cache an acknowledged cancellation for the actor lifetime so later events
+  need no confirmation-service RPC. Failures never fill that cache. Restart
+  clears it, so cancellation replays on same-height resume; only fee repair
+  waits for a later block.
+  Keep the signed candidate and source spend watch. On a later block, a
+  usable lower-fee candidate may repair the payout to the same destination;
+  retain the old signed candidate before submitting the repair. No new
+  checkpoint fields or version are needed. Asset claims and anchored exports
+  retain their separate fee ownership.
+- **Reprice explicit fee rejection or locally detected dust.**
+  `TxFailedMsg.Class` distinguishes fee rejection from permanent invalidity
+  and unknown errors. Fee rejection records the rejected txid and height
+  without consuming `SweepAttempts`.
   A later block and a higher usable estimate permit a new signed candidate
-  with the same input, destination, sequence and locktime. The absolute fee
-  and feerate must increase within the existing cap; dust, unavailable or
-  uneconomic estimates leave the obligation pending. Replacement estimates
-  never use the emergency fallback.
+  with the same input, destination, sequence and locktime. For a valid
+  existing payout, the absolute fee and feerate must increase within the
+  existing cap; dust, unavailable or uneconomic estimates leave the
+  obligation pending. The actual policy candidate determines the new fee;
+  policies have different size budgets. Replacement estimates never use the
+  emergency fallback.
 - **Either candidate may confirm.** Cancel the old txconfirm interest before
   submitting a replacement, and attempt wallet removal as best-effort
   housekeeping. Removal errors are logged and do not block submission.
@@ -327,6 +346,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   failure, even permanent invalidity, cannot prove an earlier candidate
   will never confirm. Keep the obligation pending while that evidence
   arrives. Initial permanent and unknown failures retain bounded retries.
+- **One unsigned destination per actor lifetime.** The actor wraps only its
+  own sweep builder wallet so dust or signing deferrals reuse one script.
+  The configured wallet still derives fresh addresses for other callers.
+  After signing, the staged transaction retains its destination on restart.
 - **Estimate before construction.** A fee-estimator error leaves the actor in
   `AwaitingSweepBroadcast` without deriving an address or consuming a sweep
   attempt. The next height retries estimation. An explicitly configured local

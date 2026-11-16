@@ -214,6 +214,14 @@ type behavior struct {
 
 	sweepTx *wire.MsgTx
 
+	// sweepWallet retains one destination across unsigned build deferrals.
+	// Signed candidates carry their destination in the durable checkpoint.
+	sweepWallet SweepWallet
+
+	// cancelledSweep remembers only an acknowledged cancellation. Restart
+	// clears it so a persisted rejection always replays its cleanup.
+	cancelledSweep fn.Option[chainhash.Hash]
+
 	// replacedSweeps retains signed candidates that can still confirm.
 	replacedSweeps []*wire.MsgTx
 
@@ -589,7 +597,8 @@ func (b *behavior) driveEvent(ctx context.Context, ax actor.Exec[unrollTx],
 
 // startSweep stages the signed final spend before asking txconfirm to submit
 // it. Ordinary retries reuse the same bytes. An explicit fee rejection permits
-// a higher-fee candidate for the same input and wallet destination; the old
+// a higher-fee candidate for the same input and wallet destination. Legacy
+// dust candidates instead permit a lower-fee repair of the payout. The old
 // candidate remains in the checkpoint so either transaction can fulfill the
 // obligation. A staged replacement is reused after restart or a failed route.
 //
@@ -625,6 +634,9 @@ func (b *behavior) startSweep(ctx context.Context,
 		if err := b.adoptStagedSweep(ctx, ax); err != nil {
 			return err
 		}
+	}
+	if deferred, err := b.deferDustSweep(ctx, ax); err != nil || deferred {
+		return err
 	}
 
 	// An explicit rejection keeps the obligation active. Rebuild only if
@@ -731,8 +743,8 @@ func (b *behavior) startSweep(ctx context.Context,
 		}
 
 		sweepTx, err := buildSweepTx(
-			ctx, b.cfg.Wallet, b.cfg.ChainSource, b.proof, b.desc,
-			b.cfg.MaxSweepFeeRateSatPerVByte,
+			ctx, b.sweepBuildWallet(), b.cfg.ChainSource, b.proof,
+			b.desc, b.cfg.MaxSweepFeeRateSatPerVByte,
 			b.sweepFeeRateFallback(policy), b.currentHeight(),
 			policy,
 		)
@@ -757,14 +769,16 @@ func (b *behavior) startSweep(ctx context.Context,
 				return nil
 			}
 
-			// An estimator outage is not a failed sweep attempt: no
-			// transaction or wallet destination exists yet. Leave
-			// the planner in AwaitingSweepBroadcast so the next
-			// height asks for a fresh estimate.
+			// An unavailable estimate or dust payout cannot be
+			// repaired by retrying signed bytes. Keep the exit
+			// pending so the next height asks for a usable quote.
 			var feeEstimateErr *sweepFeeEstimateUnavailableError
-			if errors.As(err, &feeEstimateErr) {
+			if errors.As(err, &feeEstimateErr) ||
+				errors.Is(err, ErrExitSpendDust) {
+
 				b.log.InfoS(ctx, "Deferring unroll exit spend: "+
-					"fee estimate unavailable",
+					"fee estimate unavailable or payout "+
+					"below dust threshold",
 					slog.String(
 						"target_outpoint",
 						b.cfg.TargetOutpoint.String(),
@@ -2476,6 +2490,27 @@ func (b *behavior) adoptStagedSweep(ctx context.Context,
 func (b *behavior) routeOutbox(ctx context.Context, ax actor.Exec[unrollTx],
 	outbox []OutboxEvent) error {
 
+	// Routing follows checkpoint persistence. Retry dust cancellation even
+	// with an empty outbox: a same-height resume must stop the old
+	// broadcast loop without waiting for the next block's fee-repair
+	// attempt.
+	if !b.isAssetExit() && sweepHasDustOutput(b.sweepTx) {
+		state, err := b.currentState()
+		if err != nil {
+			return err
+		}
+		rejected := stateJob(state).RejectedSweep
+		if rejected.IsSome() &&
+			rejected.UnsafeFromSome() == b.sweepTx.TxHash() {
+
+			if err := b.cancelSweepInterest(
+				ctx, rejected.UnsafeFromSome(),
+			); err != nil {
+				return err
+			}
+		}
+	}
+
 	for i := range outbox {
 		switch evt := outbox[i].(type) {
 		case *EnsureReadyTransactions:
@@ -2561,6 +2596,13 @@ func (b *behavior) routeOutbox(ctx context.Context, ax actor.Exec[unrollTx],
 				// a nil sweepTx here signals corrupted
 				// state rather than a recoverable race.
 				return fmt.Errorf("sweep tx missing on reissue")
+			}
+			if !b.isAssetExit() && sweepHasDustOutput(b.sweepTx) {
+				if err := b.startSweep(ctx, ax); err != nil {
+					return err
+				}
+
+				continue
 			}
 
 			sweepPkScript, err := safeTxOutPkScript(b.sweepTx, 0)

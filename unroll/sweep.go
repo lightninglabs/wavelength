@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/btcsuite/btcwallet/wallet/txrules"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
@@ -16,6 +17,43 @@ import (
 	"github.com/lightninglabs/wavelength/lib/tx/arktx"
 	"github.com/lightninglabs/wavelength/vtxo"
 )
+
+// sweepDestinationWallet reuses one destination while an actor's unsigned
+// sweep waits for an economic fee quote. The underlying wallet still owns
+// address derivation; the staged signed transaction owns restart recovery.
+type sweepDestinationWallet struct {
+	SweepWallet
+	pkScript []byte
+}
+
+// NewWalletPkScript derives once per actor lifetime and returns an independent
+// copy so a spend policy cannot mutate the destination retained for retries.
+func (w *sweepDestinationWallet) NewWalletPkScript(ctx context.Context) ([]byte,
+	error) {
+
+	if len(w.pkScript) > 0 {
+		return bytes.Clone(w.pkScript), nil
+	}
+	script, err := w.SweepWallet.NewWalletPkScript(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w.pkScript = bytes.Clone(script)
+
+	return script, nil
+}
+
+// sweepBuildWallet keeps destination reuse local to this exit, leaving the
+// configured wallet's fresh-address contract unchanged for other callers.
+func (b *behavior) sweepBuildWallet() SweepWallet {
+	if b.sweepWallet == nil && b.cfg.Wallet != nil {
+		b.sweepWallet = &sweepDestinationWallet{
+			SweepWallet: b.cfg.Wallet,
+		}
+	}
+
+	return b.sweepWallet
+}
 
 const (
 	// estimatedSweepVBytes is a conservative virtual-size estimate for the
@@ -201,15 +239,17 @@ func (p *StandardVTXOExitSpendPolicy) BuildSpendTx(ctx context.Context,
 	inputValue := btcutil.Amount(req.TargetOutput.Value)
 	fee := btcutil.Amount(req.FeeRateSatPerVByte * estimatedSweepVBytes)
 	sweepValue := inputValue - fee
-	if sweepValue <= 0 {
-		return nil, fmt.Errorf("sweep value %d not positive "+
-			"after fee %d", sweepValue, fee)
-	}
-
-	sweepTx.AddTxOut(&wire.TxOut{
+	output := &wire.TxOut{
 		Value:    int64(sweepValue),
 		PkScript: append([]byte(nil), req.DestinationPkScript...),
-	})
+	}
+	if sweepValue <= 0 || txrules.IsDustOutput(
+		output, txrules.DefaultRelayFeePerKb,
+	) {
+		return nil, fmt.Errorf("%w: value %d after fee %d",
+			ErrExitSpendDust, sweepValue, fee)
+	}
+	sweepTx.AddTxOut(output)
 
 	return p.signSpendTx(req, sweepTx)
 }
@@ -360,10 +400,9 @@ func buildSweepTx(ctx context.Context, wallet SweepWallet,
 		return nil, fmt.Errorf("estimate fee: %w", err)
 	}
 
-	// Ask the wallet for a fresh P2TR address. Every sweep attempt in
-	// a single actor lifetime reuses b.sweepTx (and therefore this
-	// pkScript) so we only burn one BIP32 address per VTXO — caller
-	// (startSweep) is responsible for that reuse.
+	// The actor supplies a wallet that retains one destination across
+	// unsigned deferrals. Once signed, the staged transaction retains it
+	// across restart and broadcast retries.
 	sweepPkScript, err := wallet.NewWalletPkScript(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("sweep pkscript: %w", err)
@@ -373,7 +412,7 @@ func buildSweepTx(ctx context.Context, wallet SweepWallet,
 		return nil, fmt.Errorf("wallet returned empty pkscript")
 	}
 
-	return policy.BuildSpendTx(ctx, ExitSpendRequest{
+	candidate, err := policy.BuildSpendTx(ctx, ExitSpendRequest{
 		TargetOutpoint:      proof.TargetOutpoint(),
 		TargetOutput:        targetOutput,
 		DestinationPkScript: sweepPkScript,
@@ -381,4 +420,17 @@ func buildSweepTx(ctx context.Context, wallet SweepWallet,
 		CurrentHeight:       currentHeight,
 		Signer:              wallet,
 	})
+	if err != nil {
+		return nil, err
+	}
+	// Known policies reject dust before signing. This common boundary also
+	// prevents a policy that forgot that check from staging or broadcasting
+	// an invalid direct payout. Asset claims and anchored exports use their
+	// separate construction paths.
+	if sweepHasDustOutput(candidate) {
+		return nil, fmt.Errorf("%w: policy %s returned dust",
+			ErrExitSpendDust, policy.Kind())
+	}
+
+	return candidate, nil
 }

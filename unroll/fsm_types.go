@@ -114,7 +114,7 @@ type JobState struct {
 	// can retry up to maxSweepAttempts before giving up.
 	SweepAttempts int
 
-	// RejectedSweep identifies the candidate awaiting fee replacement.
+	// RejectedSweep identifies the candidate awaiting fee or dust repair.
 	// Retaining its identity makes repeated failure delivery idempotent.
 	RejectedSweep fn.Option[chainhash.Hash]
 
@@ -245,6 +245,16 @@ type SweepBroadcastedEvent struct {
 
 // eventSealed marks SweepBroadcastedEvent as an FSM event.
 func (e *SweepBroadcastedEvent) eventSealed() {}
+
+// SweepDustEvent retires a locally detected dust candidate without failing
+// the exit. It also covers candidates staged before broadcast was recorded.
+type SweepDustEvent struct {
+	// Txid identifies the persisted candidate whose payout is dust.
+	Txid chainhash.Hash
+}
+
+// eventSealed marks SweepDustEvent as an internal FSM event.
+func (e *SweepDustEvent) eventSealed() {}
 
 // FailEvent records a generic terminal failure.
 type FailEvent struct {
