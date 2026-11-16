@@ -1153,6 +1153,7 @@ func TestOperatorPubKeyFetchesFreshTerms(t *testing.T) {
 			},
 		}),
 	}
+	server.arkProtocolVersion.Store(1)
 	server.storeOperatorTerms(&types.OperatorTerms{
 		PubKey: stalePriv.PubKey(),
 	})
@@ -1210,6 +1211,7 @@ func TestOperatorPubKeyFloorsFetchedMinVTXOAmountAtDust(t *testing.T) {
 			},
 		}),
 	}
+	server.arkProtocolVersion.Store(1)
 	r := &RPCServer{server: server}
 
 	key, err := r.OperatorPubKey(context.Background())

@@ -107,8 +107,9 @@ func (r *RPCServer) NewReceiveScript(ctx context.Context,
 
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "unable to fetch "+
-			"operator terms: %v", err)
+		return nil, operatorTermsError(
+			"unable to fetch operator terms", err,
+		)
 	}
 
 	store, err := r.newOORReceiveScriptStore()
@@ -302,8 +303,9 @@ func (r *RPCServer) admitIdempotentReceiveScript(ctx context.Context,
 
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "unable to fetch "+
-			"operator terms: %v", err)
+		return nil, operatorTermsError(
+			"unable to fetch operator terms", err,
+		)
 	}
 
 	deriveNextKey, _, err := r.oorReceiveKeyOps()

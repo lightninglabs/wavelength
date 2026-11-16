@@ -35,6 +35,8 @@ type customOORRPCFixture struct {
 	outpoint   wire.OutPoint
 }
 
+// newCustomOORRPCFixture builds a negotiated daemon fixture with a custom
+// input policy and the keys needed to exercise its claim path.
 func newCustomOORRPCFixture(t *testing.T) *customOORRPCFixture {
 	t.Helper()
 
@@ -85,6 +87,7 @@ func newCustomOORRPCFixture(t *testing.T) *customOORRPCFixture {
 			newBufconnClient(t, svc),
 		),
 	}
+	server.arkProtocolVersion.Store(1)
 
 	outpoint := testWalletOpsOutpoint(6)
 

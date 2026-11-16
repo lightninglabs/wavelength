@@ -76,6 +76,7 @@ func newRefreshEstimateServer(t *testing.T, svc *fakeArkService,
 		},
 		vtxoStore: vtxoStore,
 	}
+	s.arkProtocolVersion.Store(1)
 
 	return &RPCServer{server: s}, vtxoStore
 }

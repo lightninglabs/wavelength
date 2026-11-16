@@ -10,8 +10,11 @@ import (
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
 )
 
 // fakeArkService is a minimal in-memory ArkService that returns
@@ -101,7 +104,24 @@ func (f *fakeArkService) GetInfo(ctx context.Context,
 	}
 
 	if f.getInfoResponse != nil {
-		return f.getInfoResponse, nil
+		// Behave like a conforming operator: re-select the pinned
+		// version when the canned reply does not choose one.
+		resp := f.getInfoResponse
+		versions := req.GetSupportedArkVersions()
+		if resp.SelectedArkVersion == 0 && len(versions) == 1 {
+			cloned, ok :=
+				proto.Clone(resp).(*arkrpc.GetInfoResponse)
+			if !ok {
+				return nil, status.Error(
+					codes.Internal,
+					"clone GetInfo response",
+				)
+			}
+			cloned.SelectedArkVersion = versions[0]
+			resp = cloned
+		}
+
+		return resp, nil
 	}
 
 	return f.UnimplementedArkServiceServer.GetInfo(ctx, req)
@@ -170,6 +190,7 @@ func TestQuoteOperatorFeeRoundTripsCongestionSpread(t *testing.T) {
 		serverConn: newBufconnClient(t, svc),
 		log:        btclog.Disabled,
 	}
+	s.arkProtocolVersion.Store(1)
 
 	// Baseline quote.
 	got, err := s.quoteOperatorFee(

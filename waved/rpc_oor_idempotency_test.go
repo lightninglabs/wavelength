@@ -265,6 +265,7 @@ func TestSendOORRejectsRecipientBelowFloorBeforeWalletSelection(t *testing.T) {
 			},
 		}),
 	}
+	server.arkProtocolVersion.Store(1)
 
 	rpcServer := NewRPCServer(server)
 	recipient := sendOORPolicyRecipient(
@@ -369,6 +370,7 @@ func TestSendOORSubmitsMultipleRecipients(t *testing.T) {
 		vtxoStore:   vtxoStore,
 		walletRef:   fn.Some(walletRef),
 	}
+	server.arkProtocolVersion.Store(1)
 
 	rpcServer := NewRPCServer(server)
 	recipientA := sendOORPolicyRecipient(
@@ -504,6 +506,7 @@ func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
 		vtxoStore:   vtxoStore,
 		walletRef:   fn.Some(walletRef),
 	}
+	server.arkProtocolVersion.Store(1)
 
 	recipientA := sendOORPolicyRecipient(
 		t, recipientKeyA.PubKey(), operatorKey.PubKey(), exitDelay,
@@ -632,6 +635,7 @@ func TestSendOORRejectsDuplicateRecipientOutputs(t *testing.T) {
 			},
 		}),
 	}
+	server.arkProtocolVersion.Store(1)
 
 	recipient := sendOORPolicyRecipient(
 		t, recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
@@ -691,6 +695,7 @@ func TestSendOORRejectsExplicitCustomInputsWithMultipleRecipients(
 			},
 		}),
 	}
+	server.arkProtocolVersion.Store(1)
 
 	recipientA := sendOORPolicyRecipient(
 		t, recipientKeyA.PubKey(), operatorKey.PubKey(), exitDelay,
@@ -827,6 +832,7 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 		walletRef:       fn.Some(walletRef),
 		oorSessionStore: registryStore,
 	}
+	server.arkProtocolVersion.Store(1)
 
 	rpcServer := NewRPCServer(server)
 	changeKey, err := btcec.NewPrivateKey()
@@ -1144,6 +1150,7 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 		vtxoStore:   vtxoStore,
 		walletRef:   fn.Some(walletRef),
 	}
+	server.arkProtocolVersion.Store(1)
 
 	rpcServer := NewRPCServer(server)
 	recipient := sendOORPolicyRecipient(
@@ -1268,6 +1275,7 @@ func TestSendOORReturnsPendingKeyedSessionBeforeAttemptCommit(t *testing.T) {
 		oorSessionStore: registryStore,
 		walletRef:       fn.Some(walletRef),
 	}
+	server.arkProtocolVersion.Store(1)
 
 	recipient := sendOORPolicyRecipient(
 		t, recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
@@ -1388,6 +1396,7 @@ func TestSendOORRejectsDifferentKeyForExistingSession(t *testing.T) {
 		oorSessionStore: registryStore,
 		walletRef:       fn.Some(walletRef),
 	}
+	server.arkProtocolVersion.Store(1)
 
 	rpcServer := NewRPCServer(server)
 	recipient := sendOORPolicyRecipient(
@@ -1514,6 +1523,7 @@ func TestSendOORRejectsNewKeyForDispatchedFailedSession(t *testing.T) {
 		oorSessionStore: registryStore,
 		walletRef:       fn.Some(walletRef),
 	}
+	server.arkProtocolVersion.Store(1)
 
 	rpcServer := NewRPCServer(server)
 	recipient := sendOORPolicyRecipient(
@@ -1705,6 +1715,7 @@ func TestSendOORWaitCancelDoesNotUnlockSubmittedInputs(t *testing.T) {
 		vtxoStore:   vtxoStore,
 		walletRef:   fn.Some(walletRef),
 	}
+	server.arkProtocolVersion.Store(1)
 
 	rpcServer := NewRPCServer(server)
 	recipient := sendOORPolicyRecipient(
