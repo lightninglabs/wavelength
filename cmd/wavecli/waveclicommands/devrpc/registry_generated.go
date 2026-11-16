@@ -224,7 +224,7 @@ func generatedRegistry() []serviceSpec {
 					Aliases:  []string{"deposit-asset"},
 					Input:    "waverpc.DepositAssetRequest",
 					Output:   "waverpc.AssetDeposit",
-					Comments: "DepositAsset funds a boarding output holding a Taproot Asset from the\ntapd wallet behind assets.tapd and tracks it until its proof\nconfirms. Retrying with the same request_id resumes the same\ndeposit. Requires assets.backend=tapd and tapd v0.9.0 or later.",
+					Comments: "DepositAsset funds a boarding output holding a Taproot Asset from the\nasset wallet of the asset backend and tracks it until its proof\nconfirms. Retrying with the same request_id resumes the same\ndeposit. Requires an asset backend; a tapd backend must run tapd\nv0.9.0 or later.",
 				},
 				{
 					Name:     "ListAssetDeposits",
@@ -246,6 +246,34 @@ func generatedRegistry() []serviceSpec {
 					Input:    "waverpc.ClaimAssetDepositRequest",
 					Output:   "waverpc.AssetDeposit",
 					Comments: "ClaimAssetDeposit spends a confirmed asset deposit that no round\nholds through the owner's exit path, once the exit delay has passed,\nand returns the asset to the tapd wallet. The claim pays its fee with a\nCPFP child from the daemon wallet. Retrying resumes the same claim.\nRequires a tapd that confirms transfers spending assets it does not\nhold.",
+				},
+				{
+					Name:     "NewAssetReceiveKeys",
+					Aliases:  []string{"new-asset-receive-keys"},
+					Input:    "waverpc.NewAssetReceiveKeysRequest",
+					Output:   "waverpc.AssetReceiveKeys",
+					Comments: "NewAssetReceiveKeys derives the keys a sender needs to transfer a\nTaproot Asset to this daemon's asset wallet on chain: the script key\nthat will hold the asset and the internal key of its anchor output.\nThe sender hands over the proof file of the transfer, which\nImportAssetProof adds to the wallet. Requires an asset backend.",
+				},
+				{
+					Name:     "ImportAssetProof",
+					Aliases:  []string{"import-asset-proof"},
+					Input:    "waverpc.ImportAssetProofRequest",
+					Output:   "waverpc.OwnedAsset",
+					Comments: "ImportAssetProof verifies the proof file of an asset output sent to\nkeys from NewAssetReceiveKeys and adds the asset to the daemon's\nasset wallet. Importing a known proof returns the same asset.\nRequires an asset backend.",
+				},
+				{
+					Name:     "ListOwnedAssets",
+					Aliases:  []string{"list-owned-assets"},
+					Input:    "waverpc.ListOwnedAssetsRequest",
+					Output:   "waverpc.ListOwnedAssetsResponse",
+					Comments: "ListOwnedAssets returns the Taproot Assets the daemon's asset wallet\nholds on chain. Assets held in VTXOs are reported by GetBalance.",
+				},
+				{
+					Name:     "NewAssetFundingAddress",
+					Aliases:  []string{"new-asset-funding-address"},
+					Input:    "waverpc.NewAssetFundingAddressRequest",
+					Output:   "waverpc.AssetFundingAddress",
+					Comments: "NewAssetFundingAddress returns a new address of the daemon's backing\nwallet. Bitcoin sent to it pays for asset deposits: the value of the\ndeposit output and the miner fee. Requires an asset backend.",
 				},
 				{
 					Name:     "JoinNextRound",

@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
 	"github.com/lightninglabs/tap-sdk/customanchor"
+	"github.com/lightninglabs/tap-sdk/embedded"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/types"
@@ -190,7 +191,7 @@ func newDepositFixture(t *testing.T) *depositFixture {
 		log:       btclog.Disabled,
 		store:     store,
 		claims:    store,
-		tapd:      tapd,
+		backend:   tapd,
 		onboarder: onboarder,
 		terms: func() *types.OperatorTerms {
 			return fixture.terms
@@ -299,6 +300,21 @@ func TestAssetDepositOldTapd(t *testing.T) {
 	deposits, err := f.service.List(ctx)
 	require.NoError(t, err)
 	require.Empty(t, deposits)
+}
+
+// TestAssetDepositSigningBackend checks that a backend that signs its own
+// anchor inputs deposits whatever version it reports.
+func TestAssetDepositSigningBackend(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newDepositFixture(t)
+	f.tapd.version = embedded.Version
+	f.service.signsAnchors = true
+
+	deposit, err := f.service.Deposit(ctx, f.request("alice-1"))
+	require.NoError(t, err)
+	require.Equal(t, db.AssetDepositPublished, deposit.Status)
 }
 
 // TestAssetDepositRetry checks that a failed attempt stays funding with its

@@ -141,7 +141,8 @@ waved \
 | `--lnd.macaroonpath` | | Path to lnd admin macaroon |
 | `--lnd.rpctimeout` | `30s` | Timeout for lnd RPC calls |
 | `--lnd.account` | _(empty)_ | lnd wallet account to spend from; empty uses lnd's default account. Set when sharing an lnd node with another daemon. The account must already exist and be taproot-scoped; a watch-only account is accepted only on a remote-signing lnd (one whose default account is itself watch-only) and must report an extended public key and derivation path |
-| `--assets.backend` | `none` | Taproot Assets backend: `none` refuses asset VTXOs, `tapd` verifies their proofs through a tapd node, adding issuance proofs of unknown assets to its universe |
+| `--assets.backend` | `none` | Taproot Assets backend: `none` refuses asset VTXOs, `tapd` verifies their proofs through a tapd node, adding issuance proofs of unknown assets to its universe, `embedded` holds and verifies assets inside the daemon (regtest only, `lwwallet` or `btcwallet`) |
+| `--assets.groupkeys` | | Asset groups the `embedded` backend trusts, as hex compressed public keys |
 | `--assets.tapd.host` | | tapd gRPC address; required with `--assets.backend=tapd` |
 | `--assets.tapd.tlspath` | | Path to tapd TLS certificate |
 | `--assets.tapd.macaroonpath` | | Path to tapd admin macaroon |
@@ -445,10 +446,34 @@ wavecli recv --offchain --amt 5000 --memo coffee
 wavecli dev daemon NewAddress
 ```
 
+### `dev daemon NewAssetReceiveKeys` / `ImportAssetProof` / `ListOwnedAssets`
+
+Receive a Taproot Asset on chain into the asset wallet of the asset backend
+and list what it holds. `NewAssetReceiveKeys` returns the script key and the
+anchor internal key a sender transfers the asset to. The sender hands over
+the proof file of that transfer, and `ImportAssetProof` verifies it, checks
+that it is of the asset named in `asset_ref`, and adds the asset to the
+wallet. With `--assets.backend=embedded` the wallet is the daemon's own; with
+`tapd` it is tapd's.
+
+An asset deposit spends the daemon wallet's Bitcoin.
+`NewAssetFundingAddress` returns a backing-wallet address to send that
+Bitcoin to.
+
+```bash
+wavecli dev daemon NewAssetFundingAddress
+wavecli dev daemon NewAssetReceiveKeys
+wavecli dev daemon ImportAssetProof --proof_file <base64 proof file> \
+    --asset_ref <asset id or group key>
+wavecli dev daemon ListOwnedAssets
+```
+
 ### `dev daemon deposit-asset` / `dev daemon list-asset-deposits`
 
-Fund a boarding output holding a Taproot Asset from the tapd wallet, and list
-those deposits. Requires `--assets.backend=tapd` and tapd v0.9.0 or later,
+Fund a boarding output holding a Taproot Asset from the asset wallet, and list
+those deposits. Requires an asset backend. With `--assets.backend=embedded`
+the daemon signs its own asset inputs with keys from its seed. With
+`--assets.backend=tapd` it requires tapd v0.9.0 or later,
 which signs its own asset inputs when it publishes. The units come from one issuance, and any
 surplus returns to tapd as change. The daemon's own wallet pays and signs for
 the network fee, bounded by `--max-fee-sat`, and the Bitcoin value of the

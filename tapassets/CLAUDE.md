@@ -68,6 +68,9 @@ Durable journals retain committed packages for restart recovery.
   issuance proof into tapd's universe. A reissuance carries no group key
   reveal, so tapd first syncs the group's anchor issuance from its federation
   servers.
+- `LocalProofChainVerifier` — The asset backend seam for a backend that
+  decides on its own chain view and trusted groups, such as tap-sdk's
+  embedded engine. It asks the backend once and never writes to it.
 - `Store` — Durable, atomic journal persistence for attempts and completed
   transition packages. `ErrStoreNotFound` signals an absent key. Callers own
   workflow serialization and wallet input reservations.

@@ -149,6 +149,15 @@ type TxRemover interface {
 	RemoveTx(ctx context.Context, txid chainhash.Hash) error
 }
 
+// BlockHeaderSource is implemented by chain backends that serve the block
+// headers of the best chain by height.
+type BlockHeaderSource interface {
+	// BlockHeaderByHeight returns the header of the best-chain block at
+	// height.
+	BlockHeaderByHeight(ctx context.Context,
+		height uint32) (*wire.BlockHeader, error)
+}
+
 // ConfRegistration encapsulates the channels and control functions for a
 // confirmation registration. This mirrors lnd's chainntnfs.ConfirmationEvent
 // structure but provides a backend-agnostic interface.

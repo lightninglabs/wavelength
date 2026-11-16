@@ -404,6 +404,23 @@ func (b *ChainBackend) BestBlock(_ context.Context) (int32, chainhash.Hash,
 	return height, hash, nil
 }
 
+// BlockHeaderByHeight returns the header of the best-chain block at height.
+// Esplora's answer is not checked for proof of work.
+func (b *ChainBackend) BlockHeaderByHeight(ctx context.Context, height uint32) (
+	*wire.BlockHeader, error) {
+
+	if height > math.MaxInt32 {
+		return nil, fmt.Errorf("block height %d out of range", height)
+	}
+
+	hash, err := b.esplora.GetBlockHashByHeight(ctx, int32(height))
+	if err != nil {
+		return nil, err
+	}
+
+	return b.esplora.GetRawBlockHeader(ctx, hash)
+}
+
 // TestMempoolAccept is not supported by the Esplora backend. This matches
 // the LND backend behavior.
 func (b *ChainBackend) TestMempoolAccept(_ context.Context, _ ...*wire.MsgTx) (
