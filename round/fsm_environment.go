@@ -128,8 +128,8 @@ type ClientEnvironment struct {
 
 	// RegistrationTimeout is the timeout used while parked in
 	// IntentSentState waiting for the server's RoundJoined admission
-	// watermark. A non-positive value disables arming the registration
-	// timeout for the round.
+	// watermark. Scheduled attempts add the time remaining until their
+	// selected cutoff. A non-positive value disables arming the timer.
 	RegistrationTimeout time.Duration
 
 	// StatusReconcileTimeout bounds how long InputSigSentState waits, with

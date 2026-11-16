@@ -564,6 +564,15 @@ type directedSendFixture struct {
 func newDirectedSendFixture(t *testing.T,
 	cfgMutators ...func(*waved.Config)) *directedSendFixture {
 
+	return newDirectedSendFixtureWithTerms(t, nil, cfgMutators...)
+}
+
+// newDirectedSendFixtureWithTerms fixes operator discovery before the daemon
+// starts, so tests do not race a live GetInfo reader when changing its terms.
+func newDirectedSendFixtureWithTerms(t *testing.T,
+	mutateTerms func(*arkrpc.GetInfoResponse),
+	cfgMutators ...func(*waved.Config)) *directedSendFixture {
+
 	t.Helper()
 
 	h := NewSysTestHarness(t)
@@ -595,6 +604,9 @@ func newDirectedSendFixture(t *testing.T,
 	operatorMailbox := serverconn.PubKeyMailboxID(
 		operatorPriv.PubKey(),
 	)
+	if mutateTerms != nil {
+		mutateTerms(operatorInfo)
+	}
 	mailboxAddr, mailboxServer, stopMailbox := startFakeMailboxServer(
 		t, operatorMailbox, operatorInfo,
 	)

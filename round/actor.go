@@ -563,10 +563,11 @@ type RoundClientConfig struct {
 	// function uses time.Now. Tests may inject a deterministic clock.
 	Now func() time.Time
 
-	// RegistrationTimeout is the max wall-clock duration to wait in
-	// IntentSentState for the server's RoundJoined admission watermark
-	// before failing the round (recoverable) and releasing any
-	// forfeit-reserved inputs. If zero, defaultRegistrationTimeout is used.
+	// RegistrationTimeout bounds the wait for the server's RoundJoined
+	// admission watermark. Scheduled attempts count this grace from the
+	// selected cutoff; event-driven attempts count it from the join send.
+	// Expiry fails recoverably and releases forfeit-reserved inputs.
+	// If zero, defaultRegistrationTimeout is used.
 	// A negative value disables the timeout (rounds wait indefinitely for
 	// admission), which restores the pre-#653 behavior.
 	RegistrationTimeout time.Duration
