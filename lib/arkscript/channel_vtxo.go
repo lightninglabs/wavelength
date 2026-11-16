@@ -12,40 +12,77 @@ import (
 )
 
 const (
-	// DefaultChannelReactionWindow gives either channel endpoint roughly
-	// three days to materialize before the original funder can refund.
+	// DefaultChannelReactionWindow separates channel-funding eligibility
+	// from funder-refund eligibility by 432 blocks: about three days at
+	// 144 blocks per day, not a wall-clock guarantee.
 	DefaultChannelReactionWindow uint32 = 432
 )
 
 // ChannelVTXOParams defines the key roles and relative delays of a VTXO that
 // backs an unpublished Lightning channel point.
 type ChannelVTXOParams struct {
-	ClientArkKey   *btcec.PublicKey
-	HubArkKey      *btcec.PublicKey
+	// ClientArkKey authorizes the client's part of an in-Ark spend.
+	ClientArkKey *btcec.PublicKey
+
+	// HubArkKey authorizes the hub's part of an in-Ark spend.
+	HubArkKey *btcec.PublicKey
+
+	// ArkOperatorKey completes the immediate three-party in-Ark spend.
 	ArkOperatorKey *btcec.PublicKey
 
+	// ClientChannelKey signs the delayed channel-funding transaction.
 	ClientChannelKey *btcec.PublicKey
-	HubChannelKey    *btcec.PublicKey
-	FunderKey        *btcec.PublicKey
 
-	ChannelDelay   uint32
-	FunderDelay    uint32
-	MinExitDelay   uint32
+	// HubChannelKey cosigns the delayed channel-funding transaction.
+	HubChannelKey *btcec.PublicKey
+
+	// FunderKey can refund the original contribution after FunderDelay.
+	FunderKey *btcec.PublicKey
+
+	// ChannelDelay gates the two-party channel-funding path in blocks.
+	// It preserves time for the Ark operator's checkpoint or forfeit
+	// recovery after the VTXO confirms, and must be at least MinExitDelay.
+	ChannelDelay uint32
+
+	// FunderDelay gates the refund path in blocks from the same VTXO
+	// confirmation. It must be at least ChannelDelay + ReactionWindow,
+	// giving the non-funder time to materialize before refund is possible.
+	FunderDelay uint32
+
+	// MinExitDelay is the admitting Ark operator's minimum exit delay.
+	MinExitDelay uint32
+
+	// ReactionWindow is the minimum block gap between the two delayed
+	// paths. Zero selects DefaultChannelReactionWindow. Neither delay
+	// extends the source round's absolute batch expiry.
 	ReactionWindow uint32
 }
 
 // ChannelVTXOPolicy is the compiled three-path policy for an Ark-backed
 // Lightning channel.
 type ChannelVTXOPolicy struct {
+	// Template retains the semantic policy for encoding and validation.
 	Template *PolicyTemplate
+
+	// CompiledPolicy provides the canonical tapscripts and spend paths.
 	*CompiledPolicy
 
+	// CooperativeClosure is the client-hub-operator 3-of-3 path, with no
+	// CSV delay, used for an in-Ark transfer or cooperative refresh.
 	CooperativeClosure Node
-	ChannelClosure     Node
-	FunderClosure      Node
 
+	// ChannelClosure is the delayed client-hub 2-of-2 path that funds the
+	// Lightning channel point when the VTXO is materialized on chain.
+	ChannelClosure Node
+
+	// FunderClosure is the longer-delayed unilateral funder refund path.
+	FunderClosure Node
+
+	// ChannelDelay is the channel-funding CSV delay from VTXO confirmation.
 	ChannelDelay uint32
-	FunderDelay  uint32
+
+	// FunderDelay is the refund CSV delay from that same confirmation.
+	FunderDelay uint32
 }
 
 // NewChannelVTXOPolicy constructs the cooperative, materialization, and

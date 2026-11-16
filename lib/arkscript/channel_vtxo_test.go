@@ -66,6 +66,23 @@ func TestChannelVTXOPolicyReactionWindow(t *testing.T) {
 	require.ErrorContains(t, err, "preserve the reaction window")
 }
 
+// TestChannelVTXOPolicyCustomReactionWindow verifies callers can increase the
+// block budget without changing the channel-funding delay.
+func TestChannelVTXOPolicyCustomReactionWindow(t *testing.T) {
+	t.Parallel()
+
+	params := testChannelVTXOParams(t)
+	params.ReactionWindow = 2 * DefaultChannelReactionWindow
+	_, err := NewChannelVTXOPolicy(params)
+	require.ErrorContains(t, err, "preserve the reaction window")
+
+	params.FunderDelay = params.ChannelDelay + params.ReactionWindow
+	policy, err := NewChannelVTXOPolicy(params)
+	require.NoError(t, err)
+	require.Equal(t, params.ChannelDelay, policy.ChannelDelay)
+	require.Equal(t, params.FunderDelay, policy.FunderDelay)
+}
+
 // TestValidateChannelVTXOTemplate detects any change to the persisted channel
 // contract while accepting a canonical encode/decode round trip.
 func TestValidateChannelVTXOTemplate(t *testing.T) {

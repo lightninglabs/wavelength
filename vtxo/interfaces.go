@@ -319,6 +319,8 @@ const (
 	// on-chain ancestry. It is deliberately excluded from wallet balance,
 	// coin selection, refresh, and VTXO actor recovery. The application FSM
 	// owns its lifecycle and admits the exact final-spend policy to unroll.
+	// It must refresh or materialize the output before BatchExpiry;
+	// relative CSV delays do not extend that absolute deadline.
 	//
 	// NOTE: Appended last so the numeric values of existing statuses used
 	// in SQL queries are unchanged.
