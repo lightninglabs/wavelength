@@ -16,6 +16,8 @@ import (
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -887,8 +889,10 @@ func (c *Client) WaitIndexedVTXO(ctx context.Context, pkScript, policy []byte,
 		return nil, false, err
 	}
 	if len(policy) > 0 && !resp.GetPolicyAuthorized() {
-		return nil, false, fmt.Errorf("daemon did not authorize " +
-			"indexed policy")
+		return nil, false, status.Error(
+			codes.Unimplemented,
+			"daemon did not authorize indexed policy",
+		)
 	}
 	waited := waitMS > 0 && resp.GetWaitSupported()
 	if resp.GetVtxo() == nil {

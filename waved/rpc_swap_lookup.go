@@ -156,8 +156,7 @@ func (r *RPCServer) getIndexedVTXOByPkScript(ctx context.Context,
 	if len(vtxos) == 0 {
 		return &waverpc.GetIndexedVTXOByPkScriptResponse{
 			PolicyAuthorized: policyAuthorized,
-			WaitSupported: req.WaitForMatchMs > 0 &&
-				resp.GetWaitSupported(),
+			WaitSupported:    waitSupported,
 		}, nil
 	}
 	if !bytes.Equal(vtxos[0].GetPkScript(), req.PkScript) {

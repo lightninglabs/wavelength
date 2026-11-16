@@ -6,6 +6,8 @@ import (
 
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // IndexedVTXOWaiter optionally supplies bounded, proof-gated remote waits.
@@ -26,7 +28,21 @@ func (c *SwapClient) findVTXOWithWait(ctx context.Context, script,
 	bool, error) {
 
 	if waiter, ok := c.daemon.(IndexedVTXOWaiter); ok && wait > 0 {
-		return waiter.WaitIndexedVTXO(ctx, script, policy, state, wait)
+		info, waited, err := waiter.WaitIndexedVTXO(
+			ctx, script, policy, state, wait,
+		)
+		switch status.Code(err) {
+		case codes.Unimplemented, codes.Unauthenticated,
+			codes.PermissionDenied:
+
+			// Older peers may only authorize the legacy script
+			// scope. Discard the rejected policy result and
+			// independently run that existing proof-gated read,
+			// with polling fallback.
+
+		default:
+			return info, waited, err
+		}
 	}
 	var info *VTXOInfo
 	var err error

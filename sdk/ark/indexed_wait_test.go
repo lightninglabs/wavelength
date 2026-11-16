@@ -8,6 +8,8 @@ import (
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // indexedWaitRPC captures the additive fields without requiring an operator.
@@ -62,6 +64,7 @@ func TestWaitIndexedVTXOCompatibility(t *testing.T) {
 			require.ErrorContains(
 				t, err, "did not authorize indexed policy",
 			)
+			require.Equal(t, codes.Unimplemented, status.Code(err))
 		}
 	}
 }

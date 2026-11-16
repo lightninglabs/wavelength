@@ -7,6 +7,8 @@ import (
 
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // indexedWaitDaemon supplies the optional query wait while retaining ordinary
@@ -154,4 +156,67 @@ func TestPayClaimWaitUsesVerifiedPreimage(t *testing.T) {
 	require.Equal(t, &preimage, s.preimage)
 	require.Equal(t, 2, calls)
 	require.Zero(t, d.spentLookupCalls)
+}
+
+// TestIndexedWaitAuthorizationFallback preserves older peers' independently
+// authorized legacy reads. Transient and integrity errors do not downgrade the
+// query, and a legacy rejection remains an error rather than an empty success.
+func TestIndexedWaitAuthorizationFallback(t *testing.T) {
+	t.Parallel()
+	for _, code := range []codes.Code{codes.Unimplemented,
+		codes.Unauthenticated, codes.PermissionDenied,
+		codes.Unavailable, codes.DataLoss} {
+
+		t.Run(code.String(), func(t *testing.T) {
+			legacy := &VTXOInfo{AmountSat: 42}
+			d := &indexedWaitDaemon{testDaemonConn: &testDaemonConn{
+				vhtlc: legacy,
+			}}
+			d.wait = func(context.Context, []byte, []byte,
+				waverpc.VTXOStatus, time.Duration) (*VTXOInfo,
+				bool, error) {
+
+				return nil, false, status.Error(
+					code, "wait rejected",
+				)
+			}
+			c := NewSwapClient(nil, d, nil, nil)
+			info, waited, err := c.findVTXOWithWait(
+				t.Context(), []byte{1}, []byte{2},
+				waverpc.VTXOStatus_VTXO_STATUS_LIVE,
+				time.Second,
+			)
+			require.False(t, waited)
+			if code == codes.Unavailable || code == codes.DataLoss {
+				require.Error(t, err)
+				require.Nil(t, info)
+				require.Zero(t, d.liveLookupCalls)
+
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, legacy, info)
+			require.Equal(t, 1, d.liveLookupCalls)
+			d.liveLookupErr = status.Error(
+				codes.PermissionDenied, "legacy scope rejected",
+			)
+			_, _, err = c.findVTXOWithWait(
+				t.Context(), []byte{1}, []byte{2},
+				waverpc.VTXOStatus_VTXO_STATUS_LIVE,
+				time.Second,
+			)
+			require.ErrorContains(t, err, "legacy scope rejected")
+
+			d.spentVTXO = legacy
+			info, waited, err = c.findVTXOWithWait(
+				t.Context(), []byte{1}, []byte{2},
+				waverpc.VTXOStatus_VTXO_STATUS_SPENT,
+				time.Second,
+			)
+			require.NoError(t, err)
+			require.False(t, waited)
+			require.Equal(t, legacy, info)
+			require.Equal(t, 1, d.spentLookupCalls)
+		})
+	}
 }
