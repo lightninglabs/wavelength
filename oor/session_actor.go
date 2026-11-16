@@ -372,7 +372,7 @@ type sessionBehavior struct {
 	// commitFailed reports that the previous turn advanced b.fsm in memory
 	// but its Commit rolled back (a non-lease-loss error), leaving the
 	// in-memory FSM observably ahead of the last durably-committed
-	// snapshot. When set, the next driving turn re-runs restore() before
+	// snapshot. When set, the next turn re-runs restore() before
 	// dispatch so the redelivered event re-applies against the
 	// last-committed state instead of being discarded as already-applied
 	// against an uncommitted advance. A lease-loss commit failure does not
@@ -402,26 +402,20 @@ func (b *sessionBehavior) logger(ctx context.Context) btclog.Logger {
 func (b *sessionBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 	ax actor.Exec[oorTx]) fn.Result[ActorResp] {
 
-	switch msg.(type) {
-	case *actor.RestartMessage:
+	if _, ok := msg.(*actor.RestartMessage); ok {
+
 		// Restore already ran at construction; the restart message
 		// carries no state to persist, so the framework consumes it via
 		// the non-transactional ack path.
 		return fn.Ok[ActorResp](&DriveEventResponse{})
-
-	case *GetStateRequest:
-		return b.handleGetState()
 	}
 
 	// If the previous turn's Commit rolled back after advancing b.fsm in
 	// memory, the in-memory FSM is ahead of the last durably-committed
-	// snapshot. Rebuild it from the registry row before dispatch so the
-	// redelivered driving event re-applies the full transition (re-staging
-	// materialization and transport) against the last-committed state,
-	// rather than being no-op'd by an FSM that already advanced on an
-	// uncommitted turn. restore() rebuilds b.fsm from the durable row; on
-	// success the flag is cleared and the redelivered event drives the
-	// rebuilt FSM.
+	// snapshot. Rebuild it from the registry row before querying or driving
+	// the FSM so a read cannot authorize cleanup from an uncommitted abort.
+	// A redelivered event then re-applies the transition and its effects
+	// against the last committed state instead of skipping them.
 	if b.commitFailed {
 		b.
 			logger(ctx).
@@ -465,6 +459,10 @@ func (b *sessionBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 			return fn.Err[ActorResp](err)
 		}
 		b.commitFailed = false
+	}
+
+	if _, ok := msg.(*GetStateRequest); ok {
+		return b.handleGetState()
 	}
 
 	// Reset the per-turn accumulators and drain the FSM. dispatch performs
@@ -1150,7 +1148,6 @@ func (b *sessionBehavior) commitAck(ctx context.Context,
 		if err := b.cfg.RegistryStore.UpsertSession(
 			txCtx, record,
 		); err != nil {
-
 			// On Postgres the resolveKeyDedup SELECT above can miss
 			// a concurrent same-key winner (the racing children do
 			// not serialize on oor_session_registry the way
