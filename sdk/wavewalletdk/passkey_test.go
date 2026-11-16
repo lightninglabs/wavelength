@@ -31,6 +31,21 @@ type stubDaemonServer struct {
 	unlockCalled  bool
 	lastInitReq   *waverpc.InitWalletRequest
 	lastUnlockReq *waverpc.UnlockWalletRequest
+	seedWords     []string
+	seedErr       error
+	lastSeedReq   *waverpc.GenSeedRequest
+}
+
+// GenSeed records a generation-only request without initializing the stub.
+func (s *stubDaemonServer) GenSeed(_ context.Context,
+	req *waverpc.GenSeedRequest) (*waverpc.GenSeedResponse, error) {
+
+	s.lastSeedReq = req
+	if s.seedErr != nil {
+		return nil, s.seedErr
+	}
+
+	return &waverpc.GenSeedResponse{Mnemonic: s.seedWords}, nil
 }
 
 // GetInfo reports the configured wallet state so the SDK can branch between

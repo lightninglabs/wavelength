@@ -34,7 +34,7 @@ The package is gated behind three build tags — `mobile`, `wavewalletrpc`, and
 
 | Shape | Convention | Verbs |
 |-------|-----------|-------|
-| RPC verbs | **JSON `[]byte` in / out** (throwing) | `GetInfo`, `CreateWallet`, `UnlockWallet`, `OpenWalletFromPasskey`, `Balance`, `Deposit`, `Receive`, `PrepareSend`, `SendPrepared`, `List`, `Exit`, `ExitStatus`, `ExitSummary`, `GetExitPlan`, `SweepWallet`, `Status`, `NewAssetReceiveKeys`, `NewAssetFundingAddress`, `ImportAssetProof`, `ListOwnedAssets`, `DepositAsset`, `ListAssetDeposits`, `BoardAssetDeposit` |
+| RPC verbs | **JSON `[]byte` in / out** (throwing) | `GetInfo`, `GenerateSeed`, `CreateWallet`, `UnlockWallet`, `OpenWalletFromPasskey`, `Balance`, `Deposit`, `Receive`, `PrepareSend`, `SendPrepared`, `List`, `Exit`, `ExitStatus`, `ExitSummary`, `GetExitPlan`, `SweepWallet`, `Status`, `NewAssetReceiveKeys`, `NewAssetFundingAddress`, `ImportAssetProof`, `ListOwnedAssets`, `DepositAsset`, `ListAssetDeposits`, `BoardAssetDeposit` |
 | Lifecycle JSON | **JSON `[]byte` in / out** (throwing) | `StartExternalSeedWallet` |
 | Streaming | **pull handle** `Subscription{ next() []byte; close() }` | `Subscribe` |
 | Hot-path scalars | **plain `int64`/`bool`** | `ConfirmedBalanceSat`, `PendingInboundSat`, `WalletReady`, `IsRunning` |
@@ -397,3 +397,13 @@ when the pump requests foreground. No history scan or pay worker is started.
 The result always contains an empty receipt list and cannot authorize a banner.
 Use `CancelReceiptWindow` with that invocation ID at OS expiry and retain the
 native owner until the call finishes. See [execution windows](mobile-receipt-window.md).
+
+### Backup before initialization
+
+`GenerateSeed({})` returns `{ "Mnemonic": [...] }` without creating a wallet.
+Its optional `SeedPassphrase` uses the usual base64 byte encoding. The call
+uses the lifecycle-derived ten-second deadline and is allowed only before a
+self-managed wallet exists. Keep its result private and volatile, obtain
+backup acknowledgment, then pass the exact `Mnemonic` to `CreateWallet`.
+Abandoning generation creates no wallet; initialization errors must still be
+reconciled with `GetInfo` because the wallet database may already exist.

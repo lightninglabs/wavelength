@@ -150,7 +150,23 @@ type RefreshFeeEstimate struct {
 	EstimateError string
 }
 
-// CreateWalletRequest creates or imports a daemon wallet.
+// GenerateSeedRequest prepares recovery words without initializing a wallet.
+type GenerateSeedRequest struct {
+	// SeedPassphrase protects the aezeed, independently of the wallet
+	// password.
+	SeedPassphrase []byte
+}
+
+// GenerateSeedResult holds transient recovery words for backup before creation.
+// The caller must keep them private and pass these exact words to CreateWallet
+// after backup. The daemon does not persist them or initialize a wallet.
+type GenerateSeedResult struct {
+	Mnemonic []string
+}
+
+// CreateWalletRequest creates or imports a daemon wallet. Hosts that need a
+// recoverable onboarding flow should back up GenerateSeed's words first and
+// supply them in Mnemonic; an empty Mnemonic retains automatic generation.
 type CreateWalletRequest struct {
 	Mnemonic       []string
 	SeedPassphrase []byte
