@@ -1515,6 +1515,19 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 						"txid", entry.data.Txid,
 						slog.Any("err", err))
 
+				case errors.Is(
+					err, ErrConflictingChildRejected,
+				):
+
+					// The parent remains live and the
+					// learned floor guides the next bounded
+					// retry.
+					a.log.DebugS(ctx, "Fee bump child conflicts "+
+						"with an existing child; retaining "+
+						"fee floor for retry",
+						"txid", entry.data.Txid,
+						slog.Any("err", err))
+
 				default:
 					a.log.WarnS(ctx, "Fee bump failed, "+
 						"will retry", err,

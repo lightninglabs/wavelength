@@ -242,18 +242,21 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   keeps `pendingConfirmed` set for the next tick. The same split applies on
   the deferred `handleTerminalNotifyResult` path, where a post-timeout stop
   is logged at debug and cancelled rather than warned.
-- **Classify an existing-parent child failure by recovery action.** If Core
-  reports a replacement fee constraint, retain the strongest floor and keep
-  the entry in `Broadcasting`; the next interval must construct a bounded
-  replacement. `ErrParentAlreadyBroadcast` is reserved for a spent or missing
-  anchor where no actionable floor exists, so the entry advances to
+- **Classify an existing-parent child failure by recovery action.** During an
+  initial broadcast, if Core reports a replacement fee constraint, retain the
+  strongest floor and keep the entry in `Broadcasting`; the next interval
+  must construct a bounded replacement. `ErrParentAlreadyBroadcast` is
+  reserved for a spent or missing anchor where no actionable floor exists,
+  so the entry advances to
   `AwaitingConfirmation`. Both
   `recordInitialBroadcastOutcome` and the later fee-bump path log this sentinel
-  at debug — keep the two consistent if either is touched. Log severity here is
-  deliberately **not** pinned by a unit test: the initial-package test asserts
-  the state transition (already-broadcast parent → `AwaitingConfirmation`,
-  still watched), because a test that only asserts the absence of a warning
-  still passes if the diagnostic is deleted outright.
+  at debug — keep the two consistent if either is touched. A later fee bump
+  with `ErrConflictingChildRejected` also logs at debug: the parent is live
+  and the learned fee floor guides its next retry. Unrelated bump failures
+  still warn; initial no-mempool failures retain their escalation threshold.
+  Regression coverage checks severity together with the learned floor,
+  confirmation watch, retry spacing and eventual confirmation. A log-only
+  absence assertion would also pass if the diagnostic were deleted.
 - **Attach never inserts a dead subscriber**: `attachExistingSubscriber` only
   writes the subscriber into `entry.subscribers` on `Delivered` or `Pending`.
   On `SubscriberStopped` there is no tracked interest to unwind, because it
