@@ -112,16 +112,36 @@ func (r *RPCServer) getIndexedVTXOByPkScript(ctx context.Context,
 		}
 	}
 
-	resp, err := queryClient.ListVTXOsByScriptsTaproot(
-		ctx,
-		[]indexer.TaprootScriptScope{{
-			PkScript: append([]byte(nil), req.PkScript...),
-			PolicyTemplate: append(
-				[]byte(nil), req.PolicyTemplate...,
-			),
-		}},
-		nil, 1, statusFilter,
-	)
+	scope := indexer.TaprootScriptScope{
+		PkScript:       append([]byte(nil), req.PkScript...),
+		PolicyTemplate: append([]byte(nil), req.PolicyTemplate...),
+	}
+	var resp *arkrpc.ListVTXOsByScriptsResponse
+	var err error
+	if req.WaitForMatchMs > 0 {
+		if len(statusFilter) != 1 {
+			return nil, status.Error(
+				codes.InvalidArgument,
+				"wait requires one LIVE or SPENT status",
+			)
+		}
+		state := statusFilter[0]
+		if state != arkrpc.VTXOStatus_VTXO_STATUS_LIVE &&
+			state != arkrpc.VTXOStatus_VTXO_STATUS_SPENT {
+			return nil, status.Error(
+				codes.InvalidArgument,
+				"wait requires one LIVE or SPENT status",
+			)
+		}
+		resp, err = queryClient.WaitForVTXOByScriptTaproot(
+			ctx, scope, statusFilter[0], req.WaitForMatchMs,
+		)
+	} else {
+		resp, err = queryClient.ListVTXOsByScriptsTaproot(
+			ctx, []indexer.TaprootScriptScope{scope}, nil, 1,
+			statusFilter,
+		)
+	}
 	if err != nil {
 		code := status.Code(err)
 		if code == codes.Unknown {
@@ -131,10 +151,12 @@ func (r *RPCServer) getIndexedVTXOByPkScript(ctx context.Context,
 		return nil, status.Errorf(code, "indexer query failed: %v", err)
 	}
 
+	waitSupported := req.WaitForMatchMs > 0 && resp.GetWaitSupported()
 	vtxos := vtxo.FlattenListVTXOsByScriptsResponse(resp)
 	if len(vtxos) == 0 {
 		return &waverpc.GetIndexedVTXOByPkScriptResponse{
 			PolicyAuthorized: policyAuthorized,
+			WaitSupported:    waitSupported,
 		}, nil
 	}
 	if !bytes.Equal(vtxos[0].GetPkScript(), req.PkScript) {
@@ -182,6 +204,7 @@ func (r *RPCServer) getIndexedVTXOByPkScript(ctx context.Context,
 	return &waverpc.GetIndexedVTXOByPkScriptResponse{
 		Vtxo:             vtxo,
 		PolicyAuthorized: policyAuthorized,
+		WaitSupported:    waitSupported,
 	}, nil
 }
 

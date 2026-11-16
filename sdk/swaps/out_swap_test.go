@@ -2384,7 +2384,7 @@ func TestWaitForVHTLCFallsBackToLocalVTXOOnUnregisteredScript(t *testing.T) {
 	client := NewSwapClient(nil, daemonConn, nil, nil)
 
 	funding, err := client.waitForVHTLC(
-		t.Context(), pkScript, time.Time{}, nil,
+		t.Context(), pkScript, nil, time.Time{}, nil,
 	)
 	require.NoError(t, err)
 	require.Equal(t, localVTXO.Outpoint, funding.Outpoint)
@@ -2436,7 +2436,7 @@ func TestWaitForVHTLCRetriesThroughIndexerRowLag(t *testing.T) {
 	client.waitPollInterval = time.Millisecond
 
 	fundingInfo, err := client.waitForVHTLC(
-		t.Context(), pkScript, time.Time{}, nil,
+		t.Context(), pkScript, nil, time.Time{}, nil,
 	)
 	require.NoError(t, err)
 	require.Equal(t, funded.Outpoint, fundingInfo.Outpoint)
@@ -2475,7 +2475,7 @@ func TestWaitForVHTLCExpiresOnPersistentUnregisteredScript(t *testing.T) {
 	}
 
 	_, err := client.waitForVHTLC(
-		t.Context(), pkScript, time.Time{},
+		t.Context(), pkScript, nil, time.Time{},
 		session.ensureReceiveFundingStillPossible,
 	)
 	require.ErrorIs(t, err, ErrSwapExpired)

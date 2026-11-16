@@ -230,6 +230,25 @@ func (d *liveOperatorDaemonConn) WaitOORSession(ctx context.Context,
 	return info, false, err
 }
 
+// WaitIndexedVTXO preserves the optional remote wait through this adapter.
+func (d *liveOperatorDaemonConn) WaitIndexedVTXO(ctx context.Context, script,
+	policy []byte, state waverpc.VTXOStatus, wait time.Duration) (
+	*swaps.VTXOInfo, bool, error) {
+
+	if waiter, ok := d.DaemonConn.(swaps.IndexedVTXOWaiter); ok {
+		return waiter.WaitIndexedVTXO(ctx, script, policy, state, wait)
+	}
+	var info *swaps.VTXOInfo
+	var err error
+	if state == waverpc.VTXOStatus_VTXO_STATUS_SPENT {
+		info, err = d.FindSpentVTXOByPkScript(ctx, script)
+	} else {
+		info, err = d.FindLiveVTXOByPkScript(ctx, script)
+	}
+
+	return info, false, err
+}
+
 // daemonWithLiveOperatorKey wraps daemon so swap policy construction does not
 // consume a stale operator key from GetInfo's cached server-info snapshot.
 func daemonWithLiveOperatorKey(daemon swaps.DaemonConn,

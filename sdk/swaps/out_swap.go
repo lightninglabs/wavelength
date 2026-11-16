@@ -912,7 +912,7 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 	// guard below is the durable boundary, and backend/indexer outages
 	// should keep retrying until the caller shuts the worker down.
 	funding, err := s.client.waitForVHTLC(
-		ctx, s.vhtlcPkScript, time.Time{},
+		ctx, s.vhtlcPkScript, s.vhtlcPolicyTemplate, time.Time{},
 		s.ensureReceiveFundingStillPossible,
 	)
 	if err != nil {
@@ -2315,7 +2315,7 @@ func encodeVHTLCPolicyTemplate(policy *arkscript.VHTLCPolicy) ([]byte, error) {
 // lookup is registered for this principal. In that case the local live VTXO set
 // is authoritative enough to proceed, while complete absence remains retryable
 // until the refund-locktime guard expires.
-func (c *SwapClient) waitForVHTLC(ctx context.Context, pkScript []byte,
+func (c *SwapClient) waitForVHTLC(ctx context.Context, pkScript, policy []byte,
 	deadline time.Time, keepWaiting func(context.Context) error) (*VTXOInfo,
 	error) {
 
@@ -2325,7 +2325,12 @@ func (c *SwapClient) waitForVHTLC(ctx context.Context, pkScript []byte,
 			return nil, err
 		}
 
-		vtxo, err := c.daemon.FindLiveVTXOByPkScript(ctx, pkScript)
+		queryStart := time.Now()
+		vtxo, waited, err := c.findVTXOWithWait(
+			ctx, pkScript, policy,
+			waverpc.VTXOStatus_VTXO_STATUS_LIVE,
+			c.indexedWaitBudget(deadline),
+		)
 		if err != nil {
 			c.log.DebugS(ctx, "Unable to query vHTLC state",
 				slog.String("err", err.Error()),
@@ -2391,7 +2396,17 @@ func (c *SwapClient) waitForVHTLC(ctx context.Context, pkScript []byte,
 			return nil, errSwapExpired
 		}
 
+		if waited && err == nil {
+			continue
+		}
+
 		wait := c.waitPollInterval
+		if err != nil {
+			wait = max(0, wait-time.Since(queryStart))
+			if wait == 0 {
+				continue
+			}
+		}
 		if until := deadline.Sub(c.currentTime()); !deadline.IsZero() &&
 			until < wait {
 

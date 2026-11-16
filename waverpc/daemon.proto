@@ -1032,6 +1032,11 @@ message GetIndexedVTXOByPkScriptRequest {
     // allocating a receive-script registration. The daemon signs the policy
     // and script; the operator verifies participant ownership on each query.
     bytes policy_template = 3;
+
+    // wait_for_match_ms requests a bounded operator wait, capped at 30000 ms,
+    // for one explicit LIVE or SPENT status. Zero preserves immediate reads.
+    // Returned rows still undergo the same proof and expiry authentication.
+    uint32 wait_for_match_ms = 4;
 }
 
 message GetIndexedVTXOByPkScriptResponse {
@@ -1042,6 +1047,11 @@ message GetIndexedVTXOByPkScriptResponse {
     // proof. Callers providing a policy must require this even on an empty
     // result, so an older daemon cannot silently ignore the request field.
     bool policy_authorized = 2;
+
+    // wait_supported is true only when the operator honored the nonzero wait.
+    // Empty supported results have consumed the wait; false requires polling
+    // fallback, including when talking to an older daemon or operator.
+    bool wait_supported = 3;
 }
 
 // GetVTXOExpiryInfoRequest identifies one VTXO whose expiry posture should be

@@ -16,6 +16,8 @@ import (
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -860,6 +862,45 @@ func (c *Client) GetIndexedVTXOByPkScript(ctx context.Context,
 	}
 
 	return resp, nil
+}
+
+// WaitIndexedVTXO waits for an authenticated indexed row matching the exact
+// script, policy and status. A false support bit requires polling fallback.
+func (c *Client) WaitIndexedVTXO(ctx context.Context, pkScript, policy []byte,
+	state waverpc.VTXOStatus, wait time.Duration) (*VTXOInfo, bool, error) {
+
+	wait = max(0, min(wait, 30*time.Second))
+	// Round positive submillisecond budgets up so a requested wait never
+	// becomes an immediate query that callers could mistake for pacing.
+	waitMS := uint32((wait + time.Millisecond - 1) / time.Millisecond)
+	resp, err := c.GetIndexedVTXOByPkScript(ctx,
+		&waverpc.GetIndexedVTXOByPkScriptRequest{
+			PkScript:       append([]byte(nil), pkScript...),
+			PolicyTemplate: append([]byte(nil), policy...),
+			StatusFilter:   []waverpc.VTXOStatus{state},
+			WaitForMatchMs: waitMS,
+		},
+	)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, false, ctx.Err()
+		}
+
+		return nil, false, err
+	}
+	if len(policy) > 0 && !resp.GetPolicyAuthorized() {
+		return nil, false, status.Error(
+			codes.Unimplemented,
+			"daemon did not authorize indexed policy",
+		)
+	}
+	waited := waitMS > 0 && resp.GetWaitSupported()
+	if resp.GetVtxo() == nil {
+		return nil, waited, nil
+	}
+	info, err := newVTXOInfo(resp.GetVtxo())
+
+	return info, waited, err
 }
 
 // GetVTXOExpiryInfo asks the daemon to classify a VTXO using the
