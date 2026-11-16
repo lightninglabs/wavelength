@@ -308,6 +308,9 @@ func abortPreparedTransition(state *Prepared, reason string) *StateTransition {
 					Outpoints: InputOutpoints(
 						state.TransferInputs,
 					),
+					ReserveEpochs: prePONRReserveEpochs(
+						state,
+					),
 				},
 			},
 		}),
@@ -684,6 +687,9 @@ func prePONRInputOutpoints(state State) []wire.OutPoint {
 func prePONRReserveEpochs(state State) map[wire.OutPoint]uint64 {
 	var inputs []TransferInput
 	switch s := state.(type) {
+	case *Prepared:
+		inputs = s.TransferInputs
+
 	case *AwaitingArkSignatures:
 		inputs = s.TransferInputs
 
