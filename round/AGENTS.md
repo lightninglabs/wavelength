@@ -140,7 +140,9 @@ state transitions and validation rules live under [Invariants](#invariants).
   package and proof path before the client signs its tree path. When nil,
   rounds with asset requests fail before signing.
 - `RoundClientConfig.RegistrationTimeout` — max wall-clock duration to wait in
-  `IntentSentState` for the server's `RoundJoined` admission watermark. Zero
+  `IntentSentState` for the server's `RoundJoined` admission watermark. Scheduled
+  attempts count the grace from the selected cutoff so a quote-time wake can
+  still deliver admission; event-driven attempts count from send. Zero
   selects `defaultRegistrationTimeout` (60 s); negative disables the timeout
   (round waits indefinitely). Bounds how long forfeit-reserved inputs sit
   stranded when the server never responds (wavelength#653).
@@ -250,6 +252,9 @@ state transitions and validation rules live under [Invariants](#invariants).
   the opening itself, which absorbs clock error and spreads a slot's joins.
   With less than `lo` left before the cutoff, both the wait and the pre-send
   check fail the attempt locally; a pinned slot never slides to a later one.
+  The registration timeout expires at this cutoff plus the configured grace,
+  using the operator clock offset. Durable replay retains that original
+  absolute deadline rather than extending it on each wake or restart.
 
 
 - **A leave's own-wallet flag is local-only.** `types.LeaveRequest.DestinationOwnWallet` rides from the wallet through `roundLedgerOutflows` into `RoundLedgerOutflow.ProceedsOwnWallet` and on to `ledger.VTXOSentMsg`. It is never serialized onto the join-round wire; the operator has no business knowing whose wallet a leave pays. A nil leave request keeps the conservative false.

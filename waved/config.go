@@ -396,10 +396,10 @@ type Config struct {
 	// checkpoint. Non-positive values select the 30-minute default.
 	AdmissionTimeout time.Duration `mapstructure:"admissiontimeout"`
 
-	// RegistrationTimeout is the maximum wall-clock duration to
-	// wait for the server's RoundJoined admission watermark after
-	// sending a JoinRoundRequest. If zero, the round package
-	// default is used; a negative value disables the timeout.
+	// RegistrationTimeout bounds the wait for the server's RoundJoined
+	// watermark after sending a JoinRoundRequest. Scheduled attempts add
+	// the time remaining until their selected cutoff. If zero, the round
+	// package default is used; a negative value disables the timeout.
 	RegistrationTimeout time.Duration `mapstructure:"registrationtimeout"`
 
 	// AllowMainnet must be set to true explicitly to run the daemon

@@ -811,10 +811,23 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 		// and releases any forfeit-reserved inputs (wavelength#653).
 		// A non-positive timeout disables the safety net.
 		if env.RegistrationTimeout > 0 {
+			wait := env.RegistrationTimeout
+			if env.scheduled != nil {
+				// A suspended client may first pull admission
+				// with the quote at cutoff. Keep that turn
+				// reachable before releasing the pre-signing
+				// reservation.
+				wait += max(
+					0,
+					env.scheduled.slot.Cutoff.Sub(
+						env.scheduled.operatorNow(env),
+					),
+				)
+			}
 			outbox = append(outbox, &StartTimeoutReq{
 				RoundKey: env.RoundKey,
 				Phase:    TimeoutPhaseRegistration,
-				Duration: env.RegistrationTimeout,
+				Duration: wait,
 			})
 		}
 
