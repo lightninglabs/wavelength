@@ -1386,7 +1386,10 @@ type CreateInSwapRequest struct {
 	// owner_proof authenticates the daemon identity that may later list this
 	// in-swap for seed recovery. Rows created without this proof remain usable
 	// but are not returned by ListRecoverableSwaps.
-	OwnerProof    *SwapOwnerProof `protobuf:"bytes,7,opt,name=owner_proof,json=ownerProof,proto3" json:"owner_proof,omitempty"`
+	OwnerProof *SwapOwnerProof `protobuf:"bytes,7,opt,name=owner_proof,json=ownerProof,proto3" json:"owner_proof,omitempty"`
+	// amount_sat supplies the payer amount for an amountless invoice.
+	// Zero uses the signed invoice amount. A signed amount cannot change.
+	AmountSat     uint64 `protobuf:"varint,8,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1468,6 +1471,13 @@ func (x *CreateInSwapRequest) GetOwnerProof() *SwapOwnerProof {
 		return x.OwnerProof
 	}
 	return nil
+}
+
+func (x *CreateInSwapRequest) GetAmountSat() uint64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
 }
 
 // ListRecoverableSwapsRequest lists server-owned recovery metadata for one
@@ -2005,8 +2015,10 @@ type QuoteInSwapRequest struct {
 	// account_authorization proves control of account_pubkey for this exact
 	// request whenever account_pubkey is set.
 	AccountAuthorization *CreditAccountAuthorization `protobuf:"bytes,5,opt,name=account_authorization,json=accountAuthorization,proto3" json:"account_authorization,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// amount_sat supplies the payer amount for an amountless invoice.
+	AmountSat     uint64 `protobuf:"varint,6,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *QuoteInSwapRequest) Reset() {
@@ -2072,6 +2084,13 @@ func (x *QuoteInSwapRequest) GetAccountAuthorization() *CreditAccountAuthorizati
 		return x.AccountAuthorization
 	}
 	return nil
+}
+
+func (x *QuoteInSwapRequest) GetAmountSat() uint64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
 }
 
 // QuoteInSwapResponse returns the non-binding preview for one invoice send.
@@ -3753,7 +3772,7 @@ const file_swap_proto_rawDesc = "" +
 	"\x16unilateral_claim_delay\x18\x02 \x01(\rR\x14unilateralClaimDelay\x126\n" +
 	"\x17unilateral_refund_delay\x18\x03 \x01(\rR\x15unilateralRefundDelay\x12V\n" +
 	"(unilateral_refund_without_receiver_delay\x18\x04 \x01(\rR$unilateralRefundWithoutReceiverDelay\x12+\n" +
-	"\x11swapserver_pubkey\x18\x05 \x01(\fR\x10swapserverPubkey\"\xe0\x02\n" +
+	"\x11swapserver_pubkey\x18\x05 \x01(\fR\x10swapserverPubkey\"\xff\x02\n" +
 	"\x13CreateInSwapRequest\x12\x18\n" +
 	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12\x1e\n" +
 	"\vmax_fee_sat\x18\x02 \x01(\x04R\tmaxFeeSat\x12.\n" +
@@ -3762,7 +3781,9 @@ const file_swap_proto_rawDesc = "" +
 	"\x0emax_credit_sat\x18\x05 \x01(\x04R\fmaxCreditSat\x12X\n" +
 	"\x15account_authorization\x18\x06 \x01(\v2#.swaprpc.CreditAccountAuthorizationR\x14accountAuthorization\x128\n" +
 	"\vowner_proof\x18\a \x01(\v2\x17.swaprpc.SwapOwnerProofR\n" +
-	"ownerProof\"\x93\x01\n" +
+	"ownerProof\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\b \x01(\x04R\tamountSat\"\x93\x01\n" +
 	"\x1bListRecoverableSwapsRequest\x128\n" +
 	"\vowner_proof\x18\x01 \x01(\v2\x17.swaprpc.SwapOwnerProofR\n" +
 	"ownerProof\x12\x1b\n" +
@@ -3809,13 +3830,15 @@ const file_swap_proto_rawDesc = "" +
 	"\x06expiry\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x06expiry\x12@\n" +
 	"\x0fsettlement_type\x18\a \x01(\x0e2\x17.swaprpc.SettlementTypeR\x0esettlementType\x127\n" +
 	"\fcredit_quote\x18\b \x01(\v2\x14.swaprpc.CreditQuoteR\vcreditQuote\x12\x1a\n" +
-	"\bpreimage\x18\t \x01(\fR\bpreimage\"\xf5\x01\n" +
+	"\bpreimage\x18\t \x01(\fR\bpreimage\"\x94\x02\n" +
 	"\x12QuoteInSwapRequest\x12\x18\n" +
 	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12\x1e\n" +
 	"\vmax_fee_sat\x18\x02 \x01(\x04R\tmaxFeeSat\x12%\n" +
 	"\x0eaccount_pubkey\x18\x03 \x01(\fR\raccountPubkey\x12$\n" +
 	"\x0emax_credit_sat\x18\x04 \x01(\x04R\fmaxCreditSat\x12X\n" +
-	"\x15account_authorization\x18\x05 \x01(\v2#.swaprpc.CreditAccountAuthorizationR\x14accountAuthorization\"\xf5\x02\n" +
+	"\x15account_authorization\x18\x05 \x01(\v2#.swaprpc.CreditAccountAuthorizationR\x14accountAuthorization\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x06 \x01(\x04R\tamountSat\"\xf5\x02\n" +
 	"\x13QuoteInSwapResponse\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12,\n" +
 	"\x12invoice_amount_sat\x18\x02 \x01(\x04R\x10invoiceAmountSat\x12\x1d\n" +
