@@ -4370,7 +4370,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 		return fmt.Errorf("derive identity key: %w", err)
 	}
 
-	negotiation, err := s.connectAndNegotiate(ctx)
+	negotiation, err := s.connectAndNegotiateWithRetry(ctx)
 	if err != nil {
 		return err
 	}
