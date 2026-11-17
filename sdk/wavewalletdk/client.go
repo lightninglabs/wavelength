@@ -521,6 +521,10 @@ func (c *Client) PrepareSend(ctx context.Context, req PrepareSendRequest) (
 		return nil, err
 	}
 
+	if req.MaxAmount {
+		return c.prepareMaxSend(ctx, req)
+	}
+
 	protoReq := &wavewalletrpc.PrepareSendRequest{
 		AmtSat:            req.AmountSat,
 		Note:              req.Note,

@@ -74,6 +74,22 @@ ABI. Its startup envelope is snake_case (`config`, `seed_entropy`,
 is the PascalCase `ExternalSeedWalletOpenResult`. Typed SDKs map their public
 request types onto this wire shape.
 
+## Maximum send
+
+For an amountless BOLT-11 payment, `PrepareSend` accepts `MaxAmount: true`
+with `AmountSat: 0`. The SDK reads live Bitcoin VTXOs and repeatable fee
+quotes, respects both credit caps and the minimum change policy, then creates
+one ordinary prepared intent. Render its returned `AmountSat` and fees before
+calling `SendPrepared`. A fixed-amount invoice cannot use Max. An unavailable
+or changed quote fails preparation instead of substituting a guessed amount.
+This needs an updated binding; the remote services use their existing RPCs.
+
+A mismatched final prepare returns `ErrMaxQuoteChanged` without giving the
+host a sendable intent. The unused daemon intent expires after five minutes.
+Until then its credit earmark delays automatic redemption only. It reserves
+neither spend inputs nor server credit and does not reduce subsequent quotes.
+
+
 ## Lifecycle
 
 These signatures document the generated binding:

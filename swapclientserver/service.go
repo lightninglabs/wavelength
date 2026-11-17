@@ -1584,8 +1584,8 @@ func (s *swapClientService) validatePayInvoiceAmount(ctx context.Context,
 	}
 
 	return status.Errorf(codes.InvalidArgument, "invoice amount_sat %d is "+
-		"below the %d sat minimum for pay swaps (operator VTXO "+
-		"minimum)", amountSat, minAmountSat)
+		"below the %d sat %s", amountSat, minAmountSat,
+		swapclientrpc.PayBelowMinimumHint)
 }
 
 // quotePay previews a pay swap, routing through the credit-aware quote path
