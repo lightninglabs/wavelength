@@ -47,6 +47,14 @@ func TestBoardingBackendDuplicateImportRestoresTracking(t *testing.T) {
 			require.NoError(t, err)
 
 		default:
+			// Start-block discovery probes the wallet's
+			// scripts; a genesis-only chain has seen none.
+			if isScriptStatsPath(r.URL.Path) {
+				_, _ = w.Write([]byte(emptyScriptStats))
+
+				return
+			}
+
 			http.NotFound(w, r)
 		}
 	}

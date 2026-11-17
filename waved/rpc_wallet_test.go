@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -284,6 +285,14 @@ func TestWrongPassphraseErrorMapping(t *testing.T) {
 			require.NoError(t, err)
 
 		default:
+			// Start-block discovery probes the wallet's
+			// scripts; a genesis-only chain has seen none.
+			if isScriptStatsPath(r.URL.Path) {
+				_, _ = w.Write([]byte(emptyScriptStats))
+
+				return
+			}
+
 			http.NotFound(w, r)
 		}
 	}
@@ -335,4 +344,17 @@ func TestWrongPassphraseErrorMapping(t *testing.T) {
 	generic := fmt.Errorf("start lwwallet: %w",
 		errors.New("esplora unreachable"))
 	require.False(t, isWrongPassphraseErr(generic))
+}
+
+// emptyScriptStats is the Esplora stats document for a script the index
+// has never seen.
+const emptyScriptStats = `{"chain_stats":{"tx_count":0},` +
+	`"mempool_stats":{"tx_count":0}}`
+
+// isScriptStatsPath reports whether path is an Esplora script stats probe,
+// /scripthash/:hash with nothing after it.
+func isScriptStatsPath(path string) bool {
+	hash, ok := strings.CutPrefix(path, "/scripthash/")
+
+	return ok && hash != "" && !strings.Contains(hash, "/")
 }
