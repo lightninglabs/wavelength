@@ -1149,6 +1149,7 @@ func TestRefreshVTXOsAllQueuesLiveTargets(t *testing.T) {
 	close(walletReady)
 	r.server.walletReady = walletReady
 	r.server.walletRef = fn.Some(walletRef)
+	r.server.walletServicesReady = resolvedSignal()
 
 	resp, err := r.RefreshVTXOs(
 		t.Context(), &waverpc.RefreshVTXOsRequest{

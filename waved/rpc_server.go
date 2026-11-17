@@ -889,6 +889,39 @@ func (r *RPCServer) requireWalletReady() error {
 	}
 }
 
+// walletActor returns the wallet actor once the wallet-dependent services
+// that own it have started.
+//
+// The wallet reports ready as soon as its backend is unlocked, but the actor
+// is only registered afterwards, by the goroutine that also connects the
+// mailbox. That goroutine stores walletRef before it resolves
+// walletServicesReady, so a handler that observes the resolved signal also
+// observes the ref; reading walletRef without it races the write. Until then
+// the error is Unavailable, because the condition is transient and the
+// caller should retry rather than treat it as an internal failure.
+func (r *RPCServer) walletActor() (
+	actor.ActorRef[wallet.WalletMsg, wallet.WalletResp], error) {
+
+	select {
+	case <-r.server.walletServicesReady:
+	default:
+		return nil, status.Error(
+			codes.Unavailable, "wallet services are still starting",
+		)
+	}
+
+	if err := r.server.walletServicesReadyErr; err != nil {
+		return nil, status.Errorf(codes.Unavailable, "wallet services "+
+			"failed to start: %v", err)
+	}
+
+	return r.server.walletRef.UnwrapOrErr(
+		status.Error(
+			codes.Unavailable, "wallet actor not initialized",
+		),
+	)
+}
+
 // GetBalance returns the current balance of the wallet, broken down
 // by boarding (on-chain) and VTXO (off-chain) balances.
 func (r *RPCServer) GetBalance(ctx context.Context,
@@ -1758,12 +1791,10 @@ func (r *RPCServer) NewAddress(ctx context.Context,
 		return nil, err
 	}
 
-	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Internal, "wallet actor not "+
-			"initialized")
+	wRef, err := r.walletActor()
+	if err != nil {
+		return nil, err
 	}
-
-	wRef := r.server.walletRef.UnsafeFromSome()
 
 	// Fetch operator terms to get the operator key and exit delay
 	// needed for the boarding address tapscript.
@@ -1905,12 +1936,10 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 		return nil, err
 	}
 
-	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Internal, "wallet actor not "+
-			"initialized")
+	wRef, err := r.walletActor()
+	if err != nil {
+		return nil, err
 	}
-
-	wRef := r.server.walletRef.UnsafeFromSome()
 
 	// The wallet actor only refreshes outpoints it receives in
 	// TargetOutpoints (despite a stale docstring suggesting empty means
@@ -2021,16 +2050,14 @@ func (r *RPCServer) RefreshCustomVTXOs(ctx context.Context,
 		)
 	}
 
-	if !r.server.walletRef.IsSome() {
+	wRef, err := r.walletActor()
+	if err != nil {
 		for _, fn := range unregister {
 			fn()
 		}
 
-		return nil, status.Errorf(codes.Internal, "wallet actor not "+
-			"initialized")
+		return nil, err
 	}
-
-	wRef := r.server.walletRef.UnsafeFromSome()
 	future := wRef.Ask(ctx, &wallet.RefreshCustomVTXOsRequest{
 		Inputs:  inputs,
 		Outputs: outputs,
@@ -2663,12 +2690,10 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 		return nil, err
 	}
 
-	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Internal, "wallet actor not "+
-			"initialized")
+	wRef, err := r.walletActor()
+	if err != nil {
+		return nil, err
 	}
-
-	wRef := r.server.walletRef.UnsafeFromSome()
 
 	leaveReq := &wallet.LeaveVTXOsRequest{
 		TargetOutpoints: targets,
@@ -2786,12 +2811,10 @@ func (r *RPCServer) SendOnChain(ctx context.Context,
 		return nil, err
 	}
 
-	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Internal, "wallet actor not "+
-			"initialized")
+	wRef, err := r.walletActor()
+	if err != nil {
+		return nil, err
 	}
-
-	wRef := r.server.walletRef.UnsafeFromSome()
 
 	sendReq := &wallet.SendOnChainRequest{
 		DestinationPkScript: pkScript,
@@ -2915,11 +2938,10 @@ func (r *RPCServer) Board(ctx context.Context, req *waverpc.BoardRequest) (
 	// Delegate to the wallet actor which handles balance
 	// checking, VTXO amount computation, and forwarding the
 	// TriggerBoardMsg to the round actor.
-	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Internal, "wallet actor not "+
-			"initialized")
+	wRef, err := r.walletActor()
+	if err != nil {
+		return nil, err
 	}
-	wRef := r.server.walletRef.UnsafeFromSome()
 
 	// Under the #270 seal-time fee handshake the server is the
 	// fee authority — the client no longer pre-computes or pre-
@@ -3122,12 +3144,10 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 		)
 	}
 
-	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Internal, "wallet actor not "+
-			"initialized")
+	wRef, err := r.walletActor()
+	if err != nil {
+		return nil, err
 	}
-
-	wRef := r.server.walletRef.UnsafeFromSome()
 
 	// Quote the dynamic operator fee for this send. SendVTXO
 	// Under the #270 seal-time fee handshake the operator fee is
@@ -3301,9 +3321,9 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			"initialized")
 	}
 
-	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Internal, "wallet actor not "+
-			"initialized")
+	wRef, err := r.walletActor()
+	if err != nil {
+		return nil, err
 	}
 
 	if r.server.vtxoStore == nil {
@@ -3376,7 +3396,6 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		// Outpoint-only custom inputs use the same durable reservation
 		// path, but name the exact managed VTXOs that must be selected.
 		phaseStart = time.Now()
-		wRef := r.server.walletRef.UnsafeFromSome()
 
 		selectReq := &wallet.SelectAndLockVTXOsRequest{
 			TargetAmount:    targetAmt,
@@ -4647,16 +4666,15 @@ func (r *RPCServer) cleanupSubmittedOORStartWithTimeout(ctx context.Context,
 func (r *RPCServer) unlockVTXOs(ctx context.Context,
 	vtxos []wallet.SelectedVTXO) error {
 
-	if !r.server.walletRef.IsSome() {
-		return nil
+	wRef, err := r.walletActor()
+	if err != nil {
+		return err
 	}
 
 	outpoints := make([]wire.OutPoint, 0, len(vtxos))
 	for _, sv := range vtxos {
 		outpoints = append(outpoints, sv.Outpoint)
 	}
-
-	wRef := r.server.walletRef.UnsafeFromSome()
 
 	return wRef.Tell(ctx, &wallet.UnlockVTXOsRequest{
 		Outpoints: outpoints,

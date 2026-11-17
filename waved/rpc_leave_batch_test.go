@@ -63,6 +63,7 @@ func TestLeaveBatchCrossRoundResults(t *testing.T) {
 	)
 	ref := key.Spawn(system, "batch-leave", behavior)
 	r.server.walletRef = fn.Some(ref)
+	r.server.walletServicesReady = resolvedSignal()
 	r.server.walletReady = make(chan struct{})
 	close(r.server.walletReady)
 	targets := []string{first.Outpoint.String(), second.Outpoint.String()}
