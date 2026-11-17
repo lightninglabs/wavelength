@@ -123,24 +123,25 @@ const (
 )
 
 const (
-	transferInputOutpointRecordType           tlv.Type = 1
-	transferInputAmountSatRecordType          tlv.Type = 2
-	transferInputClientFamilyRecordType       tlv.Type = 3
-	transferInputClientIndexRecordType        tlv.Type = 4
-	transferInputClientPubKeyRecordType       tlv.Type = 5
-	transferInputOperatorPubKeyRecordType     tlv.Type = 6
-	transferInputExitDelayRecordType          tlv.Type = 7
-	transferInputOwnerLeafScriptRecordType    tlv.Type = 8
-	transferInputPkScriptRecordType           tlv.Type = 9
-	transferInputSpendWitnessScriptRecordType tlv.Type = 10
-	transferInputSpendControlBlockRecordType  tlv.Type = 11
-	transferInputConditionWitnessRecordType   tlv.Type = 12
-	transferInputOwnerLeafPolicyRecordType    tlv.Type = 13
-	transferInputVTXOPolicyRecordType         tlv.Type = 14
-	transferInputRequiredSequenceRecordType   tlv.Type = 15
-	transferInputRequiredLockTimeRecordType   tlv.Type = 16
-	transferInputExternalSignaturesRecordType tlv.Type = 17
-	transferInputReserveEpochRecordType       tlv.Type = 18
+	transferInputOutpointRecordType              tlv.Type = 1
+	transferInputAmountSatRecordType             tlv.Type = 2
+	transferInputClientFamilyRecordType          tlv.Type = 3
+	transferInputClientIndexRecordType           tlv.Type = 4
+	transferInputClientPubKeyRecordType          tlv.Type = 5
+	transferInputOperatorPubKeyRecordType        tlv.Type = 6
+	transferInputExitDelayRecordType             tlv.Type = 7
+	transferInputOwnerLeafScriptRecordType       tlv.Type = 8
+	transferInputPkScriptRecordType              tlv.Type = 9
+	transferInputSpendWitnessScriptRecordType    tlv.Type = 10
+	transferInputSpendControlBlockRecordType     tlv.Type = 11
+	transferInputConditionWitnessRecordType      tlv.Type = 12
+	transferInputOwnerLeafPolicyRecordType       tlv.Type = 13
+	transferInputVTXOPolicyRecordType            tlv.Type = 14
+	transferInputRequiredSequenceRecordType      tlv.Type = 15
+	transferInputRequiredLockTimeRecordType      tlv.Type = 16
+	transferInputExternalSignaturesRecordType    tlv.Type = 17
+	transferInputReserveEpochRecordType          tlv.Type = 18
+	transferInputExternalArkSignaturesRecordType tlv.Type = 19
 )
 
 const (
@@ -1312,6 +1313,20 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 			transferInputReserveEpochRecordType, &reserveEpoch,
 		),
 	)
+	if len(input.ExternalArkSignatures) > 0 {
+		blob, err := encodeExternalSignatures(
+			input.ExternalArkSignatures,
+		)
+		if err != nil {
+			return nil, err
+		}
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				transferInputExternalArkSignaturesRecordType,
+				&blob,
+			),
+		)
+	}
 
 	return tlvutil.EncodeRecordsToBytes(records...)
 }
@@ -1333,6 +1348,7 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		controlBlock       []byte
 		condBlob           []byte
 		externalSigBlob    []byte
+		externalArkSigBlob []byte
 		requiredSequence   uint32
 		requiredLockTime   uint32
 		reserveEpoch       uint64
@@ -1399,6 +1415,10 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		tlv.MakePrimitiveRecord(
 			transferInputReserveEpochRecordType, &reserveEpoch,
 		),
+		tlv.MakePrimitiveRecord(
+			transferInputExternalArkSignaturesRecordType,
+			&externalArkSigBlob,
+		),
 	}
 
 	if _, err := decodeBoundedRecords(
@@ -1459,6 +1479,13 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		}
 
 		snap.ExternalSignatures = sigs
+	}
+	if len(externalArkSigBlob) > 0 {
+		sigs, err := decodeExternalSignatures(externalArkSigBlob)
+		if err != nil {
+			return nil, err
+		}
+		snap.ExternalArkSignatures = sigs
 	}
 
 	return snap, nil

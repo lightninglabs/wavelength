@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
@@ -187,6 +188,57 @@ func signArkPSBTInput(signer input.Signer, arkPSBT *psbt.Packet, inputIndex int,
 	)
 	if err != nil {
 		return err
+	}
+
+	// Extra owners authorize the final allocation independently of their
+	// checkpoint authorization, even when both spend scripts are identical.
+	ownerLeaf, err := arkscript.DecodeLeafTemplate(in.OwnerLeafPolicy)
+	if err != nil {
+		return err
+	}
+	for _, external := range in.ExternalArkSignatures {
+		matchesLeaf := bytes.Equal(
+			external.WitnessScript, collabLeaf.Script,
+		)
+		if external.PubKey == nil ||
+			external.SigHash != txscript.SigHashDefault ||
+			!matchesLeaf {
+			return fmt.Errorf("external Ark signature does not " +
+				"bind owner leaf")
+		}
+		participant := false
+		for _, key := range ownerLeaf.ParticipantKeys() {
+			if bytes.Equal(
+				schnorr.SerializePubKey(key),
+				schnorr.SerializePubKey(external.PubKey),
+			) {
+
+				participant = true
+				break
+			}
+		}
+		if !participant {
+			return fmt.Errorf("external Ark signer is not an owner")
+		}
+		if err := psbtutil.AddTaprootScriptSpendSig(
+			pInput, external.PubKey, collabLeaf.Script,
+			external.Signature, external.SigHash,
+		); err != nil {
+			return err
+		}
+		sig, err := findTaprootScriptSpendSig(
+			pInput, external.PubKey, collabLeaf.Script,
+		)
+		if err != nil {
+			return err
+		}
+		if err := verifyTaprootScriptSpendSig(
+			arkPSBT.UnsignedTx, inputIndex, prevFetcher,
+			collabLeaf.Script, sig,
+		); err != nil {
+			return fmt.Errorf("verify external Ark signature: %w",
+				err)
+		}
 	}
 
 	// Preserve condition witness items for custom spends so later submit
