@@ -225,10 +225,11 @@ type DaemonServiceClient interface {
 	BoardAssetDeposit(ctx context.Context, in *BoardAssetDepositRequest, opts ...grpc.CallOption) (*AssetDeposit, error)
 	// ClaimAssetDeposit spends a confirmed asset deposit that no round
 	// holds through the owner's exit path, once the exit delay has passed,
-	// and returns the asset to the tapd wallet. The claim pays its fee with a
-	// CPFP child from the daemon wallet. Retrying resumes the same claim.
-	// Requires a tapd that confirms transfers spending assets it does not
-	// hold.
+	// and returns the asset to the asset wallet of the asset backend. The
+	// claim pays its fee with a CPFP child from the daemon wallet. Retrying
+	// resumes the same claim. Requires an asset backend; a tapd backend must
+	// run tapd v0.9.0 or later, which confirms transfers spending assets it
+	// does not hold.
 	ClaimAssetDeposit(ctx context.Context, in *ClaimAssetDepositRequest, opts ...grpc.CallOption) (*AssetDeposit, error)
 	// NewAssetReceiveKeys derives the keys a sender needs to transfer a
 	// Taproot Asset to this daemon's asset wallet on chain: the script key
@@ -1057,10 +1058,11 @@ type DaemonServiceServer interface {
 	BoardAssetDeposit(context.Context, *BoardAssetDepositRequest) (*AssetDeposit, error)
 	// ClaimAssetDeposit spends a confirmed asset deposit that no round
 	// holds through the owner's exit path, once the exit delay has passed,
-	// and returns the asset to the tapd wallet. The claim pays its fee with a
-	// CPFP child from the daemon wallet. Retrying resumes the same claim.
-	// Requires a tapd that confirms transfers spending assets it does not
-	// hold.
+	// and returns the asset to the asset wallet of the asset backend. The
+	// claim pays its fee with a CPFP child from the daemon wallet. Retrying
+	// resumes the same claim. Requires an asset backend; a tapd backend must
+	// run tapd v0.9.0 or later, which confirms transfers spending assets it
+	// does not hold.
 	ClaimAssetDeposit(context.Context, *ClaimAssetDepositRequest) (*AssetDeposit, error)
 	// NewAssetReceiveKeys derives the keys a sender needs to transfer a
 	// Taproot Asset to this daemon's asset wallet on chain: the script key

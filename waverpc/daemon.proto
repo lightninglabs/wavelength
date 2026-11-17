@@ -196,10 +196,11 @@ service DaemonService {
 
     // ClaimAssetDeposit spends a confirmed asset deposit that no round
     // holds through the owner's exit path, once the exit delay has passed,
-    // and returns the asset to the tapd wallet. The claim pays its fee with a
-    // CPFP child from the daemon wallet. Retrying resumes the same claim.
-    // Requires a tapd that confirms transfers spending assets it does not
-    // hold.
+    // and returns the asset to the asset wallet of the asset backend. The
+    // claim pays its fee with a CPFP child from the daemon wallet. Retrying
+    // resumes the same claim. Requires an asset backend; a tapd backend must
+    // run tapd v0.9.0 or later, which confirms transfers spending assets it
+    // does not hold.
     rpc ClaimAssetDeposit (ClaimAssetDepositRequest) returns (AssetDeposit);
 
     // NewAssetReceiveKeys derives the keys a sender needs to transfer a
