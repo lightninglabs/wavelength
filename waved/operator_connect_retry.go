@@ -2,8 +2,11 @@ package waved
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"syscall"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/serverconn/mailboxpull"
@@ -83,8 +86,9 @@ func retryWhileOperatorUnreachable[T any](ctx context.Context,
 
 // isOperatorUnreachable reports whether err means the operator could not be
 // reached or could not answer in time, which a later attempt may get past.
-// Every other failure, such as an incompatible protocol version, is returned
-// at once: retrying it would only hide a misconfiguration.
+// Every other failure, such as an incompatible protocol version or a TLS
+// certificate the daemon does not trust, is returned at once: retrying it
+// would only hide a misconfiguration.
 func isOperatorUnreachable(err error) bool {
 	switch status.Code(err) {
 	case codes.Unavailable, codes.DeadlineExceeded,
@@ -92,6 +96,36 @@ func isOperatorUnreachable(err error) bool {
 		return true
 
 	default:
-		return false
+		return isTransientNetworkError(err)
 	}
+}
+
+// isTransientNetworkError reports whether err is a network failure below the
+// RPC layer that a later attempt may get past.
+//
+// The gRPC transport maps these failures to codes.Unavailable itself, but the
+// REST transport returns the HTTP client's error unchanged, so its
+// connection-refused error carries no gRPC code at all.
+func isTransientNetworkError(err error) bool {
+	// A failed dial means nothing answered at the operator's address: the
+	// connection was refused, the host or network was unreachable, or the
+	// name did not resolve. The gRPC transport reports all of these as
+	// Unavailable, so the REST transport retries them too. A TLS failure
+	// happens after the dial succeeded and is not one of these.
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return true
+	}
+
+	// The operator dropped a connection it had accepted, such as while it
+	// restarts.
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+
+	// The operator did not answer in time, which includes a stalled TLS
+	// handshake.
+	var netErr net.Error
+
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
