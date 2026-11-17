@@ -146,9 +146,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   reports the confirmation final once it is buried; `assetConfWatch` hands
   those events to the engine one at a time, and ends them on a confirmation
   whose block the backend could not fetch, so the engine registers again.
-  It requires `wallet.type`
-  `lwwallet` or `btcwallet`, because an lnd wallet keeps its seed, and it is
-  refused outside regtest. `initEmbeddedAssets` creates it after the
+  It is refused outside regtest. `initEmbeddedAssets` creates it after the
   database opens and before any round starts; the engine opens no listener.
   The wallet may still be locked then, so
   the key ring and chain ports resolve the wallet on each call and return

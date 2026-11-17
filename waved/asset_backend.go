@@ -25,7 +25,7 @@ const (
 	AssetBackendTapd = "tapd"
 
 	// AssetBackendEmbedded runs the asset engine inside the daemon, on
-	// the daemon wallet's seed, chain backend and database.
+	// the daemon wallet's keys, chain backend and database.
 	AssetBackendEmbedded = "embedded"
 
 	// DefaultAssetBackend is the asset backend used when none is set.
@@ -105,15 +105,6 @@ func (c *Config) validateAssetsConfig() error {
 		return nil
 
 	case AssetBackendEmbedded:
-		// The engine derives its keys from the daemon wallet's own
-		// seed, which an lnd wallet does not expose.
-		switch c.Wallet.Type {
-		case WalletTypeLwwallet, WalletTypeBtcwallet:
-		default:
-			return fmt.Errorf("assets.backend embedded requires "+
-				"wallet.type %s or %s", WalletTypeLwwallet,
-				WalletTypeBtcwallet)
-		}
 		if c.Network != "regtest" {
 			return fmt.Errorf("assets.backend embedded is "+
 				"available on regtest only: network is %s",
