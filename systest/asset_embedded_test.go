@@ -5,6 +5,7 @@ package systest
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -17,19 +18,34 @@ import (
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/waved"
 	"github.com/lightninglabs/wavelength/waverpc"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 // TestEmbeddedAssetDeposit runs the asset lifecycle on the embedded asset
-// backend. The daemon runs on its own wallet with no tapd or lnd beside it:
-// it receives an asset on chain, deposits part of it with its own Bitcoin,
-// keeps the surplus units as change and boards the deposit into a round. A
-// restart resumes from the daemon's database.
+// backend, with no tapd or lnd beside the daemon: it receives an asset on
+// chain, deposits part of it with its own Bitcoin, keeps the surplus units as
+// change and boards the deposit into a round. A restart resumes from the
+// daemon's database.
 func TestEmbeddedAssetDeposit(t *testing.T) {
 	ParallelN(t)
 
+	testEmbeddedAssetDeposit(t, waved.WalletTypeLwwallet)
+}
+
+// TestEmbeddedAssetDepositLndWallet runs the embedded asset lifecycle on an
+// lnd daemon wallet, which derives the engine's keys and signs for it.
+func TestEmbeddedAssetDepositLndWallet(t *testing.T) {
+	ParallelN(t)
+
+	testEmbeddedAssetDeposit(t, waved.WalletTypeLnd)
+}
+
+// testEmbeddedAssetDeposit runs the embedded asset lifecycle on a daemon
+// wallet of the given type.
+func testEmbeddedAssetDeposit(t *testing.T, walletType string) {
 	h := NewSysTestHarness(t, func(opts *harness.Options) {
 		opts.StartTapd = true
 	})
@@ -39,7 +55,12 @@ func TestEmbeddedAssetDeposit(t *testing.T) {
 	issuer := newAssetTestTapd(t, h)
 	ref := mintAssetTestAsset(t, h, issuer, 1_000)
 
-	daemon := startEmbeddedAssetDaemon(t, h, t.TempDir())
+	var walletLnd *harness.LndInstance
+	if walletType == waved.WalletTypeLnd {
+		walletLnd = startEmbeddedAssetLnd(t, h)
+	}
+
+	daemon := startEmbeddedAssetDaemon(t, h, t.TempDir(), walletLnd)
 	client := daemon.client
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
@@ -64,7 +85,7 @@ func TestEmbeddedAssetDeposit(t *testing.T) {
 
 	// After a restart the daemon still holds the change and the deposit.
 	daemon.stop()
-	daemon = startEmbeddedAssetDaemon(t, h, daemon.dataDir)
+	daemon = startEmbeddedAssetDaemon(t, h, daemon.dataDir, walletLnd)
 	client = daemon.client
 	require.EqualValues(t, 400, embeddedAssetUnits(t, client, ref))
 	deposits, err := client.ListAssetDeposits(
@@ -131,11 +152,36 @@ type embeddedAssetDaemon struct {
 // embeddedAssetTestPassword encrypts the test daemon's wallet.
 var embeddedAssetTestPassword = []byte("embedded-assets")
 
-// startEmbeddedAssetDaemon runs waved on a light wallet with the embedded
-// asset backend. A fresh data directory gets a new wallet with funds; an
-// existing one is unlocked.
-func startEmbeddedAssetDaemon(t *testing.T, h *SysTestHarness,
-	dataDir string) *embeddedAssetDaemon {
+// startEmbeddedAssetLnd starts an lnd for the daemon wallet and funds it.
+func startEmbeddedAssetLnd(t *testing.T,
+	h *SysTestHarness) *harness.LndInstance {
+
+	t.Helper()
+
+	walletLnd := h.Harness.StartAdditionalLND("embedded-assets")
+	addr, err := walletLnd.Client.WalletKit.NextAddr(
+		t.Context(),
+		"default", walletrpc.AddressType_TAPROOT_PUBKEY, false,
+	)
+	require.NoError(t, err)
+	h.Harness.Faucet(addr.String(), assetTestWalletFunds)
+	h.Harness.GenerateAndWait(1)
+	require.Eventually(t, func() bool {
+		balance, err := walletLnd.Client.Client.WalletBalance(
+			t.Context(),
+		)
+
+		return err == nil && balance.Confirmed == assetTestWalletFunds
+	}, time.Minute, time.Second, "daemon wallet never funded")
+
+	return walletLnd
+}
+
+// startEmbeddedAssetDaemon runs waved with the embedded asset backend, on
+// walletLnd if set and on a light wallet otherwise. A fresh light wallet is
+// created with funds; an existing one is unlocked.
+func startEmbeddedAssetDaemon(t *testing.T, h *SysTestHarness, dataDir string,
+	walletLnd *harness.LndInstance) *embeddedAssetDaemon {
 
 	t.Helper()
 
@@ -147,6 +193,12 @@ func startEmbeddedAssetDaemon(t *testing.T, h *SysTestHarness,
 	cfg.DebugLevel = "info"
 	cfg.Wallet.Type = waved.WalletTypeLwwallet
 	cfg.Wallet.EsploraURL = h.Harness.EsploraURL
+	if walletLnd != nil {
+		cfg.Wallet.Type = waved.WalletTypeLnd
+		cfg.Lnd.Host = net.JoinHostPort("localhost", walletLnd.GRPCPort)
+		cfg.Lnd.TLSPath = walletLnd.TLSCert
+		cfg.Lnd.MacaroonPath = walletLnd.Macaroon
+	}
 	cfg.Server.Host = mailboxAddr
 	cfg.Server.Insecure = true
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
@@ -202,6 +254,22 @@ func startEmbeddedAssetDaemon(t *testing.T, h *SysTestHarness,
 	rpcCtx, rpcCancel := context.WithTimeout(ctx, time.Minute)
 	defer rpcCancel()
 
+	daemon := &embeddedAssetDaemon{
+		client:  client,
+		mailbox: mailbox,
+		server:  server,
+		dataDir: dataDir,
+		stop:    stop,
+	}
+
+	// An lnd wallet needs no creation or unlock.
+	if walletLnd != nil {
+		require.NoError(t, server.WaitForWalletServicesReady(rpcCtx))
+		waitForDaemonReady(t, client)
+
+		return daemon
+	}
+
 	// A fresh directory has no wallet yet.
 	var info *waverpc.GetInfoResponse
 	require.Eventually(t, func() bool {
@@ -247,13 +315,7 @@ func startEmbeddedAssetDaemon(t *testing.T, h *SysTestHarness,
 		}, time.Minute, time.Second, "daemon wallet never funded")
 	}
 
-	return &embeddedAssetDaemon{
-		client:  client,
-		mailbox: mailbox,
-		server:  server,
-		dataDir: dataDir,
-		stop:    stop,
-	}
+	return daemon
 }
 
 // receiveEmbeddedAsset sends units of ref from the issuer to keys the daemon
