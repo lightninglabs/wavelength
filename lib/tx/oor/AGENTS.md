@@ -17,6 +17,10 @@ finalize packages.
   ordering, checkpoint/input matching, and witness UTXO presence.
 - `CheckpointOutput` / `RecipientOutput` / `CheckpointInput` — Builder inputs
   for PSBT construction.
+- `RecipientAsset` — The Taproot Asset an Ark recipient output carries
+  (asset root, ref, units). An asset output pays to its policy composed with
+  the asset root; `ValidateAsset` checks that and `RoutingPkScript` returns
+  the uncomposed policy script that addresses the owner.
 - `CheckpointArtifact` — Wraps checkpoint PSBT with tap tree sidecar metadata.
 
 ## Key Functions

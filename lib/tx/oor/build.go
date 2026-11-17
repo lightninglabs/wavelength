@@ -79,6 +79,11 @@ type RecipientOutput struct {
 	// services persist authoritative ownership semantics for the created
 	// VTXO.
 	VTXOPolicyTemplate []byte
+
+	// Asset is the Taproot Asset the output carries, if any. An asset
+	// output requires VTXOPolicyTemplate, and PkScript commits to the
+	// policy and the asset root.
+	Asset *RecipientAsset
 }
 
 // CanonicalRecipientOutputs returns a BIP69-style stable copy of recipients in
@@ -256,6 +261,10 @@ func BuildArkPSBT(checkpoints []CheckpointOutput,
 		if out.Value <= 0 {
 			return nil, fmt.Errorf("recipient value must be " +
 				"positive")
+		}
+
+		if err := out.ValidateAsset(); err != nil {
+			return nil, err
 		}
 
 		sumOutputs += out.Value
