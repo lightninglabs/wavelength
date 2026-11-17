@@ -69,6 +69,13 @@ type Wallet struct {
 	// can drive the budget-exhausted paths without deriving ten
 	// thousand addresses.
 	maxDiscoveryIndex uint32
+
+	// stampAttempts and stampRetryBackoff bound how long wallet start
+	// keeps retrying start-block discovery against a failing index.
+	// They are fields rather than bare constants so tests can exhaust
+	// the retries without waiting out the production backoff.
+	stampAttempts     int
+	stampRetryBackoff time.Duration
 }
 
 // ErrWalletNotFound is returned when opening an existing wallet was
@@ -245,6 +252,8 @@ func New(cfg Config) (*Wallet, error) {
 		boardingBackend:   boardingBackend,
 		recoveryWindow:    cfg.RecoveryWindow,
 		maxDiscoveryIndex: defaultMaxDiscoveryIndex,
+		stampAttempts:     defaultStampAttempts,
+		stampRetryBackoff: defaultStampRetryBackoff,
 	}, nil
 }
 
@@ -300,13 +309,10 @@ func (w *Wallet) Start() error {
 	// its own devices btcwallet binary searches block timestamps for
 	// the seed birthday, which bottoms out at genesis for any birthday
 	// older than the chain and then walks every block to the tip over
-	// Esplora. A failure here is not fatal: the wallet still starts
-	// and btcwallet falls back to that search, just slowly.
-	if err := w.stampStartBlock(ctx); err != nil {
-		w.Logger(ctx).WarnS(ctx, "Esplora start-block discovery "+
-			"failed, falling back to btcwallet birthday search",
-			err,
-		)
+	// Esplora, so an index that stays unreachable fails the start
+	// rather than letting that search record its result.
+	if err := w.stampStartBlockWithRetry(ctx); err != nil {
+		return err
 	}
 
 	// btcWallet.Start() unlocks the wallet, creates key scopes,

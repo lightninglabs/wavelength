@@ -56,6 +56,20 @@ const (
 	// transactions against a single script.
 	maxScriptTxPages = 200
 
+	// defaultStampAttempts is how many times wallet start tries to
+	// stamp the start block before giving up. Discovery is a burst of
+	// index requests, so a rate-limited or briefly unreachable Esplora
+	// is the common way for it to fail, and a short retry rides that
+	// out.
+	defaultStampAttempts = 5
+
+	// defaultStampRetryBackoff is the delay before the first stamp
+	// retry. It doubles per attempt up to stampRetryMaxBackoff.
+	defaultStampRetryBackoff = 500 * time.Millisecond
+
+	// stampRetryMaxBackoff caps the delay between stamp attempts.
+	stampRetryMaxBackoff = 8 * time.Second
+
 	// scriptProbeConcurrency bounds how many index probes are in
 	// flight at once. Esplora deployments are commonly rate limited,
 	// and discovery is a startup burst rather than steady state, so
@@ -205,6 +219,74 @@ func (w *Wallet) stampStartBlock(ctx context.Context) error {
 	)
 
 	return nil
+}
+
+// stampStartBlockWithRetry stamps the start block before btcwallet starts,
+// retrying a failed index with backoff.
+//
+// Giving up on stamping hands the start block to btcwallet's own birthday
+// search. For a seed whose birthday predates the chain, such as one pinned
+// to the Bitcoin genesis date, that search records genesis as a verified
+// birthday block, the wallet then walks every block over Esplora, and no
+// later start re-stamps because a birthday block now exists. So an index
+// that keeps failing fails the start instead: no birthday block is
+// recorded, and the next start stamps again.
+//
+// Discovery refusing to trust its own result is different. Those refusals
+// are a property of the wallet's history rather than of the index's
+// health, a retry gets the same answer, and failing would leave the wallet
+// unable to start at all. They keep the birthday search as the fallback.
+func (w *Wallet) stampStartBlockWithRetry(ctx context.Context) error {
+	backoff := w.stampRetryBackoff
+	for attempt := 1; ; attempt++ {
+		err := w.stampStartBlock(ctx)
+		switch {
+		case err == nil:
+			return nil
+
+		case errors.Is(err, errGapLimitTooWide),
+			errors.Is(err, errDiscoveryCapped),
+			errors.Is(err, errHistoryTooLong):
+
+			w.Logger(ctx).WarnS(ctx, "Esplora start-block "+
+				"discovery refused, falling back to btcwallet "+
+				"birthday search", err,
+			)
+
+			return nil
+
+		case attempt >= w.stampAttempts:
+			return fmt.Errorf("stamp start block after %d "+
+				"attempts: %w", attempt, err)
+		}
+
+		// Warn once per start; identical retries are diagnostic
+		// noise until the attempts run out and the start fails.
+		if attempt == 1 {
+			w.Logger(ctx).WarnS(ctx, "Esplora start-block "+
+				"discovery failed; retrying", err,
+				slog.Duration("retry_delay", backoff),
+			)
+		} else {
+			w.Logger(ctx).DebugS(ctx, "Esplora start-block "+
+				"discovery retry failed",
+				slog.Int("attempt", attempt),
+				slog.Duration("retry_delay", backoff),
+				slog.String("err", err.Error()),
+			)
+		}
+
+		timer := time.NewTimer(backoff)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+
+			return ctx.Err()
+		}
+
+		backoff = min(2*backoff, stampRetryMaxBackoff)
+	}
 }
 
 // resolveStartBlock returns the block stamp the wallet should be marked
