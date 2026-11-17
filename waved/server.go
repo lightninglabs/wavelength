@@ -4323,26 +4323,19 @@ func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
 	return nil
 }
 
-// connectAndBootstrapMailbox derives the identity key, connects to the
-// ark operator, fetches the operator pubkey, and wires the mailbox
-// transport runtime. This is called synchronously for LND (wallet
-// always ready) or after walletReady fires for lwwallet/btcwallet.
-//
-//nolint:contextcheck // mailbox runtime owns lifecycle after bootstrap
-func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
-	// Derive the identity key from the now-ready wallet.
-	if err := s.deriveIdentityKeyEarly(ctx); err != nil {
-		return fmt.Errorf("derive identity key: %w", err)
-	}
+// connectAndNegotiate connects to the ark operator's mailbox edge server
+// and negotiates the Ark protocol version over the direct ArkService. It is
+// the only step of the mailbox bootstrap that waits on the operator.
+func (s *Server) connectAndNegotiate(ctx context.Context) (
+	*arkVersionNegotiation, error) {
 
-	// Connect to the ark operator's mailbox edge server.
 	s.log.InfoS(ctx, "Connecting to ark server",
 		"host", s.cfg.ArkServerAddress(),
 	)
 
 	operatorClients, err := s.connectOperatorClients()
 	if err != nil {
-		return fmt.Errorf("unable to connect to server: %w", err)
+		return nil, fmt.Errorf("unable to connect to server: %w", err)
 	}
 	s.publishOperatorClients(operatorClients)
 	s.mailboxClient = operatorClients.mailbox
@@ -4358,7 +4351,28 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 		ctx, clientSupportedArkVersions(),
 	)
 	if err != nil {
-		return fmt.Errorf("negotiate ark protocol version: %w", err)
+		return nil, fmt.Errorf("negotiate ark protocol version: %w",
+			err)
+	}
+
+	return negotiation, nil
+}
+
+// connectAndBootstrapMailbox derives the identity key, connects to the
+// ark operator, fetches the operator pubkey, and wires the mailbox
+// transport runtime. This is called synchronously for LND (wallet
+// always ready) or after walletReady fires for lwwallet/btcwallet.
+//
+//nolint:contextcheck // mailbox runtime owns lifecycle after bootstrap
+func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
+	// Derive the identity key from the now-ready wallet.
+	if err := s.deriveIdentityKeyEarly(ctx); err != nil {
+		return fmt.Errorf("derive identity key: %w", err)
+	}
+
+	negotiation, err := s.connectAndNegotiateWithRetry(ctx)
+	if err != nil {
+		return err
 	}
 
 	operatorPubKey := negotiation.operatorPubKey
