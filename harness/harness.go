@@ -2380,14 +2380,29 @@ func (h *Harness) startLNDInstanceWithOptions(name, dataDir string,
 	requireInterceptor bool, chainBackend string, manualWalletInit bool,
 	extraArgs []string) *LndInstance {
 
+	return h.startLNDInstanceWithImage(
+		name, dataDir, h.lndImage(name), requireInterceptor,
+		chainBackend, manualWalletInit, extraArgs,
+	)
+}
+
+func (h *Harness) lndImage(name string) string {
+	if name == "lnd" && h.opts.PrimaryLNDImage != "" {
+		return h.opts.PrimaryLNDImage
+	}
+
+	return h.opts.LNDImage
+}
+
+// startLNDInstanceWithImage starts an LND container with the selected image
+// and waits for its TLS certificate and RPC listener.
+func (h *Harness) startLNDInstanceWithImage(name, dataDir, lndImage string,
+	requireInterceptor bool, chainBackend string, manualWalletInit bool,
+	extraArgs []string) *LndInstance {
+
 	h.T.Helper()
 
 	require.NoError(h.T, os.MkdirAll(dataDir, 0o755))
-
-	lndImage := h.opts.LNDImage
-	if name == "lnd" && h.opts.PrimaryLNDImage != "" {
-		lndImage = h.opts.PrimaryLNDImage
-	}
 
 	res := h.startLNDContainer(lndConfig{
 		name:               name,
@@ -2557,6 +2572,22 @@ func (h *Harness) StartAdditionalLND(name string) *LndInstance {
 func (h *Harness) StartAdditionalLNDWithBackend(name,
 	chainBackend string) *LndInstance {
 
+	return h.startAdditionalLND(name, "", chainBackend)
+}
+
+// StartAdditionalLNDWithImage launches an extra LND on the harness's
+// bitcoind backend with an explicit image. This lets tests mix nodes that
+// have different RPC capabilities on the same regtest network.
+func (h *Harness) StartAdditionalLNDWithImage(name,
+	lndImage string) *LndInstance {
+
+	return h.startAdditionalLND(name, lndImage, LNDChainBackendBitcoind)
+}
+
+// startAdditionalLND starts and registers a bitcoind or neutrino LND node.
+func (h *Harness) startAdditionalLND(name, lndImage,
+	chainBackend string) *LndInstance {
+
 	h.T.Helper()
 
 	if name == "" {
@@ -2568,7 +2599,12 @@ func (h *Harness) StartAdditionalLNDWithBackend(name,
 	}
 
 	dataDir := filepath.Join(h.artifactsDir, name)
-	inst := h.startLNDInstance(name, dataDir, false, chainBackend)
+	if lndImage == "" {
+		lndImage = h.lndImage(name)
+	}
+	inst := h.startLNDInstanceWithImage(
+		name, dataDir, lndImage, false, chainBackend, false, nil,
+	)
 	h.initAndWaitLNDInstance(inst)
 	h.extraLNDs[name] = inst
 

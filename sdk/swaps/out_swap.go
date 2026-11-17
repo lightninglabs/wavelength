@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	loopfsm "github.com/lightninglabs/loop/fsm"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/htlcswitch/hop"
@@ -709,9 +710,8 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create owner proof: %w", err)
 	}
-	quote, err := s.client.server.RequestChannelID(
-		ctx, clientKey, paymentHash, s.amountSat,
-		defaultReceiveExpirySeconds, supportsInArkCredit, ownerProof,
+	quote, routingKey, err := s.requestReceiveRoute(
+		ctx, clientKey, paymentHash, supportsInArkCredit, ownerProof,
 		preimageRecoveryParams,
 	)
 	if err != nil {
@@ -719,6 +719,9 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	}
 	if quote == nil || len(quote.RouteHintPaths) == 0 {
 		return fmt.Errorf("route quote must be provided")
+	}
+	if routingKey != nil {
+		authKey = routingKey
 	}
 	hintPaths := quote.RouteHintPaths
 
@@ -828,6 +831,57 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	})
 }
 
+// requestReceiveRoute negotiates routing-key delegation with capable services.
+// Legacy service and transport implementations retain wallet-owned invoices.
+func (s *ReceiveSession) requestReceiveRoute(ctx context.Context,
+	receiver *btcec.PublicKey, hash lntypes.Hash, supportsInArkCredit bool,
+	proof *swaprpc.SwapOwnerProof, recoveryParams []byte) (*OutSwapQuote,
+	*invoiceRoutingKey, error) {
+
+	conn, ok := s.client.server.(*GRPCSwapServerConn)
+	if !ok || s.client.chainParams == nil {
+		quote, err := s.client.server.RequestChannelID(
+			ctx, receiver, hash, s.amountSat,
+			defaultReceiveExpirySeconds, supportsInArkCredit, proof,
+			recoveryParams,
+		)
+
+		return quote, nil, err
+	}
+
+	info, err := conn.GetSwapRecoveryInfo(ctx)
+	var key *invoiceRoutingKey
+	switch {
+	case status.Code(err) == codes.Unimplemented:
+		if conn.isREST {
+			proof, recoveryParams = nil, nil
+		}
+
+	case err != nil:
+		// A REST gateway must confirm recovery metadata support before
+		// a request can be signed with those fields.
+		if conn.isREST && (proof != nil || len(recoveryParams) != 0) {
+			return nil, nil, err
+		}
+		s.client.log.DebugS(ctx, "Invoice routing key discovery failed",
+			btclog.Fmt("err", "%v", err),
+		)
+
+	case info.GetSupportsInvoiceRoutingKey():
+		key, err = s.client.deriveInvoiceRoutingKey(ctx, hash)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	quote, err := conn.requestChannelID(
+		ctx, receiver, hash, s.amountSat, defaultReceiveExpirySeconds,
+		supportsInArkCredit, proof, recoveryParams, key, false,
+	)
+
+	return quote, key, err
+}
+
 // waitForHTLCEvent waits until the swap server delivers the HTLC event,
 // validates it, then persists the accepted event before acking the mailbox.
 func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
@@ -835,7 +889,7 @@ func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
 		return fmt.Errorf("out-swap event receiver is not configured")
 	}
 
-	authKey, err := s.client.receiveAuthKey(ctx, s.PaymentHash)
+	authKey, err := s.receiveOnionKey(ctx)
 	if err != nil {
 		return fmt.Errorf("get receive auth key: %w", err)
 	}

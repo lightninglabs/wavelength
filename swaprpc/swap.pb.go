@@ -436,8 +436,13 @@ type RequestChannelIdRequest struct {
 	OwnerProof *SwapOwnerProof `protobuf:"bytes,7,opt,name=owner_proof,json=ownerProof,proto3" json:"owner_proof,omitempty"`
 	// Version 1, big-endian key index, and 32-byte random nonce.
 	PreimageRecoveryParams []byte `protobuf:"bytes,8,opt,name=preimage_recovery_params,json=preimageRecoveryParams,proto3" json:"preimage_recovery_params,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// invoice_routing_key is an optional dedicated BOLT-11 destination
+	// scalar. The receive service can use it to answer route probes without
+	// involving the wallet. Send it only over an authenticated transport.
+	// This key does not authorize Ark operations or derive the preimage.
+	InvoiceRoutingKey []byte `protobuf:"bytes,9,opt,name=invoice_routing_key,json=invoiceRoutingKey,proto3" json:"invoice_routing_key,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *RequestChannelIdRequest) Reset() {
@@ -526,6 +531,13 @@ func (x *RequestChannelIdRequest) GetPreimageRecoveryParams() []byte {
 	return nil
 }
 
+func (x *RequestChannelIdRequest) GetInvoiceRoutingKey() []byte {
+	if x != nil {
+		return x.InvoiceRoutingKey
+	}
+	return nil
+}
+
 // RequestChannelIdResponse returns the route hint paths for one receive
 // negotiation.
 type RequestChannelIdResponse struct {
@@ -557,8 +569,11 @@ type RequestChannelIdResponse struct {
 	// different backend node into the same virtual channel, so the sender's
 	// pathfinding can pick whichever backend is reachable.
 	RouteHintPaths []*RouteHintPath `protobuf:"bytes,9,rep,name=route_hint_paths,json=routeHintPaths,proto3" json:"route_hint_paths,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// invoice_routing_pubkey confirms the service registered the supplied
+	// key. The wallet must check it before exposing a probe-capable invoice.
+	InvoiceRoutingPubkey []byte `protobuf:"bytes,10,opt,name=invoice_routing_pubkey,json=invoiceRoutingPubkey,proto3" json:"invoice_routing_pubkey,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *RequestChannelIdResponse) Reset() {
@@ -643,6 +658,13 @@ func (x *RequestChannelIdResponse) GetSettlementType() SettlementType {
 func (x *RequestChannelIdResponse) GetRouteHintPaths() []*RouteHintPath {
 	if x != nil {
 		return x.RouteHintPaths
+	}
+	return nil
+}
+
+func (x *RequestChannelIdResponse) GetInvoiceRoutingPubkey() []byte {
+	if x != nil {
+		return x.InvoiceRoutingPubkey
 	}
 	return nil
 }
@@ -1646,8 +1668,11 @@ type GetSwapRecoveryInfoResponse struct {
 	ServerIdentityPubkey []byte `protobuf:"bytes,1,opt,name=server_identity_pubkey,json=serverIdentityPubkey,proto3" json:"server_identity_pubkey,omitempty"`
 	// network_genesis_hash is the 32-byte chainhash wire representation.
 	NetworkGenesisHash []byte `protobuf:"bytes,2,opt,name=network_genesis_hash,json=networkGenesisHash,proto3" json:"network_genesis_hash,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// supports_invoice_routing_key allows receive requests to delegate a
+	// dedicated Lightning routing key.
+	SupportsInvoiceRoutingKey bool `protobuf:"varint,3,opt,name=supports_invoice_routing_key,json=supportsInvoiceRoutingKey,proto3" json:"supports_invoice_routing_key,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
 }
 
 func (x *GetSwapRecoveryInfoResponse) Reset() {
@@ -1692,6 +1717,13 @@ func (x *GetSwapRecoveryInfoResponse) GetNetworkGenesisHash() []byte {
 		return x.NetworkGenesisHash
 	}
 	return nil
+}
+
+func (x *GetSwapRecoveryInfoResponse) GetSupportsInvoiceRoutingKey() bool {
+	if x != nil {
+		return x.SupportsInvoiceRoutingKey
+	}
+	return false
 }
 
 // RecoverableSwap carries enough server-owned metadata for a restored client
@@ -3702,7 +3734,7 @@ const file_swap_proto_rawDesc = "" +
 	"\x16client_identity_pubkey\x18\x01 \x01(\fR\x14clientIdentityPubkey\x12%\n" +
 	"\x0etimestamp_unix\x18\x02 \x01(\x03R\rtimestampUnix\x12\x14\n" +
 	"\x05nonce\x18\x03 \x01(\fR\x05nonce\x12\x1c\n" +
-	"\tsignature\x18\x04 \x01(\fR\tsignature\"\xb5\x03\n" +
+	"\tsignature\x18\x04 \x01(\fR\tsignature\"\xe5\x03\n" +
 	"\x17RequestChannelIdRequest\x12%\n" +
 	"\x0eexpiry_seconds\x18\x01 \x01(\rR\rexpirySeconds\x12.\n" +
 	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\x12!\n" +
@@ -3713,7 +3745,8 @@ const file_swap_proto_rawDesc = "" +
 	"\x15account_authorization\x18\x06 \x01(\v2#.swaprpc.CreditAccountAuthorizationR\x14accountAuthorization\x128\n" +
 	"\vowner_proof\x18\a \x01(\v2\x17.swaprpc.SwapOwnerProofR\n" +
 	"ownerProof\x128\n" +
-	"\x18preimage_recovery_params\x18\b \x01(\fR\x16preimageRecoveryParams\"\xbf\x03\n" +
+	"\x18preimage_recovery_params\x18\b \x01(\fR\x16preimageRecoveryParams\x12.\n" +
+	"\x13invoice_routing_key\x18\t \x01(\fR\x11invoiceRoutingKey\"\xf5\x03\n" +
 	"\x18RequestChannelIdResponse\x12$\n" +
 	"\x0epayer_fee_msat\x18\x02 \x01(\x04R\fpayerFeeMsat\x120\n" +
 	"\x14requested_amount_sat\x18\x03 \x01(\x04R\x12requestedAmountSat\x120\n" +
@@ -3722,7 +3755,9 @@ const file_swap_proto_rawDesc = "" +
 	"\x10vhtlc_amount_sat\x18\x06 \x01(\x04R\x0evhtlcAmountSat\x12$\n" +
 	"\x0edust_limit_sat\x18\a \x01(\x04R\fdustLimitSat\x12@\n" +
 	"\x0fsettlement_type\x18\b \x01(\x0e2\x17.swaprpc.SettlementTypeR\x0esettlementType\x12@\n" +
-	"\x10route_hint_paths\x18\t \x03(\v2\x16.swaprpc.RouteHintPathR\x0erouteHintPathsJ\x04\b\x01\x10\x02R\x0froute_hint_path\"\xaf\x01\n" +
+	"\x10route_hint_paths\x18\t \x03(\v2\x16.swaprpc.RouteHintPathR\x0erouteHintPaths\x124\n" +
+	"\x16invoice_routing_pubkey\x18\n" +
+	" \x01(\fR\x14invoiceRoutingPubkeyJ\x04\b\x01\x10\x02R\x0froute_hint_path\"\xaf\x01\n" +
 	"\x1dAcknowledgeOutSwapHtlcRequest\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12.\n" +
 	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\x12;\n" +
@@ -3793,10 +3828,11 @@ const file_swap_proto_rawDesc = "" +
 	"\x1cListRecoverableSwapsResponse\x12.\n" +
 	"\x05swaps\x18\x01 \x03(\v2\x18.swaprpc.RecoverableSwapR\x05swaps\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\fR\rnextPageToken\"\x1c\n" +
-	"\x1aGetSwapRecoveryInfoRequest\"\x85\x01\n" +
+	"\x1aGetSwapRecoveryInfoRequest\"\xc6\x01\n" +
 	"\x1bGetSwapRecoveryInfoResponse\x124\n" +
 	"\x16server_identity_pubkey\x18\x01 \x01(\fR\x14serverIdentityPubkey\x120\n" +
-	"\x14network_genesis_hash\x18\x02 \x01(\fR\x12networkGenesisHash\"\xfd\x06\n" +
+	"\x14network_genesis_hash\x18\x02 \x01(\fR\x12networkGenesisHash\x12?\n" +
+	"\x1csupports_invoice_routing_key\x18\x03 \x01(\bR\x19supportsInvoiceRoutingKey\"\xfd\x06\n" +
 	"\x0fRecoverableSwap\x12?\n" +
 	"\tdirection\x18\x01 \x01(\x0e2!.swaprpc.RecoverableSwapDirectionR\tdirection\x12!\n" +
 	"\fpayment_hash\x18\x02 \x01(\fR\vpaymentHash\x12\x1d\n" +
