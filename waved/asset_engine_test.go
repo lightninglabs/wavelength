@@ -485,6 +485,56 @@ func TestTrustAssetGroup(t *testing.T) {
 	require.Error(t, trustAssetGroup(engine, "not-an-asset"))
 }
 
+// TestGroupTrustingClaimer hands a claim to the claimer once the claimed
+// asset's reference is read, and refuses one whose reference it cannot read.
+func TestGroupTrustingClaimer(t *testing.T) {
+	t.Parallel()
+
+	engine, err := embedded.NewClient(&embedded.Config{
+		Network: tapsdk.NetworkRegtest,
+		Store:   embedded.NewMemoryStore(),
+		KeyRing: &assetKeyRing{server: &Server{
+			cfg:         DefaultConfig(),
+			walletReady: make(chan struct{}),
+		}},
+		Signer: &assetKeyRing{server: &Server{
+			cfg:         DefaultConfig(),
+			walletReady: make(chan struct{}),
+		}},
+		Chain: &assetChain{},
+	})
+	require.NoError(t, err)
+
+	groupKey, err := (&AssetsConfig{
+		GroupKeys: []string{
+			testGroupKeyHex,
+		},
+	}).groupKeys()
+	require.NoError(t, err)
+
+	inner := &fakeAssetClaimer{tx: wire.NewMsgTx(3)}
+	claimer := &groupTrustingClaimer{claimer: inner, engine: engine}
+	ctx := t.Context()
+
+	request := &tapassets.ClaimRequest{
+		AssetRef: tapsdk.AssetRefFromGroupKey(groupKey[0]),
+	}
+	_, err = claimer.Prepare(ctx, request)
+	require.NoError(t, err)
+	_, err = claimer.Claim(ctx, request)
+	require.NoError(t, err)
+	require.Equal(t, 1, inner.prepares)
+	require.Equal(t, 1, inner.calls)
+
+	unreadable := &tapassets.ClaimRequest{AssetRef: "not-an-asset"}
+	_, err = claimer.Prepare(ctx, unreadable)
+	require.Error(t, err)
+	_, err = claimer.Claim(ctx, unreadable)
+	require.Error(t, err)
+	require.Equal(t, 1, inner.prepares)
+	require.Equal(t, 1, inner.calls)
+}
+
 // TestAssetJournal maps an absent journal entry to the journal's not-found
 // error.
 func TestAssetJournal(t *testing.T) {

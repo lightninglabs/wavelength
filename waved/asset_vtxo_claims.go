@@ -39,7 +39,7 @@ type assetVTXOClaimer struct {
 }
 
 // ClaimAssetVTXO spends an asset VTXO through its owner's exit leaf into the
-// tapd wallet. The claim journal returns the same claim for every call.
+// asset wallet. The claim journal returns the same claim for every call.
 func (c *assetVTXOClaimer) ClaimAssetVTXO(ctx context.Context,
 	desc *vtxo.Descriptor, heightHint uint32) (*wire.MsgTx, error) {
 

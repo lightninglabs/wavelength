@@ -119,6 +119,11 @@ type assetDepositService struct {
 	// does. tapd is asked for its version.
 	signsAnchors bool
 
+	// creditsClaims is set for a backend that confirms a transfer
+	// spending an asset it does not hold whatever version it reports, as
+	// the embedded engine does. tapd is asked for its version.
+	creditsClaims bool
+
 	// terms returns the operator terms the deposit policy commits to.
 	terms func() *types.OperatorTerms
 
@@ -158,6 +163,7 @@ type assetDepositConfig struct {
 	store            assetDepositStore
 	backend          assetDepositBackend
 	signsAnchors     bool
+	creditsClaims    bool
 	onboarder        assetOnboarder
 	terms            func() *types.OperatorTerms
 	quoteBoardingFee boardingFeeQuoter
@@ -176,6 +182,7 @@ func newAssetDepositService(cfg *assetDepositConfig) *assetDepositService {
 		store:            cfg.store,
 		backend:          cfg.backend,
 		signsAnchors:     cfg.signsAnchors,
+		creditsClaims:    cfg.creditsClaims,
 		onboarder:        cfg.onboarder,
 		terms:            cfg.terms,
 		quoteBoardingFee: cfg.quoteBoardingFee,

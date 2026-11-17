@@ -58,7 +58,6 @@ import (
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/rpcauth"
 	"github.com/lightninglabs/wavelength/serverconn"
-	"github.com/lightninglabs/wavelength/tapassets"
 	"github.com/lightninglabs/wavelength/timeout"
 	"github.com/lightninglabs/wavelength/txconfirm"
 	"github.com/lightninglabs/wavelength/unroll"
@@ -234,12 +233,11 @@ type Server struct {
 	// any other backend.
 	embeddedAssets *embedded.Client
 
-	// assetClaimer claims asset deposits and asset VTXOs back to the tapd
-	// wallet, nil when assets are disabled.
-	assetClaimer *tapassets.Claimer
+	// assetClaimer claims asset deposits and asset VTXOs back to the
+	// asset wallet of the asset backend, nil when assets are disabled.
+	assetClaimer assetClaimer
 
-	// assetDeposits funds asset deposits, nil unless the tapd backend and
-	// the lnd node behind tapd are configured.
+	// assetDeposits funds asset deposits, nil when assets are disabled.
 	assetDeposits *assetDepositService
 
 	// assetClaimSubscriber receives txconfirm notifications for asset

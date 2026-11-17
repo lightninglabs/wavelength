@@ -737,3 +737,46 @@ func TestAssetDepositClaim(t *testing.T) {
 	require.Equal(t, 3, broadcasts)
 	require.Equal(t, 2, claimer.prepares)
 }
+
+// TestAssetDepositClaimCreditingBackend checks that a backend that confirms
+// a transfer spending an asset it does not hold claims a deposit whatever
+// version it reports.
+func TestAssetDepositClaimCreditingBackend(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newDepositFixture(t)
+
+	claimTx := wire.NewMsgTx(3)
+	claimTx.AddTxIn(&wire.TxIn{PreviousOutPoint: f.output})
+	claimTx.AddTxOut(wire.NewTxOut(10_000, []byte{0x51}))
+	claimer := &fakeAssetClaimer{tx: claimTx}
+	f.service.claimer = claimer
+	f.service.broadcastClaim = func(context.Context, *wire.MsgTx,
+		uint32) error {
+
+		return nil
+	}
+	f.service.reserveClaim = func(context.Context, wire.OutPoint) error {
+		return nil
+	}
+
+	_, err := f.service.Deposit(ctx, f.request("alice-1"))
+	require.NoError(t, err)
+	f.tapd.transfers[0].AnchorTxBlockHash = [32]byte{1}
+	f.tapd.transfers[0].AnchorTxBlockHeight = 210
+	f.tapd.height = 210
+	f.service.confirmPublished(ctx)
+
+	// The engine's version is not a tapd version.
+	f.tapd.height = 210 + 143
+	f.tapd.version = embedded.Version
+	_, err = f.service.Claim(ctx, "alice-1")
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Zero(t, claimer.prepares)
+
+	f.service.creditsClaims = true
+	_, err = f.service.Claim(ctx, "alice-1")
+	require.NoError(t, err)
+	require.Equal(t, 1, claimer.calls)
+}
