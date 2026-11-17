@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/sdk/bolt11"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/zpay32"
@@ -331,8 +332,8 @@ func validatePayCredit(settlement SettlementType, quote *CreditQuote,
 	}
 	applied, shortfall := quote.CreditAppliedSat, quote.CreditShortfallSat
 	if applied > maxCreditSat || shortfall > maxCreditSat-applied {
-		return fmt.Errorf("credit requirement exceeds "+
-			"max_credit_sat %d", maxCreditSat)
+		return fmt.Errorf("%s %d", swapclientrpc.PayCreditCapHint,
+			maxCreditSat)
 	}
 	if completed && (shortfall != 0 || quote.CreditTopupSat != 0) {
 		return fmt.Errorf("completed credit reservation contains a " +

@@ -267,6 +267,12 @@ type ReceiveResult struct {
 // PrepareSendRequest validates and previews an outbound payment without
 // moving funds.
 type PrepareSendRequest struct {
+	// MaxAmount selects a quote-backed maximum for an amountless invoice.
+	// AmountSat must be zero. The SDK honors live Bitcoin VTXOs, both
+	// credit caps and the operator change floor, then prepares one ordinary
+	// single-use intent. It never dispatches a payment.
+	MaxAmount bool
+
 	Invoice        string
 	OnchainAddress string
 

@@ -33,6 +33,15 @@ var ErrWalletRPCUnavailable = errors.New("wavewalletdk wallet rpc " +
 // that still checks the old swapruntime-only error.
 var ErrSwapRuntimeUnavailable = ErrWalletRPCUnavailable
 
+// ErrMaxQuoteChanged means the final prepare differs from the Max quote.
+// Recalculate before reviewing the payment.
+var ErrMaxQuoteChanged = errors.New("maximum payment quote changed")
+
+// ErrMaxInsufficientBalance means no quoted amount passed the funding checks
+// for the snapshot and the caller's fee and credit limits.
+var ErrMaxInsufficientBalance = errors.New("insufficient funds for maximum " +
+	"payment")
+
 // The sentinels below mirror the daemon's wavewalletrpc rejection taxonomy. The
 // daemon attaches a machine-readable google.rpc.ErrorInfo reason to a failed
 // wallet RPC; the SDK reconstructs these errors.Is-able sentinels from that
