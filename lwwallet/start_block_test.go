@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -39,6 +40,11 @@ type indexEsplora struct {
 	// counts tallies requests per coarse route class.
 	counts map[string]int
 
+	// failingStats is how many more script stats probes are answered
+	// with a server error, standing in for a rate-limited or briefly
+	// unreachable index.
+	failingStats int
+
 	// t is retained so handler-side failures surface as test errors.
 	t *testing.T
 }
@@ -68,6 +74,15 @@ func (e *indexEsplora) markUsed(pkScript []byte, heights ...int32) {
 	defer e.mu.Unlock()
 
 	e.usedScripts[scriptHashHex(pkScript)] = heights
+}
+
+// failStats makes the next n script stats probes fail with a server
+// error.
+func (e *indexEsplora) failStats(n int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.failingStats = n
 }
 
 // count returns the number of requests seen for a route class.
@@ -174,6 +189,22 @@ func (e *indexEsplora) serveScriptHash(w http.ResponseWriter, r *http.Request,
 	// The stats probe: /scripthash/:hash with nothing after it.
 	if len(parts) == 1 {
 		e.tally("scripthash-stats")
+
+		e.mu.Lock()
+		failing := e.failingStats > 0
+		if failing {
+			e.failingStats--
+		}
+		e.mu.Unlock()
+
+		if failing {
+			http.Error(
+				w, "index unavailable",
+				http.StatusServiceUnavailable,
+			)
+
+			return
+		}
 
 		err := json.NewEncoder(w).Encode(esploraScriptStats{
 			ChainStats: esploraScriptStatSet{
@@ -478,9 +509,9 @@ func TestStampStartBlockSkipsWhenAlreadySet(t *testing.T) {
 	require.Equal(t, first, second)
 }
 
-// TestStampStartBlockIndexFailure checks that an unreachable index is
-// not fatal. Discovery reports the error, the caller logs it, and
-// btcwallet falls back to its own birthday search.
+// TestStampStartBlockIndexFailure checks that one discovery attempt
+// against an unreachable index reports the error without recording a
+// birthday block, so a later attempt can still stamp the wallet.
 func TestStampStartBlockIndexFailure(t *testing.T) {
 	t.Parallel()
 
@@ -699,4 +730,119 @@ func TestStampStartBlockRefusesRealWideWindow(t *testing.T) {
 	// Nothing should have been probed: the guard runs before any
 	// derivation or index traffic.
 	require.Zero(t, esplora.count("scripthash-stats"))
+}
+
+// TestStampStartBlockRetriesIndexFailure checks that a transient index
+// failure is retried rather than handed to btcwallet's birthday search,
+// and that the retry stamps the wallet as a first-time success would.
+func TestStampStartBlockRetriesIndexFailure(t *testing.T) {
+	t.Parallel()
+
+	const tip = 1_000
+
+	esplora := newIndexEsplora(t, tip)
+	w := newIndexTestWallet(t, esplora, 20)
+	w.stampRetryBackoff = time.Millisecond
+
+	esplora.failStats(1)
+
+	require.NoError(t, w.stampStartBlockWithRetry(t.Context()))
+
+	block, verified := readStamp(t, w)
+	require.True(t, verified)
+	require.Equal(t, int32(tip)-startBlockReorgMargin, block.Height)
+}
+
+// TestStampStartBlockGivesUpOnIndexFailure checks that an index which
+// keeps failing exhausts the retries and returns the error, leaving the
+// birthday block unset. Falling back instead would let btcwallet record
+// a birthday block from its own search, and no later start would stamp
+// again.
+func TestStampStartBlockGivesUpOnIndexFailure(t *testing.T) {
+	t.Parallel()
+
+	const attempts = 3
+
+	esplora := newIndexEsplora(t, 1_000)
+	w := newIndexTestWallet(t, esplora, 20)
+	w.stampAttempts = attempts
+	w.stampRetryBackoff = time.Millisecond
+
+	esplora.failStats(math.MaxInt32)
+
+	require.Error(t, w.stampStartBlockWithRetry(t.Context()))
+	requireUnstamped(t, w)
+
+	// Every attempt reached the index: the error is the retries running
+	// out, not a refusal that skipped them.
+	require.GreaterOrEqual(t, esplora.count("scripthash-stats"), attempts)
+}
+
+// TestStampStartBlockRefusalKeepsFallback checks that discovery refusing
+// its own result is not retried and does not fail the start. The refusal
+// depends on the wallet's history, so a retry would refuse again, and
+// btcwallet's birthday search stays the fallback.
+func TestStampStartBlockRefusalKeepsFallback(t *testing.T) {
+	t.Parallel()
+
+	esplora := newIndexEsplora(t, 250_000)
+	w := newIndexTestWallet(t, esplora, 40)
+	w.maxDiscoveryIndex = 20
+	w.stampRetryBackoff = time.Hour
+
+	require.NoError(t, w.stampStartBlockWithRetry(t.Context()))
+	requireUnstamped(t, w)
+	require.Zero(t, esplora.count("scripthash-stats"))
+}
+
+// TestStartFailsAndRestampsOnIndexFailure checks the start-level
+// contract: a wallet whose index keeps failing does not start, records no
+// birthday block, and is stamped by the next start once the index
+// answers.
+func TestStartFailsAndRestampsOnIndexFailure(t *testing.T) {
+	t.Parallel()
+
+	const tip = 1_000
+
+	esplora := newIndexEsplora(t, tip)
+	dbDir := t.TempDir()
+
+	var seed [32]byte
+	for i := range seed {
+		seed[i] = byte(i + 7)
+	}
+	cfg := Config{
+		Seed:           seed[:],
+		WalletPassword: []byte("start-retry-password"),
+		EsploraURL:     esplora.URL,
+		ChainParams:    &chaincfg.RegressionNetParams,
+		PollInterval:   time.Hour,
+		RecoveryWindow: 20,
+		DBDir:          dbDir,
+		Log:            fn.None[btclog.Logger](),
+	}
+
+	w, err := New(cfg)
+	require.NoError(t, err)
+	w.stampAttempts = 2
+	w.stampRetryBackoff = time.Millisecond
+
+	esplora.failStats(math.MaxInt32)
+	require.Error(t, w.Start())
+
+	// The failed start closed the database. Reopen it to check nothing
+	// was recorded, then start for real once the index recovers.
+	esplora.failStats(0)
+	cfg.Seed = nil
+
+	reopened, err := New(cfg)
+	require.NoError(t, err)
+	requireUnstamped(t, reopened)
+
+	require.NoError(t, reopened.Start())
+	t.Cleanup(reopened.Stop)
+
+	block, verified := readStamp(t, reopened)
+	require.True(t, verified)
+	require.Equal(t, int32(tip)-startBlockReorgMargin, block.Height)
 }

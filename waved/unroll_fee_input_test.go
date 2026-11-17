@@ -133,6 +133,14 @@ func newFundedLwWallet(t *testing.T) *lwwallet.Wallet {
 			require.NoError(t, err)
 
 		default:
+			// Start-block discovery probes the wallet's
+			// scripts; a genesis-only chain has seen none.
+			if isScriptStatsPath(r.URL.Path) {
+				_, _ = rw.Write([]byte(emptyScriptStats))
+
+				return
+			}
+
 			http.NotFound(rw, r)
 		}
 	}
