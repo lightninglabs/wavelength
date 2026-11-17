@@ -525,6 +525,11 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 	// failures are reported as such: the caller must not retry
 	// InitWallet (the daemon is already unlocked), only the
 	// post-start step that failed.
+	err = r.waitForWalletServices(ctx, "wallet created and unlocked")
+	if err != nil {
+		return nil, err
+	}
+
 	var recoveryResult *WalletRecoveryResult
 	if req.GetRecoverState() {
 		recoveryResult, err = r.recoverWalletState(
@@ -614,6 +619,10 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 			"wallet: %v", err)
 	}
 
+	if err := r.waitForWalletServices(ctx, "wallet unlocked"); err != nil {
+		return nil, err
+	}
+
 	// Derive identity pubkey for the response.
 	identityPubkey, err := r.deriveIdentityPubkey(ctx)
 	if err != nil {
@@ -624,6 +633,40 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 	return &waverpc.UnlockWalletResponse{
 		IdentityPubkey: identityPubkey,
 	}, nil
+}
+
+// waitForWalletServices waits until the wallet-dependent services have
+// started after InitWallet or UnlockWallet left the wallet ready, so a caller
+// can use the wallet as soon as the call returns.
+//
+// The wallet reports ready when its backend unlocks, but the actors that
+// serve wallet RPCs start afterwards on the services goroutine; without this
+// wait the first call after an unlock races them. A wallet that is still
+// syncing (a neutrino-backed btcwallet marks itself ready only after its
+// initial sync) is not waited for: that sync can take far longer than any RPC
+// deadline, and GetInfo already reports the syncing state.
+//
+// done names what already succeeded, so the error tells the caller not to
+// retry the call itself.
+func (r *RPCServer) waitForWalletServices(ctx context.Context,
+	done string) error {
+
+	if !r.server.isWalletReady() {
+		return nil
+	}
+
+	err := r.server.WaitForWalletServicesReady(ctx)
+	if err == nil {
+		return nil
+	}
+
+	code := codes.Unavailable
+	if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+		code = status.FromContextError(ctxErr).Code()
+	}
+
+	return status.Errorf(code, "%s, but wallet services did not start: %v",
+		done, err)
 }
 
 // deriveIdentityPubkey derives the daemon wallet identity public key from the

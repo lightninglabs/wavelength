@@ -122,3 +122,78 @@ func TestNewAddressBeforeWalletServicesIsRetryable(t *testing.T) {
 	)
 	require.Equal(t, codes.Unavailable, status.Code(err))
 }
+
+// TestWaitForWalletServices pins what InitWallet and UnlockWallet return once
+// the wallet itself is open: success only after the wallet-dependent services
+// started, a retryable code naming what already succeeded when they failed,
+// the context's code when the caller gave up first, and no wait at all for a
+// wallet that is still syncing.
+func TestWaitForWalletServices(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+
+		// walletReady is false for a wallet that is still syncing.
+		walletReady bool
+
+		// resolve resolves the services signal with this error; None
+		// leaves it unresolved.
+		resolve fn.Option[error]
+
+		// cancel cancels the caller's context before waiting.
+		cancel bool
+
+		wantCode codes.Code
+	}{{
+		name:        "services ready",
+		walletReady: true,
+		resolve:     fn.Some[error](nil),
+		wantCode:    codes.OK,
+	}, {
+		name:        "services failed",
+		walletReady: true,
+		resolve:     fn.Some(errors.New("mailbox unreachable")),
+		wantCode:    codes.Unavailable,
+	}, {
+		name:        "caller gave up",
+		walletReady: true,
+		cancel:      true,
+		wantCode:    codes.Canceled,
+	}, {
+		name:     "wallet still syncing",
+		wantCode: codes.OK,
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := &Server{
+				walletReady:         make(chan struct{}),
+				walletServicesReady: make(chan struct{}),
+			}
+			if tc.walletReady {
+				close(server.walletReady)
+			}
+			tc.resolve.WhenSome(server.markWalletServicesReady)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.cancel {
+				cancel()
+			}
+
+			err := NewRPCServer(server).waitForWalletServices(
+				ctx, "wallet unlocked",
+			)
+			require.Equal(t, tc.wantCode, status.Code(err))
+			if err != nil {
+				require.Contains(
+					t, err.Error(),
+					"wallet unlocked",
+				)
+			}
+		})
+	}
+}
