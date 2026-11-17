@@ -51,9 +51,9 @@ func (r *RPCServer) SweepBoardingUTXOs(ctx context.Context,
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
-	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Unavailable, "wallet actor "+
-			"unavailable")
+	wRef, err := r.walletActor()
+	if err != nil {
+		return nil, err
 	}
 	if req.GetFeeRateSatPerVbyte() < 0 {
 		return nil, status.Errorf(codes.InvalidArgument,
@@ -73,7 +73,6 @@ func (r *RPCServer) SweepBoardingUTXOs(ctx context.Context,
 		Broadcast:          req.GetBroadcast(),
 	}
 
-	wRef := r.server.walletRef.UnsafeFromSome()
 	future := wRef.Ask(ctx, walletReq)
 	result := future.Await(ctx)
 	if result.IsErr() {

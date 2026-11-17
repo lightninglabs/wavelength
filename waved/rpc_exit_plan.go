@@ -442,9 +442,9 @@ func (r *RPCServer) SweepWallet(ctx context.Context, req *SweepWalletRequest) (
 			"fee_rate_sat_per_vbyte must be non-negative",
 		)
 	}
-	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Unavailable, "wallet actor "+
-			"unavailable")
+	wRef, err := r.walletActor()
+	if err != nil {
+		return nil, err
 	}
 
 	// Trace the request shape on entry; the wallet actor owns the detailed
@@ -461,7 +461,6 @@ func (r *RPCServer) SweepWallet(ctx context.Context, req *SweepWalletRequest) (
 		ConfTarget:         req.ConfTarget,
 	}
 
-	wRef := r.server.walletRef.UnsafeFromSome()
 	future := wRef.Ask(ctx, walletReq)
 	result := future.Await(ctx)
 	if result.IsErr() {

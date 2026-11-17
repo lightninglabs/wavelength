@@ -366,9 +366,10 @@ func TestSendOORSubmitsMultipleRecipients(t *testing.T) {
 				DustLimit:     1,
 			},
 		}),
-		actorSystem: system,
-		vtxoStore:   vtxoStore,
-		walletRef:   fn.Some(walletRef),
+		actorSystem:         system,
+		vtxoStore:           vtxoStore,
+		walletRef:           fn.Some(walletRef),
+		walletServicesReady: resolvedSignal(),
 	}
 	server.arkProtocolVersion.Store(1)
 
@@ -502,9 +503,10 @@ func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
 				DustLimit:     int64(floor),
 			},
 		}),
-		actorSystem: system,
-		vtxoStore:   vtxoStore,
-		walletRef:   fn.Some(walletRef),
+		actorSystem:         system,
+		vtxoStore:           vtxoStore,
+		walletRef:           fn.Some(walletRef),
+		walletServicesReady: resolvedSignal(),
 	}
 	server.arkProtocolVersion.Store(1)
 
@@ -827,10 +829,11 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 				DustLimit:     1,
 			},
 		}),
-		actorSystem:     system,
-		vtxoStore:       vtxoStore,
-		walletRef:       fn.Some(walletRef),
-		oorSessionStore: registryStore,
+		actorSystem:         system,
+		vtxoStore:           vtxoStore,
+		walletRef:           fn.Some(walletRef),
+		walletServicesReady: resolvedSignal(),
+		oorSessionStore:     registryStore,
 	}
 	server.arkProtocolVersion.Store(1)
 
@@ -1146,9 +1149,10 @@ func TestSendOORUnlocksSelectedInputsForExistingSession(t *testing.T) {
 				DustLimit:     1,
 			},
 		}),
-		actorSystem: system,
-		vtxoStore:   vtxoStore,
-		walletRef:   fn.Some(walletRef),
+		actorSystem:         system,
+		vtxoStore:           vtxoStore,
+		walletRef:           fn.Some(walletRef),
+		walletServicesReady: resolvedSignal(),
 	}
 	server.arkProtocolVersion.Store(1)
 
@@ -1270,10 +1274,11 @@ func TestSendOORReturnsPendingKeyedSessionBeforeAttemptCommit(t *testing.T) {
 				DustLimit:     1,
 			},
 		}),
-		actorSystem:     system,
-		vtxoStore:       vtxoStore,
-		oorSessionStore: registryStore,
-		walletRef:       fn.Some(walletRef),
+		actorSystem:         system,
+		vtxoStore:           vtxoStore,
+		oorSessionStore:     registryStore,
+		walletRef:           fn.Some(walletRef),
+		walletServicesReady: resolvedSignal(),
 	}
 	server.arkProtocolVersion.Store(1)
 
@@ -1391,10 +1396,11 @@ func TestSendOORRejectsDifferentKeyForExistingSession(t *testing.T) {
 				DustLimit:     1,
 			},
 		}),
-		actorSystem:     system,
-		vtxoStore:       vtxoStore,
-		oorSessionStore: registryStore,
-		walletRef:       fn.Some(walletRef),
+		actorSystem:         system,
+		vtxoStore:           vtxoStore,
+		oorSessionStore:     registryStore,
+		walletRef:           fn.Some(walletRef),
+		walletServicesReady: resolvedSignal(),
 	}
 	server.arkProtocolVersion.Store(1)
 
@@ -1518,10 +1524,11 @@ func TestSendOORRejectsNewKeyForDispatchedFailedSession(t *testing.T) {
 				DustLimit:     1,
 			},
 		}),
-		actorSystem:     system,
-		vtxoStore:       vtxoStore,
-		oorSessionStore: registryStore,
-		walletRef:       fn.Some(walletRef),
+		actorSystem:         system,
+		vtxoStore:           vtxoStore,
+		oorSessionStore:     registryStore,
+		walletRef:           fn.Some(walletRef),
+		walletServicesReady: resolvedSignal(),
 	}
 	server.arkProtocolVersion.Store(1)
 
@@ -1711,9 +1718,10 @@ func TestSendOORWaitCancelDoesNotUnlockSubmittedInputs(t *testing.T) {
 				DustLimit:     1,
 			},
 		}),
-		actorSystem: system,
-		vtxoStore:   vtxoStore,
-		walletRef:   fn.Some(walletRef),
+		actorSystem:         system,
+		vtxoStore:           vtxoStore,
+		walletRef:           fn.Some(walletRef),
+		walletServicesReady: resolvedSignal(),
 	}
 	server.arkProtocolVersion.Store(1)
 
@@ -1895,8 +1903,9 @@ func TestSubmittedOORCleanupTimeoutReleasesSelectedVTXOs(t *testing.T) {
 
 	rpcServer := &RPCServer{
 		server: &Server{
-			log:       btclog.Disabled,
-			walletRef: fn.Some(walletRef),
+			log:                 btclog.Disabled,
+			walletRef:           fn.Some(walletRef),
+			walletServicesReady: resolvedSignal(),
 		},
 		customInputLocks: make(map[wire.OutPoint]struct{}),
 	}
