@@ -308,13 +308,25 @@ func (c *assetChain) BlockHeader(ctx context.Context, height uint32) (
 		return nil, err
 	}
 
-	headers, ok := backend.(chainsource.BlockHeaderSource)
-	if !ok {
-		return nil, fmt.Errorf("chain backend %T serves no "+
-			"block headers", backend)
+	if headers, ok := backend.(chainsource.BlockHeaderSource); ok {
+		return headers.BlockHeaderByHeight(ctx, height)
 	}
 
-	return headers.BlockHeaderByHeight(ctx, height)
+	// The lnd chain backend serves no headers, but lnd's chain kit does.
+	s := c.server
+	if s.cfg.Wallet.Type == WalletTypeLnd && s.lnd.IsSome() {
+		chainKit := s.lnd.UnsafeFromSome().ChainKit
+		hash, err := chainKit.GetBlockHash(ctx, int64(height))
+		if err != nil {
+			return nil, fmt.Errorf("block hash at height %d: %w",
+				height, err)
+		}
+
+		return chainKit.GetBlockHeader(ctx, hash)
+	}
+
+	return nil, fmt.Errorf("chain backend %T serves no block headers",
+		backend)
 }
 
 // PublishTransaction broadcasts a transaction. A transaction the network

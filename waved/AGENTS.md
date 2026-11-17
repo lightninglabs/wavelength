@@ -139,7 +139,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   the daemon wallet for its keys and signatures, and the chain backend
   for headers and broadcast. `assetKeyRing` is both the engine's `KeyRing`
   and its `Signer`: an lnd wallet derives and signs through lnd's wallet
-  kit and signer, and a wallet holding the seed signs with its key ring. It follows a transfer's confirmation through
+  kit and signer, and a wallet holding the seed signs with its key ring.
+  An lnd chain backend serves no headers, so headers then come from lnd's
+  chain kit. It follows a transfer's confirmation through
   the chain source actor, which orders the events of every backend and
   reports the confirmation final once it is buried; `assetConfWatch` hands
   those events to the engine one at a time, and ends them on a confirmation
@@ -152,7 +154,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   the key ring and chain ports resolve the wallet on each call and return
   `errAssetWalletNotReady` until it is unlocked, and the engine resumes its
   transfers only once `WaitForWalletServicesReady` resolves. The chain port
-  needs a backend that implements `chainsource.BlockHeaderSource`.
+  reads headers from a backend that implements
+  `chainsource.BlockHeaderSource`, or from lnd's chain kit.
 - A proof of a grouped asset verifies on the embedded backend only for a
   trusted group. Trust comes from `assets.groupkeys`, from the asset a
   caller names (`groupTrustingVerifier` for a round's asset VTXO,
