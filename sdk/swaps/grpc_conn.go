@@ -93,6 +93,22 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 	supportsInArkCredit bool, ownerProof *swaprpc.SwapOwnerProof,
 	preimageRecoveryParams []byte) (*OutSwapQuote, error) {
 
+	return g.requestChannelID(
+		ctx, vhtlcPubkey, paymentHash, amountSat, expirySeconds,
+		supportsInArkCredit, ownerProof, preimageRecoveryParams, nil,
+		true,
+	)
+}
+
+// requestChannelID registers a receive route and checks that the service
+// accepted its routing key before the wallet creates a probe-capable invoice.
+func (g *GRPCSwapServerConn) requestChannelID(ctx context.Context,
+	vhtlcPubkey *btcec.PublicKey, paymentHash lntypes.Hash,
+	amountSat btcutil.Amount, expirySeconds uint32,
+	supportsInArkCredit bool, ownerProof *swaprpc.SwapOwnerProof,
+	preimageRecoveryParams []byte, routingKey *invoiceRoutingKey,
+	checkRecoveryMetadata bool) (*OutSwapQuote, error) {
+
 	if vhtlcPubkey == nil {
 		return nil, fmt.Errorf("vHTLC pubkey must be provided")
 	}
@@ -114,7 +130,9 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 			[]byte(nil), preimageRecoveryParams...,
 		),
 	}
-	if ownerProof != nil || len(preimageRecoveryParams) != 0 {
+	if checkRecoveryMetadata &&
+		(ownerProof != nil || len(preimageRecoveryParams) != 0) {
+
 		supported, err := g.supportsRecoveryMetadata(ctx)
 		if err != nil {
 			return nil, err
@@ -124,6 +142,9 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 			req.PreimageRecoveryParams = nil
 		}
 	}
+	if routingKey != nil {
+		req.InvoiceRoutingKey = routingKey.PrivKey.Serialize()
+	}
 	if err := g.authorizeCreditAccountRequest(ctx, req); err != nil {
 		return nil, err
 	}
@@ -131,6 +152,13 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 	resp, err := g.client.RequestChannelId(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("RequestChannelId RPC: %w", err)
+	}
+	if routingKey != nil && !bytes.Equal(
+		resp.GetInvoiceRoutingPubkey(),
+		routingKey.PubKey().SerializeCompressed(),
+	) {
+		return nil, fmt.Errorf("invoice routing key not acknowledged "+
+			"for payment hash %s", paymentHash)
 	}
 
 	hintPaths, err := routeHintPathsFromProto(resp.GetRouteHintPaths())

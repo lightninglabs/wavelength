@@ -6,10 +6,91 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/lightninglabs/lndclient"
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/zpay32"
 )
+
+// invoiceRoutingKey signs and decodes Lightning onions for one invoice. It
+// is safe to delegate to the receive service because it is independent of
+// the wallet keys used to authorize or claim the Ark contract.
+type invoiceRoutingKey struct {
+	*keychain.PrivKeyMessageSigner
+	*sphinx.PrivKeyECDH
+}
+
+// PubKey resolves the public key common to the signer and ECDH adapter.
+func (k *invoiceRoutingKey) PubKey() *btcec.PublicKey {
+	return k.PrivKey.PubKey()
+}
+
+// deriveInvoiceRoutingKey uses the wallet's existing receive-auth ECDH with
+// a separate domain and a fixed public point. Only the resulting routing
+// scalar is shared. The input wallet key and its legacy invoice key stay
+// private, and the same seed can recover the routing key after restart.
+func (c *SwapClient) deriveInvoiceRoutingKey(ctx context.Context,
+	hash lntypes.Hash) (*invoiceRoutingKey, error) {
+
+	input := chainhash.TaggedHash(
+		[]byte("wavelength/swap/invoice-routing/v1"), hash[:],
+	)
+	secret, err := c.daemon.ReceiveAuthECDH(
+		ctx, lntypes.Hash(*input), lndclient.SharedKeyNUMS,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("derive invoice routing key: %w", err)
+	}
+
+	key, _ := btcec.PrivKeyFromBytes(secret[:])
+	if key.Key.IsZero() {
+		return nil, fmt.Errorf("zero invoice routing key")
+	}
+
+	return &invoiceRoutingKey{
+		PrivKeyMessageSigner: keychain.NewPrivKeyMessageSigner(
+			key, keychain.KeyLocator{},
+		),
+		PrivKeyECDH: &sphinx.PrivKeyECDH{
+			PrivKey: key,
+		},
+	}, nil
+}
+
+// receiveOnionKey selects the key committed by the stored BOLT-11 invoice.
+// Older records without an invoice keep the legacy decoder, which still
+// authenticates and checks the onion before the wallet accepts it.
+func (s *ReceiveSession) receiveOnionKey(ctx context.Context) (ReceiveAuthKey,
+	error) {
+
+	legacy, err := s.client.receiveAuthKey(ctx, s.PaymentHash)
+	if err != nil {
+		return nil, err
+	}
+	if s.client.chainParams == nil || s.Invoice == "" {
+		return legacy, nil
+	}
+	invoice, err := zpay32.Decode(s.Invoice, s.client.chainParams)
+	if err != nil {
+		return nil, fmt.Errorf("decode stored receive invoice: %w", err)
+	}
+	if invoice.Destination.IsEqual(legacy.PubKey()) {
+		return legacy, nil
+	}
+
+	key, err := s.client.deriveInvoiceRoutingKey(ctx, s.PaymentHash)
+	if err != nil {
+		return nil, err
+	}
+	if !invoice.Destination.IsEqual(key.PubKey()) {
+		return nil, fmt.Errorf("receive invoice destination does not " +
+			"match wallet keys")
+	}
+
+	return key, nil
+}
 
 // ReceiveAuthKey signs receive invoices and decrypts the forwarded final-hop
 // onion for one payment-scoped receive-auth key.
