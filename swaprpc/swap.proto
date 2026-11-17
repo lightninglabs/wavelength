@@ -186,6 +186,12 @@ message RequestChannelIdRequest {
 
     // Version 1, big-endian key index, and 32-byte random nonce.
     bytes preimage_recovery_params = 8;
+
+    // invoice_routing_key is an optional dedicated BOLT-11 destination
+    // scalar. The receive service can use it to answer route probes without
+    // involving the wallet. Send it only over an authenticated transport.
+    // This key does not authorize Ark operations or derive the preimage.
+    bytes invoice_routing_key = 9;
 }
 
 // RequestChannelIdResponse returns the route hint paths for one receive
@@ -230,6 +236,10 @@ message RequestChannelIdResponse {
     // different backend node into the same virtual channel, so the sender's
     // pathfinding can pick whichever backend is reachable.
     repeated RouteHintPath route_hint_paths = 9;
+
+    // invoice_routing_pubkey confirms the service registered the supplied
+    // key. The wallet must check it before exposing a probe-capable invoice.
+    bytes invoice_routing_pubkey = 10;
 }
 
 // AcknowledgeOutSwapHtlcRequest confirms that the receiver has validated and
@@ -485,6 +495,9 @@ message GetSwapRecoveryInfoResponse {
     bytes server_identity_pubkey = 1;
     // network_genesis_hash is the 32-byte chainhash wire representation.
     bytes network_genesis_hash = 2;
+    // supports_invoice_routing_key allows receive requests to delegate a
+    // dedicated Lightning routing key.
+    bool supports_invoice_routing_key = 3;
 }
 
 // RecoverableSwap carries enough server-owned metadata for a restored client
