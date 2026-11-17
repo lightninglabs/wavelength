@@ -1567,15 +1567,14 @@ func TestDurableAskNacksOnOutboxWriteFailure(t *testing.T) {
 		return &AskResponse{}
 	})
 
-	// Use a channel-signaled behavior so we can stop the actor after the
-	// first processing and inspect state before the retry loop churns
-	// through all attempts.
-	firstCall := make(chan struct{})
+	// The second delivery proves the failed outbox write left the message
+	// eligible for retry. Buffer its signal because the mock store can
+	// redeliver before the test starts waiting.
+	redelivered := make(chan struct{}, 1)
 	behavior := newMockBehavior(fn.Ok(42))
 	behavior.onReceive = func(ctx context.Context, msg *actorTestMsg) {
-		select {
-		case firstCall <- struct{}{}:
-		default:
+		if behavior.callCount() == 2 {
+			redelivered <- struct{}{}
 		}
 	}
 
@@ -1584,8 +1583,10 @@ func TestDurableAskNacksOnOutboxWriteFailure(t *testing.T) {
 	actor := NewDurableActor(cfg).UnwrapOrFail(t)
 
 	actor.Start()
+	t.Cleanup(actor.Stop)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
 	msg := &actorTestMsg{
 		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
 	}
@@ -1603,17 +1604,16 @@ func TestDurableAskNacksOnOutboxWriteFailure(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Wait for first call, then stop the actor to prevent retry churn.
 	select {
-	case <-firstCall:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("behavior was never called")
+	case <-redelivered:
+	case <-ctx.Done():
+		t.Fatal(
+			"message was not redelivered after the outbox " +
+				"write failed",
+		)
 	}
 
-	// Brief pause for nack to complete, then stop actor.
-	time.Sleep(20 * time.Millisecond)
-	actor.Stop()
-	time.Sleep(20 * time.Millisecond)
+	require.NoError(t, actor.StopAndWait(ctx))
 
 	store.mu.Lock()
 	numProcessed := len(store.processed)
@@ -1627,10 +1627,6 @@ func TestDurableAskNacksOnOutboxWriteFailure(t *testing.T) {
 	require.Equal(
 		t, 0, numOutbox, "outbox should be empty when write fails",
 	)
-
-	// The behavior was called, confirming the message was processed but
-	// the outbox write failure caused a nack (not an ack).
-	require.GreaterOrEqual(t, behavior.callCount(), 1)
 }
 
 // TestPromiseCompletionDeferredUntilAfterAck verifies that in the non-tx path,
