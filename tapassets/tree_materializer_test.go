@@ -723,6 +723,30 @@ func TestTreeMaterializerMultipleIssuances(t *testing.T) {
 	require.NoError(t, built.Verify())
 }
 
+// TestTreeMaterializerRejectsRepeatedIssuance checks that a node refuses two
+// inputs of one issuance, which its children could not extend.
+func TestTreeMaterializerRejectsRepeatedIssuance(t *testing.T) {
+	t.Parallel()
+
+	f := newTreeMaterializerFixture(t, 800, 700)
+	cfg := f.mat.cfg
+	input := cfg.Root.Inputs[0]
+	input.Amount = 750
+	cfg.Root.Inputs = []TreeRootAssetInput{input, input}
+	materializer, err := newTreeMaterializer(
+		cfg, f.structure.AssetContext, f.batch, &fakeTreeDriver{},
+	)
+	require.NoError(t, err)
+
+	err = tree.Materialize(
+		t.Context(), f.structure.Root, tree.MaterializeParams{
+			Input: f.batch,
+		},
+		materializer,
+	)
+	require.ErrorContains(t, err, "asset input 1 repeats an issuance")
+}
+
 // TestTreeMaterializerCommitCache tests completed commit replay and retries.
 func TestTreeMaterializerCommitCache(t *testing.T) {
 	t.Parallel()

@@ -698,7 +698,11 @@ func validateIssuanceConservation(sources []*assetSpendSource,
 
 	expected := make(map[tapsdk.AssetID]uint64, len(sources))
 	for _, source := range sources {
-		expected[source.issuanceID] = source.amount
+		amount := expected[source.issuanceID]
+		if source.amount > math.MaxUint64-amount {
+			return fmt.Errorf("asset input amount overflow")
+		}
+		expected[source.issuanceID] = amount + source.amount
 	}
 	actual := make(map[tapsdk.AssetID]uint64, len(sources))
 	for _, output := range outputs {
@@ -739,6 +743,7 @@ func (m *treeMaterializer) validateCommitInputs(input wire.OutPoint,
 		byID[assetInput.logicalInputID] = assetInput
 	}
 
+	issuances := make(map[tapsdk.AssetID]struct{}, len(sources))
 	for idx, source := range sources {
 		id := fmt.Sprintf("wavelength-tree-input-%d", idx)
 		assetInput, ok := byID[id]
@@ -766,6 +771,14 @@ func (m *treeMaterializer) validateCommitInputs(input wire.OutPoint,
 			return fmt.Errorf("asset input %d amount %d, want %d",
 				idx, assetInput.amount, source.amount)
 		}
+
+		// A child extends one source per issuance, so a node cannot
+		// merge two inputs of one issuance.
+		if _, ok := issuances[source.issuanceID]; ok {
+			return fmt.Errorf("asset input %d repeats an issuance",
+				idx)
+		}
+		issuances[source.issuanceID] = struct{}{}
 	}
 
 	return nil
