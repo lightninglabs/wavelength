@@ -509,14 +509,15 @@ wavecli dev daemon board-asset-deposit --request-id alice-1
 Take back a confirmed asset deposit that no round holds. The claim spends the
 deposit through the owner's exit path, so it is accepted only once the
 boarding exit delay has passed since the deposit confirmed, and it moves the
-units and the deposit's full Bitcoin value to a new tapd address. The claim
-pays no fee itself; the daemon wallet pays it through a CPFP child and bumps it
-until it confirms. `list-asset-deposits` shows the `claim_txid`, and `claimed`
-once the claim is six blocks deep. A deposit that is claimed, or being
-claimed, can no longer board, and a deposit that a round holds cannot be
-claimed. Retrying returns the same claim. The daemon refuses claims unless
-tapd confirms transfers spending assets it does not hold, first released in
-v0.9.0.
+units and the deposit's full Bitcoin value to new keys of the asset wallet.
+The claim pays no fee itself; the daemon wallet pays it through a CPFP child
+and bumps it until it confirms. `list-asset-deposits` shows the `claim_txid`,
+and `claimed` once the claim is six blocks deep. A deposit that is claimed, or
+being claimed, can no longer board, and a deposit that a round holds cannot be
+claimed. Retrying returns the same claim. With `--assets.backend=tapd` the
+daemon refuses claims unless tapd confirms transfers spending assets it does
+not hold, first released in v0.9.0. With `--assets.backend=embedded` the asset
+wallet is the daemon's own and no tapd version is required.
 
 ```bash
 wavecli dev daemon claim-asset-deposit --request-id alice-1
