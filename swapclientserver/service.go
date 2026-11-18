@@ -168,6 +168,12 @@ type swapClientService struct {
 	// and duplicate in-flight checks before swap creation mutates remote
 	// swapdk-server state.
 	chainParams *chaincfg.Params
+
+	// workerRetryDelay is the pause between daemon-owned attempts to resume
+	// a durable swap that remains pending after a transient driver error.
+	// Keeping the delay on the service makes the retry loop deterministic
+	// in tests without moving retry policy into the swap FSM.
+	workerRetryDelay time.Duration
 }
 
 // receiveScanKey orders durable receives by creation time and payment hash.
@@ -193,6 +199,8 @@ const (
 	// receiveRefillRetryDelay bounds the rate of failed durable rescans.
 	receiveRefillRetryDelay = time.Second
 )
+
+const defaultWorkerRetryDelay = time.Second
 
 // operatorPubKeyFetcher returns the current Ark operator pubkey. It exists so
 // daemon-hosted swap clients can bypass the cached GetInfo snapshot when they
@@ -291,7 +299,8 @@ type swapRuntimeClient interface {
 	// invoice that callers hand to the remote payer. A non-empty request
 	// ID is stored with the receive and may own only one receive.
 	StartReceiveViaLightning(ctx context.Context, requestID string,
-		amount btcutil.Amount, memo string) (receiveSwapSession, error)
+		amount btcutil.Amount, memo string,
+		activeChannelOnly bool) (receiveSwapSession, error)
 
 	// ReceiveSummaryByRequestID reads the receive created under a request
 	// ID, or returns swaps.ErrSwapSummaryNotFound.
@@ -541,7 +550,7 @@ func RegisterGateway(ctx context.Context, mux *runtime.ServeMux,
 // must be called during daemon shutdown so the root worker context is canceled
 // before the Ark, swapdk-server, and store resources are closed.
 //
-//nolint:contextcheck
+//nolint:contextcheck,funlen // Startup owns reverse-order cleanup.
 func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 	daemonCfg *waved.Config) (*swapClientService, func(), error) {
 
@@ -604,7 +613,6 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 
 		return nil, nil, err
 	}
-
 	arkClient, err := sdkark.WrapDaemonServer(ctx, sdkark.InProcessConfig{
 		DaemonServer: rpcServer,
 	})
@@ -645,6 +653,9 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 		swapClients.server, daemonConn, log, invoiceGen, store,
 	)
 	swapClient.SetChainParams(chainParams)
+	configureArkChannelReceiveBridge(
+		swapClient, rpcServer, cfg.ArkChannelReceiveEnabled,
+	)
 	recoveryCfg := cfg.VHTLCRecovery
 	swapClient.SetRecoveryPolicy(swaps.RecoveryPolicy{
 		AutoEscalate: recoveryCfg.AutoEscalate,
@@ -720,6 +731,7 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 		receiveMinAmount: minAmount,
 		payMinAmount:     minAmount,
 		chainParams:      chainParams,
+		workerRetryDelay: defaultWorkerRetryDelay,
 	}
 	service.pendingReceiveSet = make(map[string]struct{})
 	releaseArkChannelMailbox := bindArkChannelMailbox(
@@ -738,11 +750,35 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 	return service, cleanup, nil
 }
 
+// arkChannelPaymentBridgeSetter is the narrow SDK wiring surface needed by the
+// direct receive opt-in.
+type arkChannelPaymentBridgeSetter interface {
+	SetArkChannelPaymentBridge(swaps.ArkChannelPaymentBridge)
+}
+
+// configureArkChannelReceiveBridge installs the direct receive bridge only
+// after an explicit opt-in. Leaving the bridge unset keeps invoice creation on
+// the ordinary vHTLC path without channel preparation calls.
+func configureArkChannelReceiveBridge(client arkChannelPaymentBridgeSetter,
+	rpcServer *waved.RPCServer, enabled bool) {
+
+	if !enabled {
+		return
+	}
+
+	client.SetArkChannelPaymentBridge(&arkChannelPaymentBridge{
+		rpc: rpcServer,
+	})
+}
+
 // bindArkChannelMailbox publishes the authenticated swap-server transport for
 // the daemon-owned channel process and returns its matching release function.
 func bindArkChannelMailbox(cfg *waved.SwapConfig,
 	client mailboxpb.MailboxServiceClient) func() {
 
+	if cfg.SuppressArkChannelRuntime {
+		client = nil
+	}
 	cfg.ArkChannelMailbox = client
 
 	return func() {
@@ -970,12 +1006,20 @@ func (a *swapClientAdapter) ListCredits(ctx context.Context, limit uint32) (
 // StartReceiveViaLightning starts a real sdk/swaps receive session and wraps
 // it with method accessors for the daemon RPC response path.
 func (a *swapClientAdapter) StartReceiveViaLightning(ctx context.Context,
-	requestID string, amountSat btcutil.Amount, memo string) (
-	receiveSwapSession, error) {
+	requestID string, amountSat btcutil.Amount, memo string,
+	activeChannelOnly bool) (receiveSwapSession, error) {
 
-	session, err := a.client.StartReceiveWithRequestID(
-		ctx, requestID, amountSat, memo,
-	)
+	var session *swaps.ReceiveSession
+	var err error
+	if activeChannelOnly {
+		session, err = a.client.StartReceiveViaArkChannel(
+			ctx, amountSat, memo,
+		)
+	} else {
+		session, err = a.client.StartReceiveWithRequestID(
+			ctx, requestID, amountSat, memo,
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1210,11 +1254,11 @@ func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 	}
 }
 
-// swapServerWaitForReadyInterceptor applies reconnect waiting only to swap
-// operations that create or advance protocol state. User operations remain
-// bounded by their request context, while background resume operations remain
-// bounded by the daemon root context. Read-only quotes and credit snapshots
-// retain gRPC's fail-fast behavior.
+// swapServerWaitForReadyInterceptor applies reconnect waiting only to swap and
+// mailbox operations that create or advance protocol state. User operations
+// remain bounded by their request context, while background resume operations
+// remain bounded by the daemon root context. Read-only quotes, mailbox pulls,
+// and credit snapshots retain gRPC's fail-fast behavior.
 func swapServerWaitForReadyInterceptor(ctx context.Context, method string, req,
 	reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker,
 	opts ...grpc.CallOption) error {
@@ -1231,7 +1275,8 @@ func swapServerWaitForReadyInterceptor(ctx context.Context, method string, req,
 // reconnects.
 func swapServerOperationWaitsForReady(method string) bool {
 	switch method {
-	case swaprpc.SwapService_RequestChannelId_FullMethodName,
+	case mailboxpb.MailboxService_Send_FullMethodName,
+		swaprpc.SwapService_RequestChannelId_FullMethodName,
 		swaprpc.SwapService_CreateInSwap_FullMethodName,
 		swaprpc.SwapService_CreateCredit_FullMethodName,
 		swaprpc.SwapService_RedeemCredit_FullMethodName,
@@ -1801,6 +1846,12 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 			codes.InvalidArgument, "amount_sat must be positive",
 		)
 	}
+	if req.GetActiveChannelOnly() && req.GetIdempotencyKey() != "" {
+		return nil, status.Error(
+			codes.Unimplemented,
+			"keyed active-channel receives are unsupported",
+		)
+	}
 	if !s.reserveReceiveWorker() {
 		return nil, status.Errorf(codes.ResourceExhausted, "active "+
 			"receive swap limit of %d reached", s.maxActiveReceives)
@@ -1818,6 +1869,7 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 			req.GetAmountSat(),
 		),
 		req.GetMemo(),
+		req.GetActiveChannelOnly(),
 	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start receive "+
@@ -1850,7 +1902,7 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 }
 
 func receivePlanVHTLCAmount(summary *swapclientrpc.SwapSummary) uint64 {
-	if summary == nil {
+	if summary == nil || len(summary.GetChannelId()) != 0 {
 		return 0
 	}
 	if summary.GetVhtlcAmountSat() > 0 {
@@ -2296,18 +2348,18 @@ func (s *swapClientService) startPayWorker(hash lntypes.Hash) {
 		defer s.markInactive(key)
 		defer s.publishHash(hash)
 
-		session, err := s.client.ResumePayViaLightning(s.rootCtx, hash)
-		if err != nil {
-			s.log.Warnf("unable to resume pay swap %s: %v", key,
-				err)
+		s.runSwapWorker(hash, "pay", func(ctx context.Context) error {
+			session, err := s.client.ResumePayViaLightning(
+				ctx, hash,
+			)
+			if err != nil {
+				return err
+			}
 
-			return
-		}
+			_, err = session.Wait(ctx)
 
-		_, err = session.Wait(s.rootCtx)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			s.log.Warnf("pay swap %s stopped: %v", key, err)
-		}
+			return err
+		})
 	})
 }
 
@@ -2347,21 +2399,76 @@ func (s *swapClientService) runReceiveWorker(hash lntypes.Hash, key string) {
 		defer s.finishReceiveWorker(key)
 		defer s.publishHash(hash)
 
-		session, err := s.client.ResumeReceiveViaLightning(
-			s.rootCtx, hash,
-		)
-		if err != nil {
-			s.log.Warnf("unable to resume receive swap %s: %v", key,
-				err)
+		s.runSwapWorker(
+			hash, "receive",
+			func(ctx context.Context) error {
+				session, err :=
+					s.client.ResumeReceiveViaLightning(
+						ctx, hash,
+					)
+				if err != nil {
+					return err
+				}
 
+				_, err = session.Wait(ctx)
+
+				return err
+			},
+		)
+	})
+}
+
+// runSwapWorker drives one durable swap until the SDK reports success, the
+// persisted FSM becomes terminal, or the daemon stops. A Wait or resume error
+// alone is not terminal: transport loss can interrupt the process-local driver
+// while the durable FSM remains resumable.
+func (s *swapClientService) runSwapWorker(hash lntypes.Hash, direction string,
+	drive func(context.Context) error) {
+
+	key := hex.EncodeToString(hash[:])
+	for {
+		err := drive(s.rootCtx)
+		if err == nil || errors.Is(err, context.Canceled) ||
+			s.rootCtx.Err() != nil {
 			return
 		}
 
-		_, err = session.Wait(s.rootCtx)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			s.log.Warnf("receive swap %s stopped: %v", key, err)
+		summary, summaryErr := s.client.GetSwapSummary(s.rootCtx, hash)
+		if errors.Is(summaryErr, swaps.ErrSwapSummaryNotFound) {
+			return
 		}
-	})
+		if summaryErr == nil && !summary.Pending {
+			return
+		}
+
+		if summaryErr != nil {
+			s.log.Warnf("%s swap %s stopped and durable state "+
+				"could not be checked: %v (driver error: %v)",
+				direction, key, summaryErr, err)
+		} else {
+			s.log.Warnf("%s swap %s stopped while still pending; "+
+				"retrying: %v", direction, key, err)
+		}
+
+		delay := s.workerRetryDelay
+		if delay <= 0 {
+			delay = defaultWorkerRetryDelay
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-s.rootCtx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+
+			return
+
+		case <-timer.C:
+		}
+	}
 }
 
 // markActive records that the daemon has an in-process worker responsible for
@@ -2800,6 +2907,10 @@ func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
 	if summary.Preimage != nil {
 		preimage = hex.EncodeToString(summary.Preimage[:])
 	}
+	var channelID []byte
+	if summary.ChannelID != ([32]byte{}) {
+		channelID = append([]byte(nil), summary.ChannelID[:]...)
+	}
 
 	return &swapclientrpc.SwapSummary{
 		Direction:        swapDirectionToProto(summary.Direction),
@@ -2831,6 +2942,8 @@ func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
 		AttachedCreditSat:  summary.AttachedCreditSat,
 		DustLimitSat:       summary.DustLimitSat,
 		AvailableCreditSat: summary.AvailableCreditSat,
+		ChannelId:          channelID,
+		ReservedScid:       summary.ReservedSCID,
 	}
 }
 
@@ -3148,6 +3261,10 @@ func swapSettlementTypeToProto(
 
 	case swaps.SettlementTypeMixed:
 		return swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_MIXED
+
+	case swaps.SettlementTypeArkChannel:
+		return swapclientrpc.
+			SwapSettlementType_SWAP_SETTLEMENT_TYPE_ARK_CHANNEL
 
 	default:
 		return swapclientrpc.
