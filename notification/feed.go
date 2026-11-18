@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	pb "github.com/lightninglabs/wavelength/mailbox/pb"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 const (
@@ -35,6 +37,16 @@ const (
 	// signing wakes. Both wallet and subscriber must explicitly authorize
 	// it.
 	FeedClassRound uint32 = 4
+
+	// FeedServiceName identifies the subscriber mailbox event stream.
+	FeedServiceName = "mailbox.v1.WakeFeedService"
+
+	// feedRevocationHeader marks an expired legacy wake as a terminal grant
+	// removal. Readers predating this header accept it without waking a
+	// device.
+	feedRevocationHeader  = "wavelength-feed-revocation"
+	feedRevocationVersion = "1"
+	feedRevocationExpiry  = 1
 
 	// FeedTokenSize is the length of a producer-issued correlation token.
 	// A token alone never authorizes a mailbox read or acknowledgement.
@@ -213,6 +225,66 @@ func ValidateFeedEvent(event *pb.WakeFeedEvent) error {
 	}
 
 	return nil
+}
+
+// NewFeedRevocationEnvelope encodes a terminal producer grant removal. The
+// producer must authorize the removal and persist this envelope atomically.
+// The expired body keeps the feed readable by relays that ignore its header.
+func NewFeedRevocationEnvelope(source []byte, recipient, grantID string,
+	token []byte, generation uint64) (*pb.Envelope, error) {
+
+	event := &pb.WakeFeedEvent{
+		GrantId:       grantID,
+		FeedToken:     token,
+		Generation:    generation,
+		EventClasses:  FeedClassWake,
+		ExpiresAtUnix: feedRevocationExpiry,
+	}
+	if err := ValidateFeedEvent(event); err != nil {
+		return nil, err
+	}
+	body, err := anypb.New(event)
+	if err != nil {
+		return nil, err
+	}
+
+	return &pb.Envelope{
+		MsgId: fmt.Sprintf(
+			"wake-feed-revocation-v1:%x:%d",
+			token,
+			generation,
+		),
+		ProtocolVersion: pb.MailboxProtocolVersionV1,
+		Sender:          hex.EncodeToString(source),
+		Recipient:       recipient,
+		Body:            body,
+		Headers: map[string]string{
+			feedRevocationHeader: feedRevocationVersion,
+		},
+		Rpc: &pb.RpcMeta{
+			Kind:    pb.RpcMeta_KIND_EVENT,
+			Service: FeedServiceName,
+			Method:  "Wake",
+		},
+	}, nil
+}
+
+// IsFeedRevocation checks the header and canonical body of a parsed feed
+// event. The caller must authenticate the envelope and validate the event.
+func IsFeedRevocation(envelope *pb.Envelope,
+	event *pb.WakeFeedEvent) (bool, error) {
+
+	version, present := envelope.GetHeaders()[feedRevocationHeader]
+	if !present {
+		return false, nil
+	}
+	if version != feedRevocationVersion ||
+		event.GetExpiresAtUnix() != feedRevocationExpiry ||
+		event.GetEventClasses() != FeedClassWake {
+		return false, ErrInvalidAuthorization
+	}
+
+	return true, nil
 }
 
 // FeedMailboxID reserves a subscriber-key namespace separate from wallet and

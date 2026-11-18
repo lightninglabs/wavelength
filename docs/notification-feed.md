@@ -135,6 +135,29 @@ acceptance. Provider acceptance still proves neither phone delivery nor wallet
 completion. Multiple relay instances must coordinate source cursor ownership
 or acknowledge only a prefix whose ingestion is durably committed.
 
+## Revoking a publisher binding
+
+The wallet can sign `ACTION_REMOVE` for its grant ID after the device's
+App Attest key has been lost. The producer replaces any outstanding wake
+with a revocation in the same transaction that retires the grant. The
+revocation is one ordered feed occurrence and stays pending until the
+relay acknowledges it or the grant expires.
+
+The occurrence uses the normal v1 `Wake` envelope with
+`wavelength-feed-revocation: 1`. Its body has the issuer's grant ID, token
+and positive generation, the wake-only class, and an expiry of Unix second
+1. A relay that predates revocation support can consume this expired
+occurrence without dispatching a push.
+
+The relay records a terminal binding for the exact source and subscription
+before acknowledging the feed. Delayed binds or wakes cannot restore that
+binding. The relay drops pending jobs whose scope has no remaining live
+binding. A delivery already claimed by a worker can still finish. A new
+enrollment uses a new grant ID.
+
+Upgrade all relay readers before enabling producer publication. An older
+reader can acknowledge a revocation without retiring its binding.
+
 ## Admission and implementation boundaries
 
 Admission is self-service under owner, subscriber and global storage budgets.
