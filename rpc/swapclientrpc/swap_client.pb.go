@@ -78,6 +78,7 @@ const (
 	SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK      SwapSettlementType = 2
 	SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT      SwapSettlementType = 3
 	SwapSettlementType_SWAP_SETTLEMENT_TYPE_MIXED       SwapSettlementType = 4
+	SwapSettlementType_SWAP_SETTLEMENT_TYPE_ARK_CHANNEL SwapSettlementType = 5
 )
 
 // Enum value maps for SwapSettlementType.
@@ -88,6 +89,7 @@ var (
 		2: "SWAP_SETTLEMENT_TYPE_IN_ARK",
 		3: "SWAP_SETTLEMENT_TYPE_CREDIT",
 		4: "SWAP_SETTLEMENT_TYPE_MIXED",
+		5: "SWAP_SETTLEMENT_TYPE_ARK_CHANNEL",
 	}
 	SwapSettlementType_value = map[string]int32{
 		"SWAP_SETTLEMENT_TYPE_UNSPECIFIED": 0,
@@ -95,6 +97,7 @@ var (
 		"SWAP_SETTLEMENT_TYPE_IN_ARK":      2,
 		"SWAP_SETTLEMENT_TYPE_CREDIT":      3,
 		"SWAP_SETTLEMENT_TYPE_MIXED":       4,
+		"SWAP_SETTLEMENT_TYPE_ARK_CHANNEL": 5,
 	}
 )
 
@@ -1437,9 +1440,11 @@ type StartReceiveRequest struct {
 	IdempotencyKey string `protobuf:"bytes,2,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	// memo is an optional human-readable label to embed as the BOLT-11
 	// invoice description.
-	Memo          string `protobuf:"bytes,3,opt,name=memo,proto3" json:"memo,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Memo string `protobuf:"bytes,3,opt,name=memo,proto3" json:"memo,omitempty"`
+	// Only issue an invoice bound to an existing active channel.
+	ActiveChannelOnly bool `protobuf:"varint,4,opt,name=active_channel_only,json=activeChannelOnly,proto3" json:"active_channel_only,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *StartReceiveRequest) Reset() {
@@ -1491,6 +1496,13 @@ func (x *StartReceiveRequest) GetMemo() string {
 		return x.Memo
 	}
 	return ""
+}
+
+func (x *StartReceiveRequest) GetActiveChannelOnly() bool {
+	if x != nil {
+		return x.ActiveChannelOnly
+	}
+	return false
 }
 
 type StartReceiveResponse struct {
@@ -2070,7 +2082,11 @@ type SwapSummary struct {
 	AvailableCreditSat uint64 `protobuf:"varint,26,opt,name=available_credit_sat,json=availableCreditSat,proto3" json:"available_credit_sat,omitempty"`
 	// memo is the invoice memo a receive was created with. It is empty for
 	// pays and for receives stored before memos were recorded.
-	Memo          string `protobuf:"bytes,27,opt,name=memo,proto3" json:"memo,omitempty"`
+	Memo string `protobuf:"bytes,27,opt,name=memo,proto3" json:"memo,omitempty"`
+	// Virtual short channel ID advertised in the receive invoice.
+	ReservedScid uint64 `protobuf:"varint,28,opt,name=reserved_scid,json=reservedScid,proto3" json:"reserved_scid,omitempty"`
+	// Active channel selected for this receive; empty for vHTLC swaps.
+	ChannelId     []byte `protobuf:"bytes,30,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2294,6 +2310,20 @@ func (x *SwapSummary) GetMemo() string {
 	return ""
 }
 
+func (x *SwapSummary) GetReservedScid() uint64 {
+	if x != nil {
+		return x.ReservedScid
+	}
+	return 0
+}
+
+func (x *SwapSummary) GetChannelId() []byte {
+	if x != nil {
+		return x.ChannelId
+	}
+	return nil
+}
+
 var File_swap_client_proto protoreflect.FileDescriptor
 
 const file_swap_client_proto_rawDesc = "" +
@@ -2393,12 +2423,13 @@ const file_swap_client_proto_rawDesc = "" +
 	"\tdirection\x18\x03 \x01(\tR\tdirection\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x04 \x01(\x04R\tamountSat\x12&\n" +
-	"\x0fcreated_at_unix\x18\x05 \x01(\x03R\rcreatedAtUnix\"q\n" +
+	"\x0fcreated_at_unix\x18\x05 \x01(\x03R\rcreatedAtUnix\"\xa1\x01\n" +
 	"\x13StartReceiveRequest\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x01 \x01(\x03R\tamountSat\x12'\n" +
 	"\x0fidempotency_key\x18\x02 \x01(\tR\x0eidempotencyKey\x12\x12\n" +
-	"\x04memo\x18\x03 \x01(\tR\x04memo\"\xb3\x03\n" +
+	"\x04memo\x18\x03 \x01(\tR\x04memo\x12.\n" +
+	"\x13active_channel_only\x18\x04 \x01(\bR\x11activeChannelOnly\"\xb3\x03\n" +
 	"\x14StartReceiveResponse\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\tR\vpaymentHash\x12\x18\n" +
 	"\ainvoice\x18\x02 \x01(\tR\ainvoice\x12.\n" +
@@ -2427,7 +2458,7 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x10include_existing\x18\x01 \x01(\bR\x0fincludeExisting\x12!\n" +
 	"\fpending_only\x18\x02 \x01(\bR\vpendingOnly\"H\n" +
 	"\x16SubscribeSwapsResponse\x12.\n" +
-	"\x04swap\x18\x01 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xde\b\n" +
+	"\x04swap\x18\x01 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xc1\t\n" +
 	"\vSwapSummary\x12:\n" +
 	"\tdirection\x18\x01 \x01(\x0e2\x1c.swapclientrpc.SwapDirectionR\tdirection\x12!\n" +
 	"\fpayment_hash\x18\x02 \x01(\tR\vpaymentHash\x12.\n" +
@@ -2457,17 +2488,21 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x13attached_credit_sat\x18\x18 \x01(\x04R\x11attachedCreditSat\x12$\n" +
 	"\x0edust_limit_sat\x18\x19 \x01(\x04R\fdustLimitSat\x120\n" +
 	"\x14available_credit_sat\x18\x1a \x01(\x04R\x12availableCreditSat\x12\x12\n" +
-	"\x04memo\x18\x1b \x01(\tR\x04memo*c\n" +
+	"\x04memo\x18\x1b \x01(\tR\x04memo\x12#\n" +
+	"\rreserved_scid\x18\x1c \x01(\x04R\freservedScid\x12\x1d\n" +
+	"\n" +
+	"channel_id\x18\x1e \x01(\fR\tchannelIdJ\x04\b\x1d\x10\x1eR\x17channel_backing_fee_sat*c\n" +
 	"\rSwapDirection\x12\x1e\n" +
 	"\x1aSWAP_DIRECTION_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12SWAP_DIRECTION_PAY\x10\x01\x12\x1a\n" +
-	"\x16SWAP_DIRECTION_RECEIVE\x10\x02*\xc0\x01\n" +
+	"\x16SWAP_DIRECTION_RECEIVE\x10\x02*\xe6\x01\n" +
 	"\x12SwapSettlementType\x12$\n" +
 	" SWAP_SETTLEMENT_TYPE_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eSWAP_SETTLEMENT_TYPE_LIGHTNING\x10\x01\x12\x1f\n" +
 	"\x1bSWAP_SETTLEMENT_TYPE_IN_ARK\x10\x02\x12\x1f\n" +
 	"\x1bSWAP_SETTLEMENT_TYPE_CREDIT\x10\x03\x12\x1e\n" +
-	"\x1aSWAP_SETTLEMENT_TYPE_MIXED\x10\x04*\x8e\x01\n" +
+	"\x1aSWAP_SETTLEMENT_TYPE_MIXED\x10\x04\x12$\n" +
+	" SWAP_SETTLEMENT_TYPE_ARK_CHANNEL\x10\x05*\x8e\x01\n" +
 	"\x13CreditFundingSource\x12%\n" +
 	"!CREDIT_FUNDING_SOURCE_UNSPECIFIED\x10\x00\x12+\n" +
 	"'CREDIT_FUNDING_SOURCE_LIGHTNING_RECEIVE\x10\x01\x12#\n" +
