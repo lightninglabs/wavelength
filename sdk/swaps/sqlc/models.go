@@ -4,6 +4,10 @@
 
 package sqlc
 
+import (
+	"database/sql"
+)
+
 type PayAuthorization struct {
 	PaymentHash   []byte
 	Invoice       string
@@ -78,4 +82,6 @@ type ReceiveSwap struct {
 	AvailableCreditSat                   int64
 	AttachedCreditSat                    int64
 	DustLimitSat                         int64
+	RequestID                            sql.NullString
+	Memo                                 string
 }

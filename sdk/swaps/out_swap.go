@@ -260,6 +260,7 @@ type ReceiveSession struct {
 	client             *SwapClient
 	amountSat          btcutil.Amount
 	memo               string
+	requestID          string
 	payerFeeMsat       uint64
 	requestedAmountSat uint64
 	availableCreditSat uint64
@@ -406,6 +407,20 @@ func (c *SwapClient) ReceiveViaLightning(ctx context.Context,
 func (c *SwapClient) StartReceiveViaLightning(ctx context.Context,
 	amountSat btcutil.Amount, memo ...string) (*ReceiveSession, error) {
 
+	return c.StartReceiveWithRequestID(
+		ctx, "", amountSat, receiveInvoiceMemo(memo),
+	)
+}
+
+// StartReceiveWithRequestID creates a receive like StartReceiveViaLightning
+// and stores requestID on the same row that first records the invoice. The
+// store keeps request IDs unique, so a second admission under the same ID
+// fails instead of creating another invoice. An empty requestID stores none.
+// Callers find an earlier result with ReceiveSummaryByRequestID.
+func (c *SwapClient) StartReceiveWithRequestID(ctx context.Context,
+	requestID string, amountSat btcutil.Amount, memo string) (
+	*ReceiveSession, error) {
+
 	if err := validateSatoshiAmount(
 		amountSat, "receive amount",
 	); err != nil {
@@ -415,7 +430,8 @@ func (c *SwapClient) StartReceiveViaLightning(ctx context.Context,
 	session := &ReceiveSession{
 		client:             c,
 		amountSat:          amountSat,
-		memo:               receiveInvoiceMemo(memo),
+		memo:               memo,
+		requestID:          requestID,
 		state:              ReceiveStateCreated,
 		forfeitBindingGate: newReceiveForfeitBindingGate(),
 	}
