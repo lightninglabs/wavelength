@@ -731,9 +731,13 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 		workerRetryDelay: defaultWorkerRetryDelay,
 	}
 	service.pendingReceiveSet = make(map[string]struct{})
+	releaseArkChannelMailbox := bindArkChannelMailbox(
+		cfg, swapClients.mailbox,
+	)
 
 	cleanup := func() {
 		service.stopWorkers()
+		releaseArkChannelMailbox()
 		_ = arkClient.Close()
 		_ = swapClients.server.Close()
 		_ = swapClients.cleanup()
@@ -741,6 +745,21 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 	}
 
 	return service, cleanup, nil
+}
+
+// bindArkChannelMailbox publishes the authenticated swap-server transport for
+// the daemon-owned channel process and returns its matching release function.
+func bindArkChannelMailbox(cfg *waved.SwapConfig,
+	client mailboxpb.MailboxServiceClient) func() {
+
+	if cfg.SuppressArkChannelRuntime {
+		client = nil
+	}
+	cfg.ArkChannelMailbox = client
+
+	return func() {
+		cfg.ArkChannelMailbox = nil
+	}
 }
 
 // swapStoreDatabasePath returns the daemon-owned swap store path. By default it
