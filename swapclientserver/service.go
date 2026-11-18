@@ -3057,6 +3057,9 @@ func swapStateToProto(state string) swapclientrpc.SwapState {
 	case "ClaimInitiated":
 		return swapclientrpc.SwapState_SWAP_STATE_CLAIM_INITIATED
 
+	case "HTLCEventAccepted":
+		return swapclientrpc.SwapState_SWAP_STATE_HTLC_EVENT_ACCEPTED
+
 	default:
 		return swapclientrpc.SwapState_SWAP_STATE_UNSPECIFIED
 	}

@@ -889,8 +889,12 @@ const (
 	EntryPhaseRequestCreated EntryPhase = "request_created"
 
 	// EntryPhaseWaitingForPayment means the wallet is waiting for an
-	// inbound payment or swap funding.
+	// inbound payment attempt.
 	EntryPhaseWaitingForPayment EntryPhase = "waiting_for_payment"
+
+	// EntryPhaseAwaitingFunding means a receive payment attempt has started
+	// and the wallet is waiting to observe its funding output.
+	EntryPhaseAwaitingFunding EntryPhase = "awaiting_funding"
 
 	// EntryPhasePaymentDetected means a payment was detected but is not yet
 	// settled.

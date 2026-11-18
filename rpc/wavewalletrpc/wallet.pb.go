@@ -635,7 +635,7 @@ const (
 	// payment has been observed.
 	WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED WalletEntryPhase = 1
 	// WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT means the wallet is waiting for an
-	// inbound payment or swap funding.
+	// inbound payment attempt.
 	WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT WalletEntryPhase = 2
 	// WALLET_ENTRY_PHASE_PAYMENT_DETECTED means the backing subsystem has
 	// detected a payment but it is not yet settled.
@@ -656,21 +656,25 @@ const (
 	// WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION means an onchain payment has
 	// been detected and is waiting for block confirmation.
 	WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION WalletEntryPhase = 9
+	// WALLET_ENTRY_PHASE_AWAITING_FUNDING means a receive payment attempt
+	// has started and the wallet is waiting to observe its funding output.
+	WalletEntryPhase_WALLET_ENTRY_PHASE_AWAITING_FUNDING WalletEntryPhase = 10
 )
 
 // Enum value maps for WalletEntryPhase.
 var (
 	WalletEntryPhase_name = map[int32]string{
-		0: "WALLET_ENTRY_PHASE_UNSPECIFIED",
-		1: "WALLET_ENTRY_PHASE_REQUEST_CREATED",
-		2: "WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT",
-		3: "WALLET_ENTRY_PHASE_PAYMENT_DETECTED",
-		4: "WALLET_ENTRY_PHASE_SETTLING",
-		5: "WALLET_ENTRY_PHASE_CONFIRMED",
-		6: "WALLET_ENTRY_PHASE_REFUNDING",
-		7: "WALLET_ENTRY_PHASE_REFUNDED",
-		8: "WALLET_ENTRY_PHASE_FAILED",
-		9: "WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION",
+		0:  "WALLET_ENTRY_PHASE_UNSPECIFIED",
+		1:  "WALLET_ENTRY_PHASE_REQUEST_CREATED",
+		2:  "WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT",
+		3:  "WALLET_ENTRY_PHASE_PAYMENT_DETECTED",
+		4:  "WALLET_ENTRY_PHASE_SETTLING",
+		5:  "WALLET_ENTRY_PHASE_CONFIRMED",
+		6:  "WALLET_ENTRY_PHASE_REFUNDING",
+		7:  "WALLET_ENTRY_PHASE_REFUNDED",
+		8:  "WALLET_ENTRY_PHASE_FAILED",
+		9:  "WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION",
+		10: "WALLET_ENTRY_PHASE_AWAITING_FUNDING",
 	}
 	WalletEntryPhase_value = map[string]int32{
 		"WALLET_ENTRY_PHASE_UNSPECIFIED":              0,
@@ -683,6 +687,7 @@ var (
 		"WALLET_ENTRY_PHASE_REFUNDED":                 7,
 		"WALLET_ENTRY_PHASE_FAILED":                   8,
 		"WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION": 9,
+		"WALLET_ENTRY_PHASE_AWAITING_FUNDING":         10,
 	}
 )
 
@@ -7506,7 +7511,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\x1bEXIT_JOB_STATUS_CSV_PENDING\x10\x03\x12\x1c\n" +
 	"\x18EXIT_JOB_STATUS_SWEEPING\x10\x04\x12\x1d\n" +
 	"\x19EXIT_JOB_STATUS_COMPLETED\x10\x05\x12\x1a\n" +
-	"\x16EXIT_JOB_STATUS_FAILED\x10\x06*\x89\x03\n" +
+	"\x16EXIT_JOB_STATUS_FAILED\x10\x06*\xb2\x03\n" +
 	"\x10WalletEntryPhase\x12\"\n" +
 	"\x1eWALLET_ENTRY_PHASE_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"WALLET_ENTRY_PHASE_REQUEST_CREATED\x10\x01\x12*\n" +
@@ -7517,7 +7522,9 @@ const file_wallet_proto_rawDesc = "" +
 	"\x1cWALLET_ENTRY_PHASE_REFUNDING\x10\x06\x12\x1f\n" +
 	"\x1bWALLET_ENTRY_PHASE_REFUNDED\x10\a\x12\x1d\n" +
 	"\x19WALLET_ENTRY_PHASE_FAILED\x10\b\x12/\n" +
-	"+WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION\x10\t*\xe3\x01\n" +
+	"+WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION\x10\t\x12'\n" +
+	"#WALLET_ENTRY_PHASE_AWAITING_FUNDING\x10\n" +
+	"*\xe3\x01\n" +
 	"\x10EntryFailureCode\x12\"\n" +
 	"\x1eENTRY_FAILURE_CODE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cENTRY_FAILURE_CODE_TIMED_OUT\x10\x01\x12\x1e\n" +

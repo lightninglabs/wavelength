@@ -103,6 +103,10 @@ enum SwapState {
     SWAP_STATE_FAILED = 11;
     SWAP_STATE_INVOICE_CREATED = 12;
     SWAP_STATE_CLAIM_INITIATED = 13;
+
+    // SWAP_STATE_HTLC_EVENT_ACCEPTED means the receive session recorded a
+    // payment attempt and is waiting to observe the funding output.
+    SWAP_STATE_HTLC_EVENT_ACCEPTED = 14;
 }
 
 message QuotePayRequest {

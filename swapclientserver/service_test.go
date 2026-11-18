@@ -701,6 +701,38 @@ func TestQuotePayReturnsRemotePreview(t *testing.T) {
 	require.Equal(t, 0, fakeClient.startPayCount())
 }
 
+// TestListSwapsPreservesAcceptedReceiveState verifies ListSwaps, which also
+// supplies the startup replay, distinguishes an accepted receive from a
+// freshly issued invoice and from observed funding.
+func TestListSwapsPreservesAcceptedReceiveState(t *testing.T) {
+	t.Parallel()
+
+	client := newFakeSwapRuntime(swaps.SwapSummary{
+		Direction:   swaps.SwapDirectionReceive,
+		PaymentHash: testHash(41),
+		State:       swaps.ReceiveStateHTLCEventAccepted.String(),
+		Pending:     true,
+	})
+	service := newTestSwapClientService(client)
+	defer service.cancel()
+
+	resp, err := service.ListSwaps(
+		t.Context(), &swapclientrpc.ListSwapsRequest{
+			PendingOnly: true,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, resp.GetSwaps(), 1)
+	summary := resp.GetSwaps()[0]
+	require.Equal(
+		t, swapclientrpc.
+			SwapState_SWAP_STATE_HTLC_EVENT_ACCEPTED,
+		summary.GetState(),
+	)
+	require.True(t, summary.GetPending())
+	require.Empty(t, summary.GetVhtlcOutpoint())
+}
+
 // TestStartPayReturnsPendingDuplicateInvoice verifies a repeated StartPay for
 // an invoice with a pending local swap returns that durable swap summary before
 // it can create another server-side in-swap.

@@ -33,7 +33,7 @@ func newRecvFixture(t *testing.T) (*receiver, *fakeSwapService) {
 }
 
 // TestRecvDispatchesStartReceive confirms a valid Recv request reaches
-// StartReceive with the caller's amount.
+// StartReceive with the caller's amount and returns the new invoice's phase.
 func TestRecvDispatchesStartReceive(t *testing.T) {
 	t.Parallel()
 
@@ -45,6 +45,8 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 			PaymentHash: "abc123",
 			Direction: swapclientrpc.
 				SwapDirection_SWAP_DIRECTION_RECEIVE,
+			State: swapclientrpc.
+				SwapState_SWAP_STATE_INVOICE_CREATED,
 			Pending: true,
 		},
 	}
@@ -73,7 +75,8 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 			GetPaymentHash(),
 	)
 	require.Equal(
-		t, wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
+		t, wavewalletrpc.
+			WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT,
 		resp.GetEntry().GetProgress().GetPhase(),
 	)
 }
