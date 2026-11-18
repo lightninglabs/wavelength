@@ -447,6 +447,10 @@ type LinkConfig struct {
 	Aliases          []lnwire.ShortChannelID
 	MaxAnchorFeeRate chainfee.SatPerKWeight
 
+	// ShouldHoldExternalClose reads the durable payout record under
+	// linkMu, immediately before this link becomes visible to the switch.
+	ShouldHoldExternalClose func(wire.OutPoint) (bool, error)
+
 	OnChannelFailure func(lnwire.ChannelID, lnwire.ShortChannelID,
 		htlcswitch.LinkFailureError)
 	UpdateContractSignals func(*contractcourt.ContractSignals) error
@@ -483,6 +487,11 @@ func (r *Runtime) AddLink(state *chanstate.OpenChannel, cfg LinkConfig) (
 	defer r.linkMu.Unlock()
 	select {
 	case <-r.quit:
+		return nil, htlcswitch.ErrLinkShuttingDown
+
+	case <-cfg.Peer.QuitSignal():
+		// RemovePeerLinks shares this lock. A delayed installation
+		// must not recreate a link after its session was detached.
 		return nil, htlcswitch.ErrLinkShuttingDown
 
 	default:
@@ -575,7 +584,19 @@ func (r *Runtime) AddLink(state *chanstate.OpenChannel, cfg LinkConfig) (
 		QuiescenceTimeout:    defaultQuiescenceTimeout,
 	}
 
+	var hold bool
+	if cfg.ShouldHoldExternalClose != nil {
+		hold, err = cfg.ShouldHoldExternalClose(state.FundingOutpoint)
+		if err != nil {
+			return nil, err
+		}
+	}
 	link := htlcswitch.NewChannelLink(linkCfg, channel)
+	if hold {
+		if _, err := setExternalCloseHold(link, true); err != nil {
+			return nil, err
+		}
+	}
 	if cfg.AddsDisabled {
 		link.DisableAdds(htlcswitch.Incoming)
 		link.DisableAdds(htlcswitch.Outgoing)
@@ -619,10 +640,13 @@ func (r *Runtime) HandleChannelReestablish(message *lnwire.ChannelReestablish,
 	if err != nil {
 		return err
 	}
-	if r.claimExpectedReestablish(message.ChanID) {
+	expected, err := r.takePeerHandshake(peer, message.ChanID, true)
+	if err != nil {
+		return err
+	}
+	if expected {
 		return r.handleChannelMessage(message.ChanID, message, peer)
 	}
-	r.RemoveLink(state.FundingOutpoint)
 	linkConfig, err := configSource(state)
 	if err != nil {
 		return fmt.Errorf("build reestablished lnd link config: %w",
@@ -633,12 +657,37 @@ func (r *Runtime) HandleChannelReestablish(message *lnwire.ChannelReestablish,
 	if _, err := r.AddLink(state, linkConfig); err != nil {
 		return fmt.Errorf("recycle lnd channel link: %w", err)
 	}
-	if !r.claimExpectedReestablish(message.ChanID) {
+	expected, err = r.takePeerHandshake(peer, message.ChanID, false)
+	if err != nil {
+		return err
+	}
+	if !expected {
 		return fmt.Errorf("recycled lnd channel did not await " +
 			"reestablish")
 	}
 
 	return r.handleChannelMessage(message.ChanID, message, peer)
+}
+
+// takePeerHandshake prevents a retired session from consuming a replacement
+// session's handshake or removing its link.
+func (r *Runtime) takePeerHandshake(peer lnpeer.Peer, id lnwire.ChannelID,
+	recycle bool) (bool, error) {
+
+	r.linkMu.Lock()
+	defer r.linkMu.Unlock()
+	select {
+	case <-peer.QuitSignal():
+		return false, htlcswitch.ErrLinkShuttingDown
+
+	default:
+	}
+	expected := r.claimExpectedReestablish(id)
+	if !expected && recycle {
+		r.removeLinkLocked(id)
+	}
+
+	return expected, nil
 }
 
 // openChannelByID resolves one authenticated peer's durable channel state.
@@ -901,7 +950,11 @@ func (r *Runtime) GetLink(scid lnwire.ShortChannelID) (htlcswitch.ChannelLink,
 func (r *Runtime) RemoveLink(channelPoint wire.OutPoint) {
 	r.linkMu.Lock()
 	defer r.linkMu.Unlock()
-	channelID := lnwire.NewChanIDFromOutPoint(channelPoint)
+	r.removeLinkLocked(lnwire.NewChanIDFromOutPoint(channelPoint))
+}
+
+// removeLinkLocked retires the link and wakes drains for this generation.
+func (r *Runtime) removeLinkLocked(channelID lnwire.ChannelID) {
 	r.setAwaitingReestablish(channelID, false)
 	r.switcher.RemoveLink(channelID)
 	r.signalLinkChange()
