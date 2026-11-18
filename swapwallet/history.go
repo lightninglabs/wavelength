@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"github.com/lightninglabs/wavelength/sdk/swaps"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/fn/v2"
+	"google.golang.org/protobuf/proto"
 )
 
 // history merges entries from the daemon's existing history surfaces
@@ -40,9 +42,8 @@ type history struct {
 
 	// creditTopupLinks memoizes the registry-derived top-up index for the
 	// lifetime of this history instance. A history is built once per
-	// derive call (and once per reproject pass, which pages deriveActivity
-	// in a loop), so the memo bounds the registry Ask to one per pass
-	// instead of one per page. Instances are used single-threaded.
+	// derive call or reproject pass, so the memo bounds the registry Ask
+	// to one per pass. Instances are used single-threaded.
 	creditTopupLinks    map[string]creditTopupLink
 	creditTopupLinksSet bool
 
@@ -421,7 +422,44 @@ func (h *history) deriveActivity(ctx context.Context,
 	req *wavewalletrpc.ListRequest) (*wavewalletrpc.ActivityList, error) {
 
 	limit := h.deps.resolveListLimit(req.GetLimit())
-	kindFilter, err := buildKindFilter(req.GetKinds())
+
+	// Pull offset+limit ledger rows so the in-memory paginate below has
+	// enough rows for a page past the first window. The daemon clamps the
+	// pull further (see collectLedgerEntries).
+	pullLimit := req.GetOffset() + limit
+	if pullLimit < req.GetOffset() {
+		pullLimit = limit
+	}
+	readLedger := func(ctx context.Context) (
+		[]*waverpc.TransactionHistoryEntry, error) {
+
+		return h.listLedgerRows(ctx, pullLimit)
+	}
+
+	filtered, err := h.deriveEntries(
+		ctx, req.GetKinds(), req.GetPendingOnly(), readLedger,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	total := uint32(len(filtered))
+	paged := paginate(filtered, req.GetOffset(), limit)
+
+	return &wavewalletrpc.ActivityList{
+		Entries: paged,
+		Total:   total,
+	}, nil
+}
+
+// deriveEntries merges every history source, reading ledger rows through
+// readLedger, and returns the filtered rows sorted newest first.
+func (h *history) deriveEntries(ctx context.Context,
+	kinds []wavewalletrpc.EntryKind, pendingOnly bool,
+	readLedger func(context.Context) ([]*waverpc.TransactionHistoryEntry,
+		error)) ([]*wavewalletrpc.WalletEntry, error) {
+
+	kindFilter, err := buildKindFilter(kinds)
 	if err != nil {
 		return nil, err
 	}
@@ -461,7 +499,7 @@ func (h *history) deriveActivity(ctx context.Context,
 		) {
 
 		ledgerEntries, err := h.collectLedgerEntries(
-			ctx, req.GetOffset(), limit, swapCorrelations,
+			ctx, readLedger, swapCorrelations,
 			h.collectCreditTopupLinks(ctx),
 		)
 		if err != nil {
@@ -529,7 +567,7 @@ func (h *history) deriveActivity(ctx context.Context,
 		)
 	}
 
-	filtered := filterEntries(entries, req.GetPendingOnly(), kindFilter)
+	filtered := filterEntries(entries, pendingOnly, kindFilter)
 
 	// Sort by updated_at descending — most recent first.
 	sort.SliceStable(filtered, func(i, j int) bool {
@@ -537,13 +575,7 @@ func (h *history) deriveActivity(ctx context.Context,
 			filtered[j].GetUpdatedAtUnix()
 	})
 
-	total := uint32(len(filtered))
-	paged := paginate(filtered, req.GetOffset(), limit)
-
-	return &wavewalletrpc.ActivityList{
-		Entries: paged,
-		Total:   total,
-	}, nil
+	return filtered, nil
 }
 
 // listVTXOs returns the live VTXO inventory. The daemon's ListVTXOs RPC
@@ -1139,58 +1171,201 @@ func applyCooperativeLeaveForfeited(entry *wavewalletrpc.WalletEntry,
 	}
 }
 
-// collectLedgerEntries reads the daemon's unified ledger+sweep page and
-// projects each row onto a WalletEntry. Boarding rows become DEPOSIT,
-// sweep rows become EXIT, OOR rows become SEND or RECV based on the
-// debit/credit account convention. Rows the wallet layer cannot classify
-// are dropped so the user surface stays clean.
-//
-// The (offset, limit) pair is the caller's unified-merger page. We pull
-// `offset + limit` rows from the ledger source (capped at the daemon's
-// internal max via the server-side clamp) so the in-memory paginate
-// after the swap-and-ledger merge has enough rows to satisfy a page
-// past the first window. Without this plumbing, page 2+ of wallet
-// history returns no ledger rows because the daemon got Limit=limit
-// and Offset=0 and only the first `limit` rows ever came back.
-func (h *history) collectLedgerEntries(ctx context.Context, offset,
-	limit uint32, correlations swapOORCorrelations,
-	creditTopups map[string]creditTopupLink) ([]*wavewalletrpc.WalletEntry,
-	error) {
+// listLedgerRows reads the newest limit rows of the daemon's unified
+// ledger+sweep history. The daemon clamps limit to its own page maximum, so
+// this is a bounded window, not the whole ledger. Returns nil when no RPC
+// server is wired.
+func (h *history) listLedgerRows(ctx context.Context, limit uint32) (
+	[]*waverpc.TransactionHistoryEntry, error) {
 
 	if h.deps.RPCServer == nil {
 		return nil, nil
 	}
 
-	// Compute the pull size, guarding against uint32 overflow on the
-	// addition. The daemon clamps further to maxTransactionHistoryLimit
-	// (1000) server-side.
-	pullLimit := offset + limit
-	if pullLimit < offset {
-		pullLimit = limit
-	}
-
 	resp, err := h.deps.RPCServer.ListTransactions(
 		ctx, &waverpc.ListTransactionsRequest{
-			Limit: pullLimit,
+			Limit: limit,
 		},
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	oorProjection := projectOORLedgerActivity(
-		resp.GetTransactions(), correlations,
+	return resp.GetTransactions(), nil
+}
+
+// ledgerTypesForKinds returns the ListTransactions type filters whose rows can
+// classify into one of kinds (see classifyLedgerRow). No kinds selects every
+// row through the empty filter.
+func ledgerTypesForKinds(kinds []wavewalletrpc.EntryKind) []string {
+	if len(kinds) == 0 {
+		return []string{""}
+	}
+
+	var types []string
+	add := func(txType string) {
+		if !slices.Contains(types, txType) {
+			types = append(types, txType)
+		}
+	}
+	for _, kind := range kinds {
+		switch kind {
+		case wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT:
+			add("boarding")
+
+		case wavewalletrpc.EntryKind_ENTRY_KIND_EXIT:
+			add("sweep")
+
+		case wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+			wavewalletrpc.EntryKind_ENTRY_KIND_RECV:
+
+			add("oor")
+		}
+	}
+
+	return types
+}
+
+// listAllLedgerRows reads every ledger+sweep history row that can classify
+// into one of kinds, following the daemon's offset continuation until each
+// type filter reports no more rows. Reading whole types keeps rows that project
+// together (a transfer and its change, deposits to one address) in one read.
+// Returns nil when no RPC server is wired.
+func (h *history) listAllLedgerRows(ctx context.Context,
+	kinds []wavewalletrpc.EntryKind) ([]*waverpc.TransactionHistoryEntry,
+	error) {
+
+	if h.deps.RPCServer == nil {
+		return nil, nil
+	}
+
+	var rows []*waverpc.TransactionHistoryEntry
+	for _, txType := range ledgerTypesForKinds(kinds) {
+		typeRows, err := h.listLedgerType(ctx, txType)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, typeRows...)
+	}
+
+	// The daemon numbers OOR binding rows with a negative entry_id
+	// computed per query, so ids read from different pages can collide.
+	// OOR correlation indexes rows by entry_id, so give each binding an id
+	// unique within this read.
+	var bindings int64
+	for i, row := range rows {
+		if row.GetSource() != ledgerSourceOORBinding {
+			continue
+		}
+
+		renumbered, ok :=
+			proto.Clone(row).(*waverpc.TransactionHistoryEntry)
+		if !ok {
+			return nil, fmt.Errorf("clone ledger row: "+
+				"unexpected type %T", row)
+		}
+		bindings++
+		renumbered.EntryId = -bindings
+		rows[i] = renumbered
+	}
+
+	return rows, nil
+}
+
+// ledgerSourceOORBinding is the history source of an OOR receive the daemon
+// reconstructs from a VTXO binding that has no ledger row.
+const ledgerSourceOORBinding = "oor_binding"
+
+// ledgerRowKey returns the identity that is stable across history reads, or
+// "" for a row without one. Ledger rows keep their positive entry_id. Binding
+// rows are keyed by outpoint because their entry_id is renumbered per query.
+// Sweep rows carry no entry_id and are deduplicated later by canonical id.
+func ledgerRowKey(row *waverpc.TransactionHistoryEntry) string {
+	switch {
+	case row.GetSource() == ledgerSourceOORBinding:
+		return fmt.Sprintf("binding:%s:%d", row.GetTxid(),
+			row.GetOutputIndex())
+
+	case row.GetEntryId() > 0:
+		return fmt.Sprintf("ledger:%d", row.GetEntryId())
+
+	default:
+		return ""
+	}
+}
+
+// listLedgerType reads every history row of one type filter by following the
+// daemon's offset continuation. History is newest first, so a row committed
+// while paging shifts older rows down and repeats one at the next page's head;
+// rows are deduplicated by ledgerRowKey so a repeat cannot double-count a
+// deposit.
+func (h *history) listLedgerType(ctx context.Context, txType string) (
+	[]*waverpc.TransactionHistoryEntry, error) {
+
+	var (
+		rows   []*waverpc.TransactionHistoryEntry
+		offset uint32
 	)
-	h.correlateKeyedOORSends(
-		ctx, resp.GetTransactions(), correlations, oorProjection,
-	)
-	out := make(
-		[]*wavewalletrpc.WalletEntry, 0,
-		len(
-			resp.GetTransactions(),
-		),
-	)
-	for _, t := range resp.GetTransactions() {
+	seen := make(map[string]struct{})
+	for {
+		resp, err := h.deps.RPCServer.ListTransactions(
+			ctx, &waverpc.ListTransactionsRequest{
+				Limit:  h.deps.resolveMaxListLimit(),
+				Offset: offset,
+				Type:   txType,
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("list ledger history type %q "+
+				"at offset %d: %w", txType, offset, err)
+		}
+
+		for _, row := range resp.GetTransactions() {
+			if key := ledgerRowKey(row); key != "" {
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+			}
+
+			rows = append(rows, row)
+		}
+
+		if !resp.GetHasMore() {
+			return rows, nil
+		}
+
+		// A continuation that does not advance would loop forever.
+		if resp.GetNextOffset() <= offset {
+			return nil, fmt.Errorf("ledger history type %q "+
+				"continuation did not advance past offset %d",
+				txType, offset)
+		}
+		offset = resp.GetNextOffset()
+	}
+}
+
+// collectLedgerEntries reads ledger+sweep rows through readLedger and projects
+// each row onto a WalletEntry. Boarding rows become DEPOSIT, sweep rows become
+// EXIT, OOR rows become SEND or RECV based on the debit/credit account
+// convention. Rows the wallet layer cannot classify are dropped so the user
+// surface stays clean. OOR correlation and deposit summing run over the whole
+// read, so related rows must arrive in one read to project correctly.
+func (h *history) collectLedgerEntries(ctx context.Context,
+	readLedger func(context.Context) ([]*waverpc.TransactionHistoryEntry,
+		error), correlations swapOORCorrelations,
+	creditTopups map[string]creditTopupLink) ([]*wavewalletrpc.WalletEntry,
+	error) {
+
+	rows, err := readLedger(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	oorProjection := projectOORLedgerActivity(rows, correlations)
+	h.correlateKeyedOORSends(ctx, rows, correlations, oorProjection)
+	out := make([]*wavewalletrpc.WalletEntry, 0, len(rows))
+	for _, t := range rows {
 		if _, ok := oorProjection.hidden[t.GetEntryId()]; ok {
 			if _, repair := oorProjection.repairableInternalSend[t.GetEntryId()]; repair {
 				h.rememberInternalOORActivity(t)
