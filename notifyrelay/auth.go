@@ -38,6 +38,13 @@ type AppConfig struct {
 	APNSEnvironment string `json:"apns_environment"`
 }
 
+// IsAndroid reports whether an entry configures any Android policy field.
+// It also identifies incomplete Android entries for startup validation.
+func (a AppConfig) IsAndroid() bool {
+	return a.AndroidPackage != "" || a.FirebaseProject != "" ||
+		a.AndroidSigner != ""
+}
+
 // validateAttestation checks only the default Apple admission module's policy.
 func (a AppConfig) validateAttestation() error {
 	if !validIdentifier(a.ID, 100) || !validIdentifier(a.Topic, 255) ||

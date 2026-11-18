@@ -14,11 +14,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
 	"github.com/lightninglabs/wavelength/notifyrelay"
 	"github.com/lightninglabs/wavelength/notifyrelay/relaydb"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
 
 // version is populated by the image build without embedding runtime secrets.
@@ -59,6 +62,10 @@ func run(ctx context.Context, args []string) error {
 	appsFile := flags.String(
 		"apps-config", "", "JSON publisher app policy file",
 	)
+	androidPins := flags.String(
+		"android-pairings", "", "optional JSON file of approved "+
+			"emulator installation key IDs by alias",
+	)
 	keyFile := flags.String(
 		"apns-key-file", "", "mounted Apple PKCS#8 provider key",
 	)
@@ -91,9 +98,8 @@ func run(ctx context.Context, args []string) error {
 	if !*behindTLS && (address == nil || !address.IsLoopback()) {
 		return errors.New("external HTTP requires --behind-tls-proxy")
 	}
-	if *appsFile == "" || *keyFile == "" || *sourcesFile == "" {
-		return errors.New("apps-config, sources-config and " +
-			"apns-key-file are required")
+	if *appsFile == "" || *sourcesFile == "" {
+		return errors.New("apps-config and sources-config are required")
 	}
 	var apps []notifyrelay.AppConfig
 	if err := readPolicy(*appsFile, &apps); err != nil {
@@ -103,19 +109,44 @@ func run(ctx context.Context, args []string) error {
 	if err := readPolicy(*sourcesFile, &sources); err != nil {
 		return fmt.Errorf("sources-config: %w", err)
 	}
-	keyBytes, err := os.ReadFile(*keyFile)
-	if err != nil {
-		return fmt.Errorf("load APNs key: %w", err)
+	cfg := notifyrelay.Config{Applications: apps}
+	var provider notifyrelay.Provider
+	if *keyFile != "" {
+		apns, err := loadAPNS(*keyFile, *keyID, *teamID)
+		if err != nil {
+			return err
+		}
+		provider = apns
 	}
-	key, err := notifyrelay.ParseAPNSKey(keyBytes)
-	if err != nil {
-		return err
+	hasAndroid := slices.ContainsFunc(apps, notifyrelay.AppConfig.IsAndroid)
+	if *androidPins != "" && !hasAndroid {
+		return errors.New("android-pairings requires an Android " +
+			"application")
 	}
-	provider, err := notifyrelay.NewAPNSProvider(notifyrelay.APNSConfig{
-		TeamID: *teamID, KeyID: *keyID, PrivateKey: key,
-	})
-	if err != nil {
-		return err
+	if hasAndroid {
+		var pins map[string][]string
+		if *androidPins != "" {
+			if err := readPolicy(*androidPins, &pins); err != nil {
+				return fmt.Errorf("android-pairings: %w", err)
+			}
+		}
+		creds, err := google.FindDefaultCredentials(
+			ctx,
+			"https://www.googleapis.com/auth/firebase.messaging",
+			"https://www.googleapis.com/auth/playintegrity",
+		)
+		if err != nil {
+			return fmt.Errorf("FCM sender credentials "+
+				"unavailable: %w", err)
+		}
+		transport := &oauth2.Transport{Source: creds.TokenSource}
+		cfg.Android, err = notifyrelay.NewAndroidAuthenticator(
+			pins, transport,
+		)
+		if err != nil {
+			return err
+		}
+		cfg.FCM = notifyrelay.NewFCMProvider(transport)
 	}
 	databaseHandle, err := openDatabase(ctx, *database, *postgresFile)
 	if err != nil {
@@ -128,9 +159,8 @@ func run(ctx context.Context, args []string) error {
 		return errors.New("initialize relay SQL store failed")
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	server, err := notifyrelay.NewServer(notifyrelay.Config{
-		Applications: apps, Logger: logger,
-	}, store, provider)
+	cfg.Logger = logger
+	server, err := notifyrelay.NewServer(cfg, store, provider)
 	if err != nil {
 		return errors.Join(err, databaseHandle.Close())
 	}
@@ -144,6 +174,24 @@ func run(ctx context.Context, args []string) error {
 	)
 
 	return serve(ctx, server, databaseHandle, listener)
+}
+
+// loadAPNS loads only the configured Apple sender credential.
+func loadAPNS(keyFile, keyID,
+	teamID string) (*notifyrelay.APNSProvider, error) {
+
+	keyBytes, err := os.ReadFile(keyFile) // #nosec G304 -- publisher config
+	if err != nil {
+		return nil, fmt.Errorf("load APNs key: %w", err)
+	}
+	key, err := notifyrelay.ParseAPNSKey(keyBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	return notifyrelay.NewAPNSProvider(notifyrelay.APNSConfig{
+		TeamID: teamID, KeyID: keyID, PrivateKey: key,
+	})
 }
 
 // serve joins HTTP handlers and the worker before closing storage. If shutdown

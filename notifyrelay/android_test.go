@@ -285,3 +285,114 @@ func TestAndroidTesterIntegrity(t *testing.T) {
 		})
 	}
 }
+
+// TestMixedPlatformRegistration exercises both enrollment and management
+// routes on a single server with distinct publisher admission policies.
+func TestMixedPlatformRegistration(t *testing.T) {
+	h := newRelayHarness(t, nil)
+	// Use a fresh alias to enroll through the mixed server below.
+	h.app.ID = "apple-mixed"
+	android := AppConfig{
+		ID:              "android-mixed",
+		AndroidPackage:  "example.wallet",
+		FirebaseProject: "example-project",
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	raw, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	require.NoError(t, err)
+	keyID := androidKeyID(raw)
+	auth, err := NewAndroidAuthenticator(
+		map[string][]string{
+			android.ID: {keyID},
+		},
+		nil,
+	)
+	require.NoError(t, err)
+	apple := &AppAttestAuthenticator{verifier: &testEnrollmentVerifier{
+		public: &h.key.PublicKey,
+	}}
+	h.server, err = newAuthenticatedServer(Config{
+		Applications: []AppConfig{h.app, android},
+		Android:      auth, FCM: NewFCMProvider(nil),
+	}, h.store, h.provider, apple, h.now)
+	require.NoError(t, err)
+	h.enroll()
+	response := h.manage(
+		ManagementPayload{
+			Action:      "rotate_token",
+			DeviceToken: "aabb1122",
+		},
+	)
+	require.Equal(t, http.StatusOK, response.Code)
+
+	request := ChallengeRequest{
+		AppID:     android.ID,
+		Operation: OperationEnroll,
+	}
+	challenge := func() Challenge {
+		resp := h.post("/v1/challenges", request, "")
+		require.Equal(t, http.StatusOK, resp.Code)
+		var value Challenge
+		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &value))
+
+		return value
+	}
+	sign := func(data []byte) []byte {
+		digest := sha256.Sum256(data)
+		sig, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
+		require.NoError(t, err)
+
+		return sig
+	}
+	ch := challenge()
+	payload, err := json.Marshal(
+		EnrollmentPayload{
+			DeviceToken: "cAbcdefghijklmnopqrstu",
+		},
+	)
+	require.NoError(t, err)
+	evidence, err := json.Marshal(
+		androidEnrollmentProof{
+			Key:       raw,
+			Signature: sign(ClientData(ch, payload)),
+		},
+	)
+	require.NoError(t, err)
+	response = h.post(
+		"/v1/installations", ProofRequest{
+			ChallengeID: ch.ID,
+			KeyID:       keyID,
+			Proof:       evidence,
+			Payload:     payload,
+		}, "",
+	)
+	require.Equal(t, http.StatusCreated, response.Code)
+	var result EnrollmentResult
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &result))
+
+	request.Operation = OperationManage
+	request.InstallationID = h.ownerID
+	response = h.post("/v1/challenges", request, "")
+	require.Equal(t, http.StatusUnauthorized, response.Code)
+	request.InstallationID = result.InstallationID
+	ch = challenge()
+	payload, err = json.Marshal(
+		ManagementPayload{
+			Action:      "rotate_token",
+			DeviceToken: "dAbcdefghijklmnopqrstu",
+		},
+	)
+	require.NoError(t, err)
+	counter := binary.BigEndian.AppendUint32(nil, 1)
+	sig := sign(append(bytes.Clone(counter), ClientData(ch, payload)...))
+	response = h.post(
+		"/v1/installations/"+result.InstallationID+"/manage",
+		ProofRequest{
+			ChallengeID: ch.ID,
+			Payload:     payload,
+			Proof:       append(counter, sig...),
+		}, "",
+	)
+	require.Equal(t, http.StatusOK, response.Code)
+}
