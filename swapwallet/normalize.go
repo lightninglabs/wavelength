@@ -144,7 +144,7 @@ func progressFromSwapSummary(
 		return nil
 	}
 
-	phase, label := phaseFromSwapState(s.GetState(), s.GetPending())
+	phase, label := phaseFromSwapState(s.GetState())
 	if phase == wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_UNSPECIFIED &&
 		s.GetPaymentHash() == "" {
 		return nil
@@ -159,10 +159,11 @@ func progressFromSwapSummary(
 	}
 }
 
-// phaseFromSwapState maps a swap state and pending flag to the wallet
-// lifecycle phase and display label.
-func phaseFromSwapState(state swapclientrpc.SwapState,
-	pending bool) (wavewalletrpc.WalletEntryPhase, string) {
+// phaseFromSwapState maps known swap states to wallet lifecycle phases and
+// labels. Unknown states leave progress unspecified because being pending
+// alone carries no evidence of settlement.
+func phaseFromSwapState(state swapclientrpc.SwapState) (
+	wavewalletrpc.WalletEntryPhase, string) {
 
 	switch state {
 	case swapclientrpc.SwapState_SWAP_STATE_CREATED,
@@ -170,6 +171,12 @@ func phaseFromSwapState(state swapclientrpc.SwapState,
 		swapclientrpc.SwapState_SWAP_STATE_INVOICE_CREATED:
 		return wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT,
 			"waiting_for_payment"
+
+	case swapclientrpc.SwapState_SWAP_STATE_HTLC_EVENT_ACCEPTED:
+		const phase = wavewalletrpc.
+			WalletEntryPhase_WALLET_ENTRY_PHASE_AWAITING_FUNDING
+
+		return phase, "awaiting_funding"
 
 	case swapclientrpc.SwapState_SWAP_STATE_FUNDING_INITIATED,
 		swapclientrpc.SwapState_SWAP_STATE_VHTLC_FUNDED,
@@ -195,11 +202,6 @@ func phaseFromSwapState(state swapclientrpc.SwapState,
 		swapclientrpc.SwapState_SWAP_STATE_NEEDS_INTERVENTION:
 		return wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED,
 			"failed"
-	}
-
-	if pending {
-		return wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
-			"settling"
 	}
 
 	return wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_UNSPECIFIED, ""

@@ -107,6 +107,31 @@ func TestInvoiceMemoDecodesTestNet4(t *testing.T) {
 	require.Equal(t, "testnet4 memo", invoiceMemo(invoice))
 }
 
+// TestUnknownSwapStateDoesNotImplySettlement checks that older or newer
+// backends can return a pending swap without inventing settlement progress.
+func TestUnknownSwapStateDoesNotImplySettlement(t *testing.T) {
+	t.Parallel()
+
+	summary := &swapclientrpc.SwapSummary{
+		PaymentHash: "pending",
+		Direction:   swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE,
+		Pending:     true,
+	}
+	entry := swapEntryFromSummary(
+		summary, "", "", wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+	)
+	require.Equal(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		entry.GetStatus(),
+	)
+	require.Equal(
+		t, wavewalletrpc.
+			WalletEntryPhase_WALLET_ENTRY_PHASE_UNSPECIFIED,
+		entry.GetProgress().GetPhase(),
+	)
+	require.Empty(t, entry.GetProgress().GetPhaseLabel())
+}
+
 // TestStatusFromSwapState covers every branch: pending always wins,
 // completed maps to COMPLETE, terminal failure states map to FAILED,
 // and any other non-pending state is treated as PENDING so callers keep

@@ -492,6 +492,9 @@ func entryPhaseFromProto(phase wavewalletrpc.WalletEntryPhase) EntryPhase {
 	case wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT: //nolint:ll
 		return EntryPhaseWaitingForPayment
 
+	case wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_AWAITING_FUNDING:
+		return EntryPhaseAwaitingFunding
+
 	case wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_PAYMENT_DETECTED:
 		return EntryPhasePaymentDetected
 

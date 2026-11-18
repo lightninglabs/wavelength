@@ -187,6 +187,87 @@ func TestStartupBackfillRepairsCompletedReceive(t *testing.T) {
 	require.Len(t, repeated, 2)
 }
 
+// TestStartupBackfillRepairsUnfundedReceive corrects a legacy settling
+// projection from the persisted swap state, even when the swap has not
+// advanced since the older binary last observed it.
+func TestStartupBackfillRepairsUnfundedReceive(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	const hash = "1234567890abcdef1234567890abcdef" +
+		"1234567890abcdef1234567890abcdef"
+	runtime, store, _ := newReconcileFixture(t)
+	runtime.deps.SwapBackend = &fakeResumeOnlyBackend{}
+	swap, ok := runtime.deps.SwapService.(*fakeSwapService)
+	require.True(t, ok)
+	summary := &swapclientrpc.SwapSummary{
+		PaymentHash: hash,
+		Direction: swapclientrpc.
+			SwapDirection_SWAP_DIRECTION_RECEIVE,
+		State: swapclientrpc.
+			SwapState_SWAP_STATE_INVOICE_CREATED,
+		AmountSat:     12000,
+		Invoice:       "lnbc1test",
+		Pending:       true,
+		CreatedAtUnix: 100,
+		UpdatedAtUnix: 106,
+	}
+	before := swapEntryFromSummary(
+		summary, "test note", "",
+		wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+	)
+	require.Equal(
+		t, "waiting_for_payment", before.GetProgress().GetPhaseLabel(),
+	)
+
+	// Simulate the old projector conflating an accepted event with
+	// settlement.
+	before.Progress.Phase = wavewalletrpc.
+		WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING
+	before.Progress.PhaseLabel = "settling"
+	runtime.projectAndEmit(ctx, before)
+
+	summary.State = swapclientrpc.SwapState_SWAP_STATE_HTLC_EVENT_ACCEPTED
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			summary,
+		},
+	}
+	runtime.resumeAll(ctx)
+	runtime.resumeAll(ctx)
+
+	rows, err := store.ListEntries(ctx, 0, "", 100)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	after, err := rowToWalletEntry(rows[0])
+	require.NoError(t, err)
+	require.Equal(t, hash, after.GetId())
+	require.Equal(t, before.GetStatus(), after.GetStatus())
+	require.Equal(t, before.GetCreatedAtUnix(), after.GetCreatedAtUnix())
+	require.Equal(t, before.GetNote(), after.GetNote())
+	require.Equal(t, before.GetAmountSat(), after.GetAmountSat())
+	require.Equal(
+		t, summary.GetInvoice(),
+		after.GetRequest().GetLightningInvoice().GetInvoice(),
+	)
+	require.Equal(
+		t, wavewalletrpc.
+			WalletEntryPhase_WALLET_ENTRY_PHASE_AWAITING_FUNDING,
+		after.GetProgress().GetPhase(),
+	)
+	require.Empty(t, after.GetProgress().GetVtxoOutpoint())
+
+	events, err := store.PullEvents(ctx, 0, 100)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+	replayed, err := walletEntryFromEventJSON(events[1].EntryJson)
+	require.NoError(t, err)
+	require.Equal(t, after.GetId(), replayed.GetId())
+	require.Equal(
+		t, "awaiting_funding", replayed.GetProgress().GetPhaseLabel(),
+	)
+}
+
 // TestReconcileActivityFlipsDepositLive verifies the reconciler lands a
 // confirmed boarding deposit's PENDING -> COMPLETE transition into the store
 // live (no restart), and that a second pass is a no-op (ProjectEntry

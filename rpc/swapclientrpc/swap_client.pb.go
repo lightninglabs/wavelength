@@ -322,6 +322,9 @@ const (
 	SwapState_SWAP_STATE_FAILED             SwapState = 11
 	SwapState_SWAP_STATE_INVOICE_CREATED    SwapState = 12
 	SwapState_SWAP_STATE_CLAIM_INITIATED    SwapState = 13
+	// SWAP_STATE_HTLC_EVENT_ACCEPTED means the receive session recorded a
+	// payment attempt and is waiting to observe the funding output.
+	SwapState_SWAP_STATE_HTLC_EVENT_ACCEPTED SwapState = 14
 )
 
 // Enum value maps for SwapState.
@@ -341,22 +344,24 @@ var (
 		11: "SWAP_STATE_FAILED",
 		12: "SWAP_STATE_INVOICE_CREATED",
 		13: "SWAP_STATE_CLAIM_INITIATED",
+		14: "SWAP_STATE_HTLC_EVENT_ACCEPTED",
 	}
 	SwapState_value = map[string]int32{
-		"SWAP_STATE_UNSPECIFIED":        0,
-		"SWAP_STATE_CREATED":            1,
-		"SWAP_STATE_SWAP_CREATED":       2,
-		"SWAP_STATE_FUNDING_INITIATED":  3,
-		"SWAP_STATE_VHTLC_FUNDED":       4,
-		"SWAP_STATE_WAITING_FOR_CLAIM":  5,
-		"SWAP_STATE_COMPLETED":          6,
-		"SWAP_STATE_EXPIRED":            7,
-		"SWAP_STATE_REFUND_INITIATED":   8,
-		"SWAP_STATE_REFUNDED":           9,
-		"SWAP_STATE_NEEDS_INTERVENTION": 10,
-		"SWAP_STATE_FAILED":             11,
-		"SWAP_STATE_INVOICE_CREATED":    12,
-		"SWAP_STATE_CLAIM_INITIATED":    13,
+		"SWAP_STATE_UNSPECIFIED":         0,
+		"SWAP_STATE_CREATED":             1,
+		"SWAP_STATE_SWAP_CREATED":        2,
+		"SWAP_STATE_FUNDING_INITIATED":   3,
+		"SWAP_STATE_VHTLC_FUNDED":        4,
+		"SWAP_STATE_WAITING_FOR_CLAIM":   5,
+		"SWAP_STATE_COMPLETED":           6,
+		"SWAP_STATE_EXPIRED":             7,
+		"SWAP_STATE_REFUND_INITIATED":    8,
+		"SWAP_STATE_REFUNDED":            9,
+		"SWAP_STATE_NEEDS_INTERVENTION":  10,
+		"SWAP_STATE_FAILED":              11,
+		"SWAP_STATE_INVOICE_CREATED":     12,
+		"SWAP_STATE_CLAIM_INITIATED":     13,
+		"SWAP_STATE_HTLC_EVENT_ACCEPTED": 14,
 	}
 )
 
@@ -2461,7 +2466,7 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x1fCREDIT_OPERATION_STATE_RELEASED\x10\t\x12\"\n" +
 	"\x1eCREDIT_OPERATION_STATE_EXPIRED\x10\n" +
 	"\x12!\n" +
-	"\x1dCREDIT_OPERATION_STATE_FAILED\x10\v*\xa3\x03\n" +
+	"\x1dCREDIT_OPERATION_STATE_FAILED\x10\v*\xc7\x03\n" +
 	"\tSwapState\x12\x1a\n" +
 	"\x16SWAP_STATE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12SWAP_STATE_CREATED\x10\x01\x12\x1b\n" +
@@ -2477,7 +2482,8 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x12\x15\n" +
 	"\x11SWAP_STATE_FAILED\x10\v\x12\x1e\n" +
 	"\x1aSWAP_STATE_INVOICE_CREATED\x10\f\x12\x1e\n" +
-	"\x1aSWAP_STATE_CLAIM_INITIATED\x10\r2\xdc\x06\n" +
+	"\x1aSWAP_STATE_CLAIM_INITIATED\x10\r\x12\"\n" +
+	"\x1eSWAP_STATE_HTLC_EVENT_ACCEPTED\x10\x0e2\xdc\x06\n" +
 	"\x11SwapClientService\x12K\n" +
 	"\bQuotePay\x12\x1e.swapclientrpc.QuotePayRequest\x1a\x1f.swapclientrpc.QuotePayResponse\x12K\n" +
 	"\bStartPay\x12\x1e.swapclientrpc.StartPayRequest\x1a\x1f.swapclientrpc.StartPayResponse\x12W\n" +

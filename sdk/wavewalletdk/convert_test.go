@@ -148,6 +148,10 @@ func TestEntryPhaseFromProto(t *testing.T) {
 			want: EntryPhaseWaitingForPayment,
 		},
 		{
+			in:   phaseEnum(ph, "AWAITING_FUNDING"),
+			want: EntryPhaseAwaitingFunding,
+		},
+		{
 			in:   phaseEnum(ph, "PAYMENT_DETECTED"),
 			want: EntryPhasePaymentDetected,
 		},

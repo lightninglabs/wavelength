@@ -1943,7 +1943,7 @@ enum WalletEntryPhase {
     WALLET_ENTRY_PHASE_REQUEST_CREATED = 1;
 
     // WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT means the wallet is waiting for an
-    // inbound payment or swap funding.
+    // inbound payment attempt.
     WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT = 2;
 
     // WALLET_ENTRY_PHASE_PAYMENT_DETECTED means the backing subsystem has
@@ -1971,6 +1971,10 @@ enum WalletEntryPhase {
     // WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION means an onchain payment has
     // been detected and is waiting for block confirmation.
     WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION = 9;
+
+    // WALLET_ENTRY_PHASE_AWAITING_FUNDING means a receive payment attempt
+    // has started and the wallet is waiting to observe its funding output.
+    WALLET_ENTRY_PHASE_AWAITING_FUNDING = 10;
 }
 
 // ScheduledBatchWindow describes the selected batch opportunity for a pending
