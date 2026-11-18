@@ -11,6 +11,7 @@ import (
 	"time"
 
 	pb "github.com/lightninglabs/wavelength/mailbox/pb"
+	"github.com/lightninglabs/wavelength/notification"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -74,7 +75,7 @@ func TestSQLRuntimeOwnsSourceAndDelivery(t *testing.T) {
 		Recipient: source.mailboxID, Body: body,
 		Rpc: &pb.RpcMeta{
 			Kind:    pb.RpcMeta_KIND_EVENT,
-			Service: feedServiceName,
+			Service: notification.FeedServiceName,
 			Method:  "Wake",
 		}}
 	producer := &feedRPCFixture{

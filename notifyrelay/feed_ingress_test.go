@@ -234,7 +234,9 @@ func TestFeedIngressReplicaFences(t *testing.T) {
 	require.ErrorIs(
 		t,
 		f.commitBatch(
-			t.Context(), old, "old", 2, []*pb.WakeFeedEvent{event},
+			t.Context(), old, "old", 2, []feedOccurrence{
+				{event: event},
+			},
 		),
 		ErrFeedSource,
 	)
@@ -244,8 +246,9 @@ func TestFeedIngressReplicaFences(t *testing.T) {
 	require.NoError(
 		t,
 		f.commitBatch(
-			t.Context(), current, "new", 2,
-			[]*pb.WakeFeedEvent{event},
+			t.Context(), current, "new", 2, []feedOccurrence{
+				{event: event},
+			},
 		),
 	)
 	changed, err := h.database.Queries.ClearSourceAck(
@@ -264,8 +267,9 @@ func TestFeedIngressReplicaFences(t *testing.T) {
 	require.ErrorIs(
 		t,
 		f.commitBatch(
-			t.Context(), current, "new", 2,
-			[]*pb.WakeFeedEvent{event},
+			t.Context(), current, "new", 2, []feedOccurrence{
+				{event: event},
+			},
 		),
 		ErrFeedSource,
 	)
