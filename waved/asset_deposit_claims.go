@@ -125,6 +125,10 @@ func (d *assetDepositService) Claim(ctx context.Context, requestID string) (
 		return nil, status.Errorf(codes.FailedPrecondition, "asset "+
 			"deposit %s is held by round %s", requestID, roundID)
 	}
+	deposit, err = d.withCurrentProof(ctx, deposit)
+	if err != nil {
+		return nil, err
+	}
 	if err := d.checkClaimable(ctx, deposit); err != nil {
 		return nil, err
 	}
@@ -144,6 +148,36 @@ func (d *assetDepositService) Claim(ctx context.Context, requestID string) (
 	}
 
 	return deposit, d.trackClaim(ctx, deposit, result.Tx)
+}
+
+// withCurrentProof returns the deposit with the proof and confirmation height
+// the asset backend holds now. A reorganization deeper than the boarding
+// depth moves the deposit to another block after its row is written, and
+// both the exit delay and the claim's proof count from the block on the best
+// chain.
+func (d *assetDepositService) withCurrentProof(ctx context.Context,
+	deposit *db.AssetDeposit) (*db.AssetDeposit, error) {
+
+	requestID := deposit.Request.RequestID
+	proofFile, height, err := tapassets.ExportOnboardedProof(
+		ctx, d.backend, deposit.Output.Outpoint,
+	)
+	switch {
+	case errors.Is(err, tapassets.ErrOnboardedProofPending):
+		return nil, status.Errorf(codes.FailedPrecondition, "asset "+
+			"deposit %s is not confirmed on the best chain",
+			requestID)
+
+	case err != nil:
+		return nil, status.Errorf(codes.Unavailable, "read asset "+
+			"deposit %s proof: %v", requestID, err)
+	}
+
+	current := *deposit
+	current.ProofFile = proofFile
+	current.ConfirmedHeight = height
+
+	return &current, nil
 }
 
 // checkClaimable fails unless the asset backend credits a claimed asset and
@@ -383,6 +417,10 @@ func (d *assetDepositService) retrackClaim(ctx context.Context,
 	claim *db.AssetDepositClaim) error {
 
 	deposit, err := d.store.GetAssetDeposit(ctx, claim.RequestID)
+	if err != nil {
+		return err
+	}
+	deposit, err = d.withCurrentProof(ctx, deposit)
 	if err != nil {
 		return err
 	}

@@ -212,11 +212,14 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   turn is where a second board of one deposit is refused.
 - `ClaimAssetDeposit` returns a confirmed deposit that no round holds to the
   asset wallet of the asset backend, once the boarding exit delay has passed
-  since its proof's height. It refuses a tapd that `tapassets.TapdCanClaim`
-  rejects, since such a tapd cannot confirm a transfer spending an asset it
-  does not hold. No version gates the embedded engine. `tapassets.Claimer`
-  spends the deposit through the owner's composed exit leaf into keys the
-  backend derives, at the deposit's full value, so the claim pays no fee;
+  since its proof's height. The claim reads the proof and its height from
+  the backend again, since a reorganization deeper than the boarding depth
+  moves the deposit to another block after its row is written. It refuses a
+  tapd that `tapassets.TapdCanClaim` rejects, since such a tapd cannot
+  confirm a transfer spending an asset it does not hold. No version gates
+  the embedded engine. `tapassets.Claimer` spends the deposit through the
+  owner's composed exit leaf into keys the backend derives, at the
+  deposit's full value, so the claim pays no fee;
   txconfirm relays it with a CPFP child from the daemon wallet. The claim
   journal pins the backend's keys and the signed transaction, so a retry or
   a restart rebuilds the same claim. The tapd backend keeps the journal in
