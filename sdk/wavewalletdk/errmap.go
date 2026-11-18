@@ -23,6 +23,8 @@ var reasonToSentinel = map[string]error{
 	wavewalletrpc.ReasonAmountExceedsVTXOLimit:   ErrAmountExceedsVTXOLimit,
 	wavewalletrpc.ReasonBalanceLimitExceeded:     ErrBalanceLimitExceeded,
 	wavewalletrpc.ReasonCreditReceiveUnavailable: ErrCreditReceiveUnavailable, //nolint:ll
+	wavewalletrpc.ReasonReceiveNotFound:          ErrReceiveNotFound,
+	wavewalletrpc.ReasonReceiveRequestMismatch:   ErrReceiveRequestMismatch,
 }
 
 // sentinelForReason looks up the SDK sentinel for a daemon failure reason.

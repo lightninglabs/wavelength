@@ -490,13 +490,41 @@ func (c *Client) Receive(ctx context.Context, req ReceiveRequest) (
 	}
 
 	resp, err := c.wallet.Recv(ctx, &wavewalletrpc.RecvRequest{
-		AmtSat: req.AmountSat,
-		Memo:   req.Memo,
+		AmtSat:    req.AmountSat,
+		Memo:      req.Memo,
+		RequestId: req.RequestID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create receive invoice: %w", err)
 	}
 
+	return receiveResultFromProto(resp), nil
+}
+
+// LookupReceive returns the result of an earlier Receive made with requestID,
+// including its receipt reference. It only reads, and waits for a Receive still
+// running under the ID. ErrReceiveNotFound means no pending or completed
+// receive exists under the ID; start any new receive under a fresh ID.
+func (c *Client) LookupReceive(ctx context.Context, requestID string) (
+	*ReceiveResult, error) {
+
+	if err := c.requireWalletRPC(); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.wallet.LookupRecv(ctx, &wavewalletrpc.LookupRecvRequest{
+		RequestId: requestID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("look up receive: %w", err)
+	}
+
+	return receiveResultFromProto(resp), nil
+}
+
+// receiveResultFromProto converts a Recv or LookupRecv response, deriving the
+// typed receipt source from the backend that admitted the receive.
+func receiveResultFromProto(resp *wavewalletrpc.RecvResponse) *ReceiveResult {
 	source := LightningReceiptSwap
 	sourceID := resp.GetEntry().GetId()
 	if creditReceive := resp.GetCreditReceive(); creditReceive != nil {
@@ -512,7 +540,7 @@ func (c *Client) Receive(ctx context.Context, req ReceiveRequest) (
 			Source: source,
 			ID:     sourceID,
 		},
-	}, nil
+	}
 }
 
 // PrepareSend validates and previews an outbound wallet payment.

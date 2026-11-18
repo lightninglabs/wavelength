@@ -132,6 +132,9 @@ func walletCall(_ js.Value, args []js.Value) any {
 	case "receive":
 		return promise(jsonVerb(req, mobile.Receive))
 
+	case "lookupReceive":
+		return promise(jsonVerb(req, mobile.LookupReceive))
+
 	case "prepareSend":
 		return promise(jsonVerb(req, mobile.PrepareSend))
 
