@@ -17,10 +17,49 @@ import (
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/wallet"
 	lndbuild "github.com/lightningnetwork/lnd/build"
+	"github.com/lightningnetwork/lnd/chainio"
+	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/contractcourt"
+	"github.com/lightningnetwork/lnd/funding"
+	"github.com/lightningnetwork/lnd/htlcswitch"
+	"github.com/lightningnetwork/lnd/invoices"
+	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chanfunding"
+	"github.com/lightningnetwork/lnd/routing"
+	"github.com/lightningnetwork/lnd/sweep"
 )
 
 // SubLoggers maps subsystem tags to their registered btclog instances.
 type SubLoggers map[string]btclog.Logger
+
+// lndLoggers holds the stable loggers installed before any runtime starts.
+// Only their delegates change when another daemon configures logging.
+var lndLoggers = make(map[string]*redirectLogger)
+
+// init binds LND's unsynchronized package globals once, before goroutines can
+// read them. Runtime setup must redirect delegates instead of calling
+// UseLogger.
+func init() {
+	bindings := map[string]func(btclog.Logger){
+		funding.Subsystem: funding.UseLogger,
+		"CHFD":            chanfunding.UseLogger,
+		"LNWL":            lnwallet.UseLogger,
+		"HSWC":            htlcswitch.UseLogger,
+		"INVC":            invoices.UseLogger,
+		routing.Subsystem: routing.UseLogger,
+		"CNCT":            contractcourt.UseLogger,
+		"BRAR":            contractcourt.UseBreachLogger,
+		"UTXN":            contractcourt.UseNurseryLogger,
+		"SWPR":            sweep.UseLogger,
+		"CHDB":            channeldb.UseLogger,
+		chainio.Subsystem: chainio.UseLogger,
+	}
+	for tag, use := range bindings {
+		logger := &redirectLogger{}
+		use(logger)
+		lndLoggers[tag] = logger
+	}
+}
 
 // allSubsystems is the authoritative list of subsystem tags registered with
 // the daemon's root SubLoggerManager.
@@ -48,6 +87,18 @@ var allSubsystems = []string{
 	"TXCF",
 	"UNRL",
 	VHTLCRecoverySubsystem,
+	funding.Subsystem,
+	"CHFD",
+	"LNWL",
+	"HSWC",
+	"INVC",
+	routing.Subsystem,
+	"CNCT",
+	"BRAR",
+	"UTXN",
+	"SWPR",
+	"CHDB",
+	chainio.Subsystem,
 }
 
 const (
@@ -89,6 +140,8 @@ func SetupLoggersWithShutdownFn(root *lndbuild.SubLoggerManager,
 	})
 }
 
+// setupLoggers registers instance loggers and redirects LND's package loggers
+// to the latest configuration without replacing their process-wide interfaces.
 func setupLoggers(root *lndbuild.SubLoggerManager,
 	genLogger func(string) btclog.Logger) SubLoggers {
 
@@ -98,6 +151,9 @@ func setupLoggers(root *lndbuild.SubLoggerManager,
 		logger := lndbuild.NewSubLogger(sub, genLogger)
 		root.RegisterSubLogger(sub, logger)
 		loggers[sub] = logger
+		if lndLogger, ok := lndLoggers[sub]; ok {
+			lndLogger.setLogger(logger)
+		}
 	}
 
 	return loggers
