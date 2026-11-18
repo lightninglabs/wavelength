@@ -192,6 +192,8 @@ message RequestChannelIdRequest {
     // involving the wallet. Send it only over an authenticated transport.
     // This key does not authorize Ark operations or derive the preimage.
     bytes invoice_routing_key = 9;
+
+    reserved "channel_backing_fee_sat";
 }
 
 // RequestChannelIdResponse returns the route hint paths for one receive
@@ -240,6 +242,8 @@ message RequestChannelIdResponse {
     // invoice_routing_pubkey confirms the service registered the supplied
     // key. The wallet must check it before exposing a probe-capable invoice.
     bytes invoice_routing_pubkey = 10;
+
+    reserved "channel_backing_fee_sat";
 }
 
 // AcknowledgeOutSwapHtlcRequest confirms that the receiver has validated and
@@ -767,6 +771,18 @@ message AuthorizeInSwapRefundRequest {
 
     // checkpoint_psbt is the prepared custom OOR checkpoint PSBT to sign.
     bytes checkpoint_psbt = 6;
+
+    // ark_psbt spends the checkpoint and commits to the complete refund.
+    // A client that supplies this packet needs both signatures before submit.
+    bytes ark_psbt = 7;
+
+    // owner_proof binds the wallet's chosen refund destination to this swap
+    // by authorizing the hash, checkpoint PSBT, Ark PSBT, and refund pubkey.
+    SwapOwnerProof owner_proof = 8;
+
+    // refund_pubkey is the wallet's fresh x-only receive key. The signer
+    // rebuilds the full-value destination from this authorized key.
+    bytes refund_pubkey = 9;
 }
 
 message AuthorizeInSwapRefundResponse {
@@ -776,6 +792,10 @@ message AuthorizeInSwapRefundResponse {
     // failure_reason is the terminal Lightning payment failure that made the
     // refund safe to authorize.
     string failure_reason = 2;
+
+    // payout_signature authorizes the Ark input spending the checkpoint.
+    // It cannot be substituted for the signature spending the source vHTLC.
+    TaprootScriptSignature payout_signature = 3;
 }
 
 // ForfeitSignaturePayload is the exact transcript one vHTLC refresh
