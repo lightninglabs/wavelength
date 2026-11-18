@@ -11,9 +11,11 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/arkchannel/unrollbridge"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/recovery"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
@@ -32,6 +34,30 @@ type arkChannelRecoveryArchive struct {
 	// A dedicated hub archive imports all packages. Two clients may
 	// describe the same signed ancestor with opposite wallet directions.
 	importOnly bool
+}
+
+// newArkChannelRecoveryArchive constructs one endpoint-local recovery store.
+func newArkChannelRecoveryArchive(vtxos *db.VTXOPersistenceStore,
+	packages *db.OORArtifactPersistenceStore,
+	backend chainsource.ChainBackend,
+	log btclog.Logger) (*arkChannelRecoveryArchive, error) {
+
+	switch {
+	case vtxos == nil:
+		return nil, fmt.Errorf("Ark channel VTXO store is required")
+
+	case packages == nil:
+		return nil, fmt.Errorf("Ark channel OOR package store is " +
+			"required")
+
+	case backend == nil:
+		return nil, fmt.Errorf("Ark channel chain backend is required")
+	}
+
+	return &arkChannelRecoveryArchive{
+		vtxos: vtxos, packages: packages,
+		watcher: newArkChannelSourceWatcher(backend, log),
+	}, nil
 }
 
 // BindChannelEventSink connects confirmed ancestry spends to the channel FSM.
