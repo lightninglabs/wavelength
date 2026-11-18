@@ -331,6 +331,12 @@ type CustomOORInput struct {
 	// ExternalSignatures are tapscript signatures produced by additional
 	// parties required by the selected spend path.
 	ExternalSignatures []TaprootScriptSignature
+
+	// PreserveSourceOwners retains the exact cooperative source leaf.
+	PreserveSourceOwners bool
+
+	// PayoutSignatures authorize the final Ark payout, not the checkpoint.
+	PayoutSignatures []TaprootScriptSignature
 }
 
 // TaprootScriptSignature carries one externally produced tapscript signature
@@ -1440,12 +1446,7 @@ func (c *Client) SignOORCustomInput(ctx context.Context, input CustomOORInput,
 			"signature")
 	}
 
-	return &TaprootScriptSignature{
-		PubKey:        append([]byte(nil), sig.GetPubkey()...),
-		WitnessScript: append([]byte(nil), sig.GetWitnessScript()...),
-		Signature:     append([]byte(nil), sig.GetSignature()...),
-		SigHash:       sig.GetSighash(),
-	}, nil
+	return signatureFromRPC(sig), nil
 }
 
 // customOORInputsToRPC converts SDK custom input structs to RPC messages.
@@ -1460,35 +1461,17 @@ func customOORInputsToRPC(inputs []CustomOORInput) []*waverpc.CustomOORInput {
 
 // customOORInputToRPC converts one SDK custom input struct to an RPC message.
 func customOORInputToRPC(input CustomOORInput) *waverpc.CustomOORInput {
-	externalSigs := make(
-		[]*waverpc.TaprootScriptSignature, 0,
-		len(input.ExternalSignatures),
-	)
-	for j := range input.ExternalSignatures {
-		sig := input.ExternalSignatures[j]
-		externalSigs = append(
-			externalSigs, &waverpc.TaprootScriptSignature{
-				Pubkey: append([]byte(nil), sig.PubKey...),
-				WitnessScript: append(
-					[]byte(nil), sig.WitnessScript...,
-				),
-				Signature: append(
-					[]byte(nil), sig.Signature...,
-				),
-				Sighash: sig.SigHash,
-			},
-		)
-	}
-
 	return &waverpc.CustomOORInput{
 		Outpoint: input.Outpoint,
 		VtxoPolicyTemplate: append(
 			[]byte(nil), input.VTXOPolicyTemplate...,
 		),
-		SpendPath:          append([]byte(nil), input.SpendPath...),
-		AmountSat:          input.AmountSat,
-		PkScript:           append([]byte(nil), input.PkScript...),
-		ExternalSignatures: externalSigs,
+		SpendPath:            append([]byte(nil), input.SpendPath...),
+		AmountSat:            input.AmountSat,
+		PkScript:             append([]byte(nil), input.PkScript...),
+		ExternalSignatures:   signaturesToRPC(input.ExternalSignatures),
+		PreserveSourceOwners: input.PreserveSourceOwners,
+		PayoutSignatures:     signaturesToRPC(input.PayoutSignatures),
 	}
 }
 
@@ -1801,4 +1784,30 @@ func parseSessionTxID(sessionTxID string) ([]byte, error) {
 	}
 
 	return append([]byte(nil), hash[:]...), nil
+}
+
+// signaturesToRPC isolates the wire signatures from caller-owned buffers.
+func signaturesToRPC(
+	signatures []TaprootScriptSignature) []*waverpc.TaprootScriptSignature {
+
+	externalSigs := make(
+		[]*waverpc.TaprootScriptSignature, 0, len(signatures),
+	)
+	for j := range signatures {
+		sig := signatures[j]
+		externalSigs = append(
+			externalSigs, &waverpc.TaprootScriptSignature{
+				Pubkey: append([]byte(nil), sig.PubKey...),
+				WitnessScript: append(
+					[]byte(nil), sig.WitnessScript...,
+				),
+				Signature: append(
+					[]byte(nil), sig.Signature...,
+				),
+				Sighash: sig.SigHash,
+			},
+		)
+	}
+
+	return externalSigs
 }
