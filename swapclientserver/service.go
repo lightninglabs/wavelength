@@ -288,9 +288,15 @@ type swapRuntimeClient interface {
 		uint64) (paySwapSession, error)
 
 	// StartReceiveViaLightning creates a new receive swap and returns the
-	// invoice that callers hand to the remote payer.
-	StartReceiveViaLightning(context.Context, btcutil.Amount,
-		string) (receiveSwapSession, error)
+	// invoice that callers hand to the remote payer. A non-empty request
+	// ID is stored with the receive and may own only one receive.
+	StartReceiveViaLightning(ctx context.Context, requestID string,
+		amount btcutil.Amount, memo string) (receiveSwapSession, error)
+
+	// ReceiveSummaryByRequestID reads the receive created under a request
+	// ID, or returns swaps.ErrSwapSummaryNotFound.
+	ReceiveSummaryByRequestID(context.Context,
+		string) (swaps.SwapSummary, error)
 
 	// ResumePayViaLightning reloads a persisted pay swap and returns the
 	// FSM handle that the daemon worker should wait on.
@@ -948,9 +954,12 @@ func (a *swapClientAdapter) ListCredits(ctx context.Context, limit uint32) (
 // StartReceiveViaLightning starts a real sdk/swaps receive session and wraps
 // it with method accessors for the daemon RPC response path.
 func (a *swapClientAdapter) StartReceiveViaLightning(ctx context.Context,
-	amountSat btcutil.Amount, memo string) (receiveSwapSession, error) {
+	requestID string, amountSat btcutil.Amount, memo string) (
+	receiveSwapSession, error) {
 
-	session, err := a.client.StartReceiveViaLightning(ctx, amountSat, memo)
+	session, err := a.client.StartReceiveWithRequestID(
+		ctx, requestID, amountSat, memo,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -984,6 +993,13 @@ func (a *swapClientAdapter) RecoverSwapserverVHTLCs(ctx context.Context) (
 	*swaps.SwapserverRecoveryResult, error) {
 
 	return a.client.RecoverSwapserverVHTLCs(ctx)
+}
+
+// ReceiveSummaryByRequestID forwards request-ID receive lookups to sdk/swaps.
+func (a *swapClientAdapter) ReceiveSummaryByRequestID(ctx context.Context,
+	requestID string) (swaps.SwapSummary, error) {
+
+	return a.client.ReceiveSummaryByRequestID(ctx, requestID)
 }
 
 // GetSwapSummary forwards direct payment-hash lookups to sdk/swaps so the
@@ -1769,12 +1785,6 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 			codes.InvalidArgument, "amount_sat must be positive",
 		)
 	}
-	if req.GetIdempotencyKey() != "" {
-		return nil, status.Error(
-			codes.Unimplemented,
-			"idempotency_key is reserved for future use",
-		)
-	}
 	if !s.reserveReceiveWorker() {
 		return nil, status.Errorf(codes.ResourceExhausted, "active "+
 			"receive swap limit of %d reached", s.maxActiveReceives)
@@ -1787,7 +1797,7 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 	}()
 
 	session, err := s.client.StartReceiveViaLightning(
-		ctx,
+		ctx, req.GetIdempotencyKey(),
 		btcutil.Amount(
 			req.GetAmountSat(),
 		),
@@ -2132,6 +2142,24 @@ func (s *swapClientService) ListSwaps(ctx context.Context,
 func (s *swapClientService) GetSwap(ctx context.Context,
 	req *swapclientrpc.GetSwapRequest) (*swapclientrpc.GetSwapResponse,
 	error) {
+
+	if key := req.GetReceiveIdempotencyKey(); key != "" {
+		if req.GetPaymentHash() != "" {
+			return nil, status.Error(
+				codes.InvalidArgument, "set payment_hash "+
+					"or receive_idempotency_key, not both",
+			)
+		}
+
+		summary, err := s.client.ReceiveSummaryByRequestID(ctx, key)
+		if err != nil {
+			return nil, summaryLookupError(err)
+		}
+
+		return &swapclientrpc.GetSwapResponse{
+			Swap: swapSummaryToProto(summary),
+		}, nil
+	}
 
 	hash, err := parsePaymentHash(req.GetPaymentHash())
 	if err != nil {
@@ -2708,17 +2736,19 @@ func (s *swapClientService) summaryByHash(ctx context.Context,
 
 	summary, err := s.client.GetSwapSummary(ctx, hash)
 	if err != nil {
-		if errors.Is(err, swaps.ErrSwapSummaryNotFound) {
-			return nil, status.Error(
-				codes.NotFound, "swap not found",
-			)
-		}
-
-		return nil, status.Errorf(codes.Internal, "get swap "+
-			"summary: %v", err)
+		return nil, summaryLookupError(err)
 	}
 
 	return swapSummaryToProto(summary), nil
+}
+
+// summaryLookupError maps a summary read failure to its gRPC status.
+func summaryLookupError(err error) error {
+	if errors.Is(err, swaps.ErrSwapSummaryNotFound) {
+		return status.Error(codes.NotFound, "swap not found")
+	}
+
+	return status.Errorf(codes.Internal, "get swap summary: %v", err)
 }
 
 // parsePaymentHash decodes the RPC payment_hash string and enforces the fixed
@@ -2781,6 +2811,7 @@ func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
 		Preimage:           preimage,
 		CreditQuote:        creditQuoteToProto(summary.CreditQuote),
 		RequestedAmountSat: summary.RequestedAmountSat,
+		Memo:               summary.Memo,
 		AttachedCreditSat:  summary.AttachedCreditSat,
 		DustLimitSat:       summary.DustLimitSat,
 		AvailableCreditSat: summary.AvailableCreditSat,

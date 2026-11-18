@@ -111,10 +111,11 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   discovery scan returns partial progress and an error. Wallet creation's
   cancellation must not cancel the refund/claim workers or block their next
   maturity/grace poll. Startup resumes the same durable rows after restart.
-- `idempotency_key` on `StartPay` / `StartReceive` is explicitly reserved and
-  returns `Unimplemented` to guard against accidental duplicate-start
-  assumptions; by contrast `CreateCredit` / `RedeemCredit` require a
-  caller-supplied `idempotency_key` today.
+- `idempotency_key` on `StartPay` is reserved and returns `Unimplemented`.
+  On `StartReceive` it is stored on the receive's admission row, which
+  allows one receive per key; `GetSwap.receive_idempotency_key` reads it
+  back. `CreateCredit` / `RedeemCredit` require a caller-supplied
+  `idempotency_key`.
 - `CreateCredit`/`RedeemCredit`/`ListCredits` type-assert `s.client` for the
   optional credit methods and return `Unimplemented` if the underlying
   `swapRuntimeClient` does not support credits.

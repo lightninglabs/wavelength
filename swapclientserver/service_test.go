@@ -1149,7 +1149,7 @@ func TestResumeSwapValidatesPaymentHashAndDirection(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestStartRejectsReservedIdempotencyKey(t *testing.T) {
+func TestStartPayRejectsReservedIdempotencyKey(t *testing.T) {
 	t.Parallel()
 
 	service := newTestSwapClientService(newFakeSwapRuntime())
@@ -1162,14 +1162,62 @@ func TestStartRejectsReservedIdempotencyKey(t *testing.T) {
 		},
 	)
 	require.Error(t, err)
+}
 
-	_, err = service.StartReceive(
+// TestStartReceiveIdempotencyKeyLookup verifies a receive key reaches the
+// store with the request, and GetSwap reads the receive back by that key
+// without starting anything.
+func TestStartReceiveIdempotencyKeyLookup(t *testing.T) {
+	t.Parallel()
+
+	receiveHash := testHash(4)
+	summary := swaps.SwapSummary{
+		Direction:   swaps.SwapDirectionReceive,
+		PaymentHash: receiveHash,
+		Invoice:     "lnbc1receive",
+		State:       "invoice_created",
+		Pending:     true,
+		AmountSat:   50_000,
+		Memo:        "coffee",
+	}
+	fakeClient := newFakeSwapRuntime(summary)
+	fakeClient.startReceiveSession = &fakeReceiveSession{
+		hash:    receiveHash,
+		invoice: "lnbc1receive",
+	}
+	fakeClient.receiveByRequestID = map[string]swaps.SwapSummary{
+		"req-1": summary,
+	}
+	service := newTestSwapClientService(fakeClient)
+	defer service.cancel()
+
+	_, err := service.StartReceive(
 		t.Context(), &swapclientrpc.StartReceiveRequest{
 			AmountSat:      50_000,
-			IdempotencyKey: "future-key",
+			Memo:           "coffee",
+			IdempotencyKey: "req-1",
 		},
 	)
-	require.Error(t, err)
+	require.NoError(t, err)
+	fakeClient.awaitReceiveResume(t, receiveHash)
+	require.Equal(t, "req-1", fakeClient.startReceiveRequestID)
+
+	resp, err := service.GetSwap(
+		t.Context(), &swapclientrpc.GetSwapRequest{
+			ReceiveIdempotencyKey: "req-1",
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "lnbc1receive", resp.GetSwap().GetInvoice())
+	require.Equal(t, "coffee", resp.GetSwap().GetMemo())
+	require.Equal(t, 1, fakeClient.startReceiveCount())
+
+	_, err = service.GetSwap(
+		t.Context(), &swapclientrpc.GetSwapRequest{
+			ReceiveIdempotencyKey: "unknown",
+		},
+	)
+	require.Equal(t, codes.NotFound, status.Code(err))
 }
 
 // TestSwapSummaryToProtoCopiesDurableFields verifies every durable swap summary
@@ -1896,26 +1944,29 @@ type fakeSwapRuntime struct {
 	recoveryResult      *swaps.SwapserverRecoveryResult
 	recoveryErr         error
 
-	quotePayCalls      int
-	quotePayInvoice    string
-	quotePayMaxFeeSat  uint64
-	startPayMaxFeeSat  uint64
-	startPayCalls      int
-	startReceiveCalls  int
-	startReceiveMemo   string
-	startReceiveHook   func()
-	createCreditCalls  int
-	createCreditReq    swaps.CreateCreditRequest
-	redeemCreditCalls  int
-	redeemCreditReq    swaps.RedeemCreditRequest
-	listCreditsCalls   int
-	listCreditsLimit   uint32
-	getSummaryCalls    int
-	listPendingOnly    []bool
-	listSummaryErrs    []error
-	payResumeCalls     map[lntypes.Hash]int
-	receiveResumeCalls map[lntypes.Hash]int
-	receiveDone        map[lntypes.Hash]chan struct{}
+	quotePayCalls     int
+	quotePayInvoice   string
+	quotePayMaxFeeSat uint64
+	startPayMaxFeeSat uint64
+	startPayCalls     int
+	startReceiveCalls int
+	startReceiveMemo  string
+
+	startReceiveRequestID string
+	receiveByRequestID    map[string]swaps.SwapSummary
+	startReceiveHook      func()
+	createCreditCalls     int
+	createCreditReq       swaps.CreateCreditRequest
+	redeemCreditCalls     int
+	redeemCreditReq       swaps.RedeemCreditRequest
+	listCreditsCalls      int
+	listCreditsLimit      uint32
+	getSummaryCalls       int
+	listPendingOnly       []bool
+	listSummaryErrs       []error
+	payResumeCalls        map[lntypes.Hash]int
+	receiveResumeCalls    map[lntypes.Hash]int
+	receiveDone           map[lntypes.Hash]chan struct{}
 
 	payResumeCh     chan lntypes.Hash
 	receiveResumeCh chan lntypes.Hash
@@ -1969,13 +2020,15 @@ func (f *fakeSwapRuntime) StartPayViaLightning(_ context.Context, _ string,
 }
 
 func (f *fakeSwapRuntime) StartReceiveViaLightning(_ context.Context,
-	_ btcutil.Amount, memo string) (receiveSwapSession, error) {
+	requestID string, _ btcutil.Amount, memo string) (receiveSwapSession,
+	error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.startReceiveCalls++
 	f.startReceiveMemo = memo
+	f.startReceiveRequestID = requestID
 	if f.startReceiveHook != nil {
 		f.startReceiveHook()
 	}
@@ -2060,6 +2113,20 @@ func (f *fakeSwapRuntime) ListCredits(_ context.Context, limit uint32) (
 	}
 
 	return f.listCreditsResp, nil
+}
+
+func (f *fakeSwapRuntime) ReceiveSummaryByRequestID(_ context.Context,
+	requestID string) (swaps.SwapSummary, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	summary, ok := f.receiveByRequestID[requestID]
+	if !ok {
+		return swaps.SwapSummary{}, swaps.ErrSwapSummaryNotFound
+	}
+
+	return summary, nil
 }
 
 func (f *fakeSwapRuntime) GetSwapSummary(_ context.Context, hash lntypes.Hash) (
