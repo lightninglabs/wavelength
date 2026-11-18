@@ -97,9 +97,15 @@ func (c *ClientWallet) DeriveNextKey(ctx context.Context,
 func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
 	signDesc *input.SignDescriptor) (input.Signature, error) {
 
-	c.logger(context.TODO()).DebugS(
-		context.TODO(),
-		"Signing output raw via LND remote signer",
+	return c.SignOutputRawContext(context.Background(), tx, signDesc)
+}
+
+// SignOutputRawContext is SignOutputRaw bounded by ctx as well as by the
+// signer's RPC timeout.
+func (c *ClientWallet) SignOutputRawContext(ctx context.Context, tx *wire.MsgTx,
+	signDesc *input.SignDescriptor) (input.Signature, error) {
+
+	c.logger(ctx).DebugS(ctx, "Signing output raw via LND remote signer",
 		slog.Int("input_index", signDesc.InputIndex),
 		slog.String("sign_method", signDesc.SignMethod.String()),
 	)
@@ -113,7 +119,7 @@ func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
 	prevOuts := prevOutputsFromDesc(tx, signDesc)
 
 	sigs, err := c.signOutputRawWithLocator(
-		context.Background(), tx, []*lndclient.SignDescriptor{
+		ctx, tx, []*lndclient.SignDescriptor{
 			lndDesc,
 		}, prevOuts,
 	)
@@ -125,9 +131,7 @@ func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
 		return nil, fmt.Errorf("no signatures returned")
 	}
 
-	c.logger(context.TODO()).DebugS(
-		context.TODO(),
-		"Signed output raw successfully",
+	c.logger(ctx).DebugS(ctx, "Signed output raw successfully",
 		slog.Int("input_index", signDesc.InputIndex),
 		slog.Int("sig_len", len(sigs[0])),
 	)

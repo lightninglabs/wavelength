@@ -36,7 +36,7 @@ require (
 	github.com/lightninglabs/loop v0.33.0-beta
 	github.com/lightninglabs/neutrino v0.18.0
 	github.com/lightninglabs/neutrino/cache v1.1.4
-	github.com/lightninglabs/tap-sdk v0.3.1-0.20261116180250-12e49238b5c1
+	github.com/lightninglabs/tap-sdk v0.3.1-0.20261118172146-52212010e219
 	github.com/lightninglabs/wavelength/baselib v0.0.0-00010101000000-000000000000
 	github.com/lightningnetwork/lightning-onion v1.4.0
 	github.com/lightningnetwork/lnd v0.21.0-beta.rc2.0.20260903094101-d66a7c137d32

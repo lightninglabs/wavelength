@@ -13,7 +13,7 @@ const testGroupKeyHex = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959" +
 
 // TestConfigValidateAssets checks that the asset backend selector accepts
 // only the implemented backends, that tapd requires an address, and that
-// the embedded backend requires a local wallet on regtest.
+// the embedded backend runs on regtest only, on any wallet.
 func TestConfigValidateAssets(t *testing.T) {
 	t.Parallel()
 
@@ -109,8 +109,8 @@ func TestConfigValidateAssets(t *testing.T) {
 			assets: &AssetsConfig{
 				Backend: AssetBackendEmbedded,
 			},
-			walletType: WalletTypeLnd,
-			wantErr:    "requires wallet.type",
+			walletType:  WalletTypeLnd,
+			wantBackend: AssetBackendEmbedded,
 		},
 		{
 			name: "embedded outside regtest",

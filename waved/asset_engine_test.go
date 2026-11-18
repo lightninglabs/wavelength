@@ -3,18 +3,22 @@ package waved
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/lndclient"
 	tapsdk "github.com/lightninglabs/tap-sdk"
 	"github.com/lightninglabs/tap-sdk/embedded"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/tapassets"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
@@ -117,11 +121,27 @@ func TestAssetChainNotReady(t *testing.T) {
 	_, err = chain.BlockHeader(t.Context(), 1)
 	require.ErrorIs(t, err, errAssetWalletNotReady)
 
-	keys := &assetKeyRing{server: server}
-	_, err = keys.DeriveNextKey(keychain.KeyFamily(212))
-	require.ErrorIs(t, err, errAssetWalletNotReady)
-	_, err = keys.DerivePrivKey(keychain.KeyDescriptor{})
-	require.ErrorIs(t, err, errAssetWalletNotReady)
+	// Neither a wallet holding the seed nor an lnd wallet derives or
+	// signs before the wallet is ready.
+	for _, walletType := range []string{
+		WalletTypeLwwallet, WalletTypeLnd,
+	} {
+		cfg := DefaultConfig()
+		cfg.Wallet.Type = walletType
+		keys := &assetKeyRing{server: &Server{
+			cfg:         cfg,
+			walletReady: make(chan struct{}),
+		}}
+
+		_, err = keys.DeriveNextKey(
+			t.Context(), keychain.KeyFamily(212),
+		)
+		require.ErrorIs(t, err, errAssetWalletNotReady)
+		_, err = keys.SignOutputRaw(
+			t.Context(), wire.NewMsgTx(2), &input.SignDescriptor{},
+		)
+		require.ErrorIs(t, err, errAssetWalletNotReady)
+	}
 }
 
 // TestAssetChainHeadersAndBroadcast reads the tip and headers through the
@@ -166,6 +186,63 @@ func TestAssetChainHeadersAndBroadcast(t *testing.T) {
 	}
 	_, err = headerless.BlockHeader(ctx, 100)
 	require.ErrorContains(t, err, "serves no block headers")
+}
+
+// fakeHeaderChainKit is an lnd chain kit that serves one block.
+type fakeHeaderChainKit struct {
+	lndclient.ChainKitClient
+
+	height int64
+	hash   chainhash.Hash
+	header *wire.BlockHeader
+}
+
+// GetBlockHash returns the hash of the block at the scripted height.
+func (c *fakeHeaderChainKit) GetBlockHash(_ context.Context, height int64) (
+	chainhash.Hash, error) {
+
+	if height != c.height {
+		return chainhash.Hash{}, fmt.Errorf("no block at %d", height)
+	}
+
+	return c.hash, nil
+}
+
+// GetBlockHeader returns the header of the scripted block.
+func (c *fakeHeaderChainKit) GetBlockHeader(_ context.Context,
+	hash chainhash.Hash) (*wire.BlockHeader, error) {
+
+	if hash != c.hash {
+		return nil, fmt.Errorf("unknown block %v", hash)
+	}
+
+	return c.header, nil
+}
+
+// TestAssetChainLndHeaders reads block headers through lnd's chain kit when
+// the daemon wallet is lnd, whose chain backend serves none.
+func TestAssetChainLndHeaders(t *testing.T) {
+	t.Parallel()
+
+	server := newAssetChainTestServer(&headerlessChainBackend{})
+	server.cfg.Wallet.Type = WalletTypeLnd
+	server.lnd = fn.Some(&lndclient.GrpcLndServices{
+		LndServices: lndclient.LndServices{
+			ChainKit: &fakeHeaderChainKit{
+				height: 100,
+				hash:   chainhash.Hash{9},
+				header: &wire.BlockHeader{Nonce: 11},
+			},
+		},
+	})
+	chain := &assetChain{server: server}
+
+	header, err := chain.BlockHeader(t.Context(), 100)
+	require.NoError(t, err)
+	require.EqualValues(t, 11, header.Nonce)
+
+	_, err = chain.BlockHeader(t.Context(), 101)
+	require.ErrorContains(t, err, "no block at 101")
 }
 
 // newAssetConfBackend returns a chain backend with scripted confirmation
@@ -381,14 +458,16 @@ func TestAssetChainConfirmationNotReady(t *testing.T) {
 func TestTrustAssetGroup(t *testing.T) {
 	t.Parallel()
 
+	keys := &assetKeyRing{server: &Server{
+		cfg:         DefaultConfig(),
+		walletReady: make(chan struct{}),
+	}}
 	engine, err := embedded.NewClient(&embedded.Config{
 		Network: tapsdk.NetworkRegtest,
 		Store:   embedded.NewMemoryStore(),
-		KeyRing: &assetKeyRing{server: &Server{
-			cfg:         DefaultConfig(),
-			walletReady: make(chan struct{}),
-		}},
-		Chain: &assetChain{},
+		KeyRing: keys,
+		Signer:  keys,
+		Chain:   &assetChain{},
 	})
 	require.NoError(t, err)
 

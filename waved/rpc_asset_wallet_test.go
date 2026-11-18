@@ -153,6 +153,7 @@ func TestImportAssetProofEngineVerifiesFirst(t *testing.T) {
 		Network: tapsdk.NetworkRegtest,
 		Store:   embedded.NewMemoryStore(),
 		KeyRing: &assetKeyRing{server: rpcServer.server},
+		Signer:  &assetKeyRing{server: rpcServer.server},
 		Chain:   &assetChain{server: rpcServer.server},
 	})
 	require.NoError(t, err)

@@ -141,7 +141,7 @@ waved \
 | `--lnd.macaroonpath` | | Path to lnd admin macaroon |
 | `--lnd.rpctimeout` | `30s` | Timeout for lnd RPC calls |
 | `--lnd.account` | _(empty)_ | lnd wallet account to spend from; empty uses lnd's default account. Set when sharing an lnd node with another daemon. The account must already exist and be taproot-scoped; a watch-only account is accepted only on a remote-signing lnd (one whose default account is itself watch-only) and must report an extended public key and derivation path |
-| `--assets.backend` | `none` | Taproot Assets backend: `none` refuses asset VTXOs, `tapd` verifies their proofs through a tapd node, adding issuance proofs of unknown assets to its universe, `embedded` holds and verifies assets inside the daemon (regtest only, `lwwallet` or `btcwallet`) |
+| `--assets.backend` | `none` | Taproot Assets backend: `none` refuses asset VTXOs, `tapd` verifies their proofs through a tapd node, adding issuance proofs of unknown assets to its universe, `embedded` holds and verifies assets inside the daemon (regtest only) |
 | `--assets.groupkeys` | | Asset groups the `embedded` backend trusts, as hex compressed public keys |
 | `--assets.tapd.host` | | tapd gRPC address; required with `--assets.backend=tapd` |
 | `--assets.tapd.tlspath` | | Path to tapd TLS certificate |
