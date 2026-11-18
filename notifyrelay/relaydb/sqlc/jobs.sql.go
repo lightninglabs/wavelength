@@ -41,7 +41,7 @@ const claimJob = `-- name: ClaimJob :one
 UPDATE relay_jobs SET claim_token = $1,
     lease_until = $2, attempts = attempts + 1
 WHERE id = $3 AND lease_until <= $4
-RETURNING id, subscription_id, scope, generation, done_generation, event_hash, next_at, expires_at, claim_token, lease_until, attempts
+RETURNING id, subscription_id, scope, generation, done_generation, event_hash, next_at, expires_at, claim_token, lease_until, attempts, wake_deadline_unix
 `
 
 type ClaimJobParams struct {
@@ -71,26 +71,30 @@ func (q *Queries) ClaimJob(ctx context.Context, arg ClaimJobParams) (RelayJob, e
 		&i.ClaimToken,
 		&i.LeaseUntil,
 		&i.Attempts,
+		&i.WakeDeadlineUnix,
 	)
 	return i, err
 }
 
 const coalesceJob = `-- name: CoalesceJob :exec
 INSERT INTO relay_jobs (
-    id, subscription_id, scope, generation, event_hash, next_at, expires_at
-) VALUES ($1, $2, $3, 1, $4, $5, $6)
+    id, subscription_id, scope, generation, event_hash, next_at, expires_at,
+    wake_deadline_unix
+) VALUES ($1, $2, $3, 1, $4, $5, $6, $7)
 ON CONFLICT (subscription_id, scope) DO UPDATE SET
     generation = relay_jobs.generation + 1,
-    event_hash = excluded.event_hash, expires_at = excluded.expires_at
+    event_hash = excluded.event_hash, expires_at = excluded.expires_at,
+    wake_deadline_unix = excluded.wake_deadline_unix
 `
 
 type CoalesceJobParams struct {
-	ID             string
-	SubscriptionID string
-	Scope          string
-	EventHash      string
-	NextAt         int64
-	ExpiresAt      int64
+	ID               string
+	SubscriptionID   string
+	Scope            string
+	EventHash        string
+	NextAt           int64
+	ExpiresAt        int64
+	WakeDeadlineUnix int64
 }
 
 func (q *Queries) CoalesceJob(ctx context.Context, arg CoalesceJobParams) error {
@@ -101,6 +105,7 @@ func (q *Queries) CoalesceJob(ctx context.Context, arg CoalesceJobParams) error 
 		arg.EventHash,
 		arg.NextAt,
 		arg.ExpiresAt,
+		arg.WakeDeadlineUnix,
 	)
 	return err
 }
@@ -256,7 +261,7 @@ func (q *Queries) GetDedup(ctx context.Context, arg GetDedupParams) (int64, erro
 }
 
 const getJob = `-- name: GetJob :one
-SELECT id, subscription_id, scope, generation, done_generation, event_hash, next_at, expires_at, claim_token, lease_until, attempts FROM relay_jobs WHERE id = $1
+SELECT id, subscription_id, scope, generation, done_generation, event_hash, next_at, expires_at, claim_token, lease_until, attempts, wake_deadline_unix FROM relay_jobs WHERE id = $1
 `
 
 func (q *Queries) GetJob(ctx context.Context, id string) (RelayJob, error) {
@@ -274,12 +279,13 @@ func (q *Queries) GetJob(ctx context.Context, id string) (RelayJob, error) {
 		&i.ClaimToken,
 		&i.LeaseUntil,
 		&i.Attempts,
+		&i.WakeDeadlineUnix,
 	)
 	return i, err
 }
 
 const listDueJobs = `-- name: ListDueJobs :many
-SELECT j.id, j.subscription_id, j.scope, j.generation, j.done_generation, j.event_hash, j.next_at, j.expires_at, j.claim_token, j.lease_until, j.attempts FROM relay_jobs AS j
+SELECT j.id, j.subscription_id, j.scope, j.generation, j.done_generation, j.event_hash, j.next_at, j.expires_at, j.claim_token, j.lease_until, j.attempts, j.wake_deadline_unix FROM relay_jobs AS j
 JOIN relay_subscriptions AS s ON s.id = j.subscription_id
 JOIN relay_installations AS i ON i.id = s.installation_id
 WHERE j.next_at <= $1 AND j.lease_until <= $1
@@ -323,6 +329,7 @@ func (q *Queries) ListDueJobs(ctx context.Context, arg ListDueJobsParams) ([]Rel
 			&i.ClaimToken,
 			&i.LeaseUntil,
 			&i.Attempts,
+			&i.WakeDeadlineUnix,
 		); err != nil {
 			return nil, err
 		}

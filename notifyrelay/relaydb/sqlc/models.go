@@ -42,17 +42,18 @@ type RelayInstallation struct {
 }
 
 type RelayJob struct {
-	ID             string
-	SubscriptionID string
-	Scope          string
-	Generation     int64
-	DoneGeneration int64
-	EventHash      string
-	NextAt         int64
-	ExpiresAt      int64
-	ClaimToken     string
-	LeaseUntil     int64
-	Attempts       int32
+	ID               string
+	SubscriptionID   string
+	Scope            string
+	Generation       int64
+	DoneGeneration   int64
+	EventHash        string
+	NextAt           int64
+	ExpiresAt        int64
+	ClaimToken       string
+	LeaseUntil       int64
+	Attempts         int32
+	WakeDeadlineUnix int64
 }
 
 type RelayMetadatum struct {
