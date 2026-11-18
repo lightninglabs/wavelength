@@ -153,7 +153,7 @@ waved \
 | `--swap.serveraddress` | network default | Swap server address override for swapruntime builds |
 | `--swap.servertransport` | `grpc` | Swap server transport: `grpc` or `rest` |
 | `--maxpaymentcltv` | `480` in swap-enabled builds | Largest total Lightning payment CLTV reserved by automatic VTXO refresh; `0` disables the payment reserve |
-| `--swap.arkchannelreceiveenabled` | `false` | Opt into direct Ark-channel settlement for Lightning receives; disabled receives use only vHTLC |
+| `--swap.arkchannelreceiveenabled` | `false` | Enable `channel receive` on existing active channels; ordinary `recv` is unchanged |
 
 Empty Ark and swap addresses resolve from the selected network and transport.
 See [signet.md](signet.md) for the testnet3, testnet4, and signet endpoints and
@@ -531,20 +531,19 @@ hex.
 wavecli channel create 100000
 wavecli channel get <channel-id>
 wavecli channel pay <bolt11> --max-fee-sat 1000
+wavecli channel receive 25000
 wavecli channel refresh <channel-id>
 wavecli channel force-close <channel-id>
 ```
 
-`recv --offchain` uses an active channel directly when it has enough inbound
-liquidity. Otherwise an eligible single-part payment can manifest an
-overfunded, hub-owned channel before the same payment hash is delivered over
-it. After completion, `activity inspect <payment-hash> --format json` reports
-the manifested `channel_id` and reserved alias SCID. A receive that reused an
-existing channel has an empty `channel_id`.
+With `--swap.arkchannelreceiveenabled`, `channel receive <amount-sat>`
+returns an invoice bound to an existing active channel. If no channel has
+enough inbound liquidity, the command fails without issuing an invoice.
+`activity inspect <payment-hash> --format json` shows the selected
+`channel_id` and the invoice's virtual SCID.
 
-Payments that use the ordinary vHTLC fallback still settle into the wallet;
-they are not implicitly converted into channels. Any ordinary wallet VTXO,
-including value received through that fallback, can later be promoted with
+To receive into the wallet instead, use `recv --offchain --amt <amount-sat>`
+to create a separate invoice. To fund a channel from wallet VTXOs, use
 `wavecli channel create <amount-sat>`.
 
 ### `ark board` / `dev daemon Board`
