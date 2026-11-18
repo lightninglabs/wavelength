@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -288,26 +289,34 @@ func (r *Runtime) removePersistedInternalOORActivity(ctx context.Context,
 	return nil
 }
 
-// reprojectActivity pages the derive-on-read feed and projects every row into
-// the canonical activity store, returning the number of rows projected. Because
-// ProjectEntry is idempotent on canonical_id and suppresses no-op changes,
-// re-running observes any terminal transition since the last pass (a confirmed
-// deposit, a forfeited leave, a completed unroll) while leaving unchanged rows
-// untouched. It backs both the one-time startup backfill and the ongoing
-// reconciler. Returns (0, nil) when no store is wired.
+// reprojectActivity derives the activity feed once and projects every row
+// into the canonical activity store, returning the number of rows projected.
+// Because ProjectEntry is idempotent on canonical_id and suppresses no-op
+// changes, re-running observes any terminal transition since the last pass (a
+// confirmed deposit, a forfeited leave, a completed unroll) while leaving
+// unchanged rows untouched. It backs both the one-time startup backfill and the
+// ongoing reconciler. Returns (0, nil) when no store is wired.
 //
 // kinds optionally restricts the derived feed: the startup backfill passes nil
 // to seed every kind, while the reconciler passes only the low-volume
 // DEPOSIT/EXIT producers here and reconciles the high-volume SEND/RECV kinds
 // separately over a bounded window (reprojectRecentActivity).
+//
+// The ledger is read in full for the requested kinds, following the daemon's
+// continuation and filtered to the history types that can produce them, so
+// rows older than one ledger page are covered and rows that project together
+// (a transfer and its change, deposits to one address) are never split across
+// a page boundary. For the reconciler's DEPOSIT/EXIT kinds that is only the
+// low-volume boarding and sweep rows.
+//
 // repairInternalOOR is true only during startup, before activity subscribers
 // connect, and removes synthetic rows persisted by an older binary.
 //
 // A wallet-local EXIT's pending record is cleared only from here and
 // reprojectRecentActivity (via projectDerivedPage), and only after its terminal
 // row is durably projected — never from the read/derive path — so a failed
-// projection or a row that paged out is retried on a later pass instead of
-// being stranded PENDING in the store.
+// projection is retried on a later pass instead of being stranded PENDING in
+// the store.
 func (r *Runtime) reprojectActivity(ctx context.Context,
 	kinds []wavewalletrpc.EntryKind, repairInternalOOR bool) (int, error) {
 
@@ -316,39 +325,19 @@ func (r *Runtime) reprojectActivity(ctx context.Context,
 	}
 
 	h := newHistory(r.deps, r)
-	limit := r.deps.resolveMaxListLimit()
+	readLedger := func(ctx context.Context) (
+		[]*waverpc.TransactionHistoryEntry, error) {
 
-	var (
-		offset    uint32
-		projected int
-	)
-	for {
-		list, err := h.deriveActivity(ctx, &wavewalletrpc.ListRequest{
-			Limit:  limit,
-			Offset: offset,
-			Kinds:  kinds,
-		})
-		if err != nil {
-			return projected, err
-		}
-
-		entries := list.GetEntries()
-
-		// Guard against a non-advancing loop: an empty page (or a
-		// zero-resolved limit) would otherwise never advance the offset
-		// nor hit the length/total termination below.
-		if len(entries) == 0 {
-			break
-		}
-
-		r.projectDerivedPage(ctx, entries, h.batchWaitUnavailable)
-		projected += len(entries)
-
-		offset += uint32(len(entries))
-		if uint32(len(entries)) < limit || offset >= list.GetTotal() {
-			break
-		}
+		return h.listAllLedgerRows(ctx, kinds)
 	}
+
+	entries, err := h.deriveEntries(ctx, kinds, false, readLedger)
+	if err != nil {
+		return 0, err
+	}
+
+	r.projectDerivedPage(ctx, entries, h.batchWaitUnavailable)
+	projected := len(entries)
 
 	if repairInternalOOR {
 		if err := r.removePersistedInternalOORActivity(
@@ -363,7 +352,7 @@ func (r *Runtime) reprojectActivity(ctx context.Context,
 
 // reprojectRecentActivity re-derives and re-projects only the most recent
 // `limit` rows of the given kinds — the single-page counterpart to
-// reprojectActivity's full-history paging loop. It exists for the high-volume
+// reprojectActivity's full-feed pass. It exists for the high-volume
 // SEND/RECV kinds, where a raw out-of-round send/receive has no live projector
 // and must be reconciled into the store (issue #903), but the full history
 // grows without bound. Deriving still reads the history sources, but only the
