@@ -167,7 +167,18 @@ func (s *Server) connectAssetBackend(ctx context.Context) (
 		}
 	}
 
-	claimer, err := s.newAssetClaimer(client)
+	journal, err := tapassets.NewFileStore(
+		filepath.Join(
+			s.cfg.NetworkDir(),
+			"assets", "claims",
+		),
+	)
+	if err != nil {
+		cleanup()
+
+		return nil, nil, err
+	}
+	claimer, err := s.newAssetClaimer(client, journal)
 	if err != nil {
 		cleanup()
 
@@ -235,20 +246,11 @@ func (s *Server) connectTapd(ctx context.Context) (*tapgrpc.Client, error) {
 	return client, nil
 }
 
-// newAssetClaimer returns the claimer of asset deposits and asset VTXOs. Its
-// journal pins each claim, so a retry or a restart rebuilds the same one.
-func (s *Server) newAssetClaimer(client *tapgrpc.Client) (*tapassets.Claimer,
-	error) {
-
-	journal, err := tapassets.NewFileStore(
-		filepath.Join(
-			s.cfg.NetworkDir(),
-			"assets", "claims",
-		),
-	)
-	if err != nil {
-		return nil, err
-	}
+// newAssetClaimer returns the claimer of asset deposits and asset VTXOs on
+// an asset backend. The journal pins each claim, so a retry or a restart
+// rebuilds the same one. The daemon wallet signs the exit leaf.
+func (s *Server) newAssetClaimer(client tapsdk.Client,
+	journal tapassets.Store) (*tapassets.Claimer, error) {
 
 	return tapassets.NewClaimer(tapassets.ClaimerConfig{
 		Wallet: tapsdk.NewWallet(client, tapsdk.Network(s.cfg.Network)),
@@ -285,12 +287,20 @@ func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 		return nil, err
 	}
 
+	// The engine's record of a claim's block is checked against the
+	// daemon's chain backend, which serves the engine its headers.
+	var bestBlockHash blockHashReader
+	if s.embeddedAssets != nil {
+		bestBlockHash = (&assetChain{server: s}).BlockHash
+	}
+
 	depositStore := db.NewAssetDepositStore(store)
 	s.assetDeposits = newAssetDepositService(&assetDepositConfig{
 		log:              s.log,
 		store:            depositStore,
 		backend:          s.assetClient,
 		signsAnchors:     s.embeddedAssets != nil,
+		creditsClaims:    s.embeddedAssets != nil,
 		onboarder:        onboarder,
 		terms:            s.loadOperatorTerms,
 		quoteBoardingFee: s.quoteBoardingFee,
@@ -300,6 +310,7 @@ func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 		claimer:          s.assetClaimer,
 		broadcastClaim:   s.broadcastAssetClaim,
 		reserveClaim:     s.reserveAssetDepositClaim,
+		bestBlockHash:    bestBlockHash,
 	})
 
 	// The subscriber lives as long as the actor system, not this call.

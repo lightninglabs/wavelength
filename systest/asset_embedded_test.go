@@ -21,7 +21,9 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 // TestEmbeddedAssetDeposit runs the asset lifecycle on the embedded asset
@@ -138,6 +140,99 @@ func testEmbeddedAssetDeposit(t *testing.T, walletType string) {
 	require.Len(t, join.VtxoRequests, 2)
 	require.Equal(t, ref.String(), join.VtxoRequests[0].AssetRef)
 	require.EqualValues(t, 600, join.VtxoRequests[0].AssetAmount)
+}
+
+// TestEmbeddedClaimAssetDeposit claims a confirmed deposit that no round took
+// on the embedded asset backend. The claim spends the deposit through its
+// owner's exit leaf once the exit delay passes, and returns the asset to the
+// daemon's asset wallet. The claim confirms while the daemon is down, and a
+// restart finishes it from the daemon's database.
+func TestEmbeddedClaimAssetDeposit(t *testing.T) {
+	ParallelN(t)
+
+	h := NewSysTestHarness(t, func(opts *harness.Options) {
+		opts.StartTapd = true
+	})
+	h.Harness.FundOperatorLND(btcutil.SatoshiPerBitcoin)
+
+	// The harness tapd only issues the asset and sends it to the daemon.
+	issuer := newAssetTestTapd(t, h)
+	ref := mintAssetTestAsset(t, h, issuer, 1_000)
+
+	daemon := startEmbeddedAssetDaemon(t, h, t.TempDir(), nil)
+	client := daemon.client
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer cancel()
+
+	receiveEmbeddedAsset(t, h, issuer, client, ref, 1_000)
+	confirmAssetTestDeposit(t, h, client, ref, 2)
+	require.Eventually(t, func() bool {
+		return embeddedAssetUnits(t, client, ref) == 400
+	}, time.Minute, time.Second, "the asset wallet holds no change")
+
+	claimReq := &waverpc.ClaimAssetDepositRequest{RequestId: "alice-1"}
+	_, err := client.ClaimAssetDeposit(ctx, claimReq)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err), err)
+	require.ErrorContains(t, err, "can be claimed from height")
+
+	// The exit leaf opens after the 144-block boarding exit delay.
+	h.Harness.Generate(144)
+
+	var claimed *waverpc.AssetDeposit
+	require.Eventually(t, func() bool {
+		claimed, err = client.ClaimAssetDeposit(ctx, claimReq)
+
+		return err == nil
+	}, time.Minute, time.Second, "claim refused: %v", err)
+	require.NotEmpty(t, claimed.ClaimTxid)
+	require.False(t, claimed.Claimed)
+
+	// txconfirm relays the zero-fee claim with a CPFP child. The claim is
+	// final six blocks deep, which it reaches while the daemon is down.
+	h.Harness.WaitMempoolTx(claimed.ClaimTxid)
+	daemon.stop()
+	h.Harness.Generate(6)
+
+	daemon = startEmbeddedAssetDaemon(t, h, daemon.dataDir, nil)
+	client = daemon.client
+	require.Eventually(t, func() bool {
+		resp, err := client.ListAssetDeposits(
+			ctx, &waverpc.ListAssetDepositsRequest{},
+		)
+		if err != nil || len(resp.Deposits) != 1 {
+			return false
+		}
+		claimed = resp.Deposits[0]
+
+		return claimed.Claimed
+	}, time.Minute, time.Second, "claim never confirmed: %v", claimed)
+
+	// The asset wallet holds the claimed units, anchored in the claim's
+	// first output, beside the change.
+	owned, err := client.ListOwnedAssets(
+		ctx, &waverpc.ListOwnedAssetsRequest{},
+	)
+	require.NoError(t, err)
+	var claimedUnits uint64
+	for _, held := range owned.Assets {
+		if held.Outpoint == claimed.ClaimTxid+":0" {
+			claimedUnits += held.Amount
+		}
+	}
+	require.EqualValues(t, 600, claimedUnits)
+	require.EqualValues(t, 1_000, embeddedAssetUnits(t, client, ref))
+
+	// A claimed deposit cannot board, and claiming again changes nothing.
+	_, err = client.BoardAssetDeposit(
+		ctx, &waverpc.BoardAssetDepositRequest{
+			RequestId: "alice-1",
+		},
+	)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err), err)
+	again, err := client.ClaimAssetDeposit(ctx, claimReq)
+	require.NoError(t, err)
+	require.Equal(t, claimed.ClaimTxid, again.ClaimTxid)
+	require.True(t, again.Claimed)
 }
 
 // embeddedAssetDaemon is a running waved with the embedded asset backend.

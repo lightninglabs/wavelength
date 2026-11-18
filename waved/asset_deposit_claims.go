@@ -51,8 +51,9 @@ type assetDepositClaimStore interface {
 	MarkAssetDepositClaimed(context.Context, string) error
 }
 
-// assetClaimer claims a composed output back into the tapd wallet. Prepare
-// signs the claim without recording it in tapd, and Claim records it.
+// assetClaimer claims a composed output back into the asset wallet of the
+// asset backend. Prepare signs the claim without recording it in the
+// backend, and Claim records it.
 type assetClaimer interface {
 	Prepare(context.Context,
 		*tapassets.ClaimRequest) (*tapassets.ClaimResult, error)
@@ -71,9 +72,12 @@ type claimNotifications = actor.TellOnlyRef[txconfirm.Notification]
 // claimBroadcaster confirms a zero-fee claim with a CPFP child.
 type claimBroadcaster func(context.Context, *wire.MsgTx, uint32) error
 
+// blockHashReader returns the hash of the best chain's block at a height.
+type blockHashReader func(context.Context, uint32) (chainhash.Hash, error)
+
 // Claim spends a confirmed deposit that no round holds through its owner's
 // exit leaf, once the exit delay has passed, and returns the asset to the
-// tapd wallet. A retry resumes the journaled claim.
+// asset wallet. A retry resumes the journaled claim.
 func (d *assetDepositService) Claim(ctx context.Context, requestID string) (
 	*db.AssetDeposit, error) {
 
@@ -124,12 +128,17 @@ func (d *assetDepositService) Claim(ctx context.Context, requestID string) (
 		return nil, status.Errorf(codes.FailedPrecondition, "asset "+
 			"deposit %s is held by round %s", requestID, roundID)
 	}
+	deposit, err = d.withCurrentProof(ctx, deposit)
+	if err != nil {
+		return nil, err
+	}
 	if err := d.checkClaimable(ctx, deposit); err != nil {
 		return nil, err
 	}
 
-	// The claim is recorded before tapd learns of it, so the watcher
-	// resumes every claim tapd may hold after a restart.
+	// The claim is recorded before the asset backend learns of it, so
+	// the watcher resumes every claim the backend may hold after a
+	// restart.
 	if claim == nil {
 		if err := d.recordClaim(ctx, deposit); err != nil {
 			return nil, err
@@ -144,25 +153,48 @@ func (d *assetDepositService) Claim(ctx context.Context, requestID string) (
 	return deposit, d.trackClaim(ctx, deposit, result.Tx)
 }
 
-// checkClaimable fails unless tapd credits a claimed asset and the deposit's
-// exit leaf is open.
+// withCurrentProof returns the deposit with the proof and confirmation height
+// the asset backend holds now. A reorganization deeper than the boarding
+// depth moves the deposit to another block after its row is written, and
+// both the exit delay and the claim's proof count from the block on the best
+// chain.
+func (d *assetDepositService) withCurrentProof(ctx context.Context,
+	deposit *db.AssetDeposit) (*db.AssetDeposit, error) {
+
+	requestID := deposit.Request.RequestID
+	proofFile, height, err := tapassets.ExportOnboardedProof(
+		ctx, d.backend, deposit.Output.Outpoint,
+	)
+	switch {
+	case errors.Is(err, tapassets.ErrOnboardedProofPending):
+		return nil, status.Errorf(codes.FailedPrecondition, "asset "+
+			"deposit %s is not confirmed on the best chain",
+			requestID)
+
+	case err != nil:
+		return nil, status.Errorf(codes.Unavailable, "read asset "+
+			"deposit %s proof: %v", requestID, err)
+	}
+
+	current := *deposit
+	current.ProofFile = proofFile
+	current.ConfirmedHeight = height
+
+	return &current, nil
+}
+
+// checkClaimable fails unless the asset backend credits a claimed asset and
+// the deposit's exit leaf is open.
 func (d *assetDepositService) checkClaimable(ctx context.Context,
 	deposit *db.AssetDeposit) error {
 
 	info, err := d.backend.GetInfo(ctx)
 	if err != nil || info == nil {
-		return status.Errorf(codes.Unavailable, "read tapd info: %v",
-			err)
+		return status.Errorf(codes.Unavailable, "read asset backend "+
+			"info: %v", err)
 	}
-	supported, err := tapassets.TapdCanClaim(info.Version)
-	if err != nil {
-		return status.Errorf(codes.FailedPrecondition, "asset deposit "+
-			"claims: %v", err)
-	}
-	if !supported {
-		return status.Errorf(codes.FailedPrecondition, "tapd %s "+
-			"cannot credit a claimed asset; claims require tapd "+
-			"v0.9.0 or later", info.Version)
+	if err := d.checkClaimSupport(info.Version); err != nil {
+		return err
 	}
 
 	// The exit leaf's relative timelock lets the claim into the block
@@ -173,6 +205,27 @@ func (d *assetDepositService) checkClaimable(ctx context.Context,
 		return status.Errorf(codes.FailedPrecondition, "asset deposit "+
 			"%s can be claimed from height %d",
 			deposit.Request.RequestID, mature)
+	}
+
+	return nil
+}
+
+// checkClaimSupport fails for a tapd whose version cannot confirm a transfer
+// spending an asset it does not hold.
+func (d *assetDepositService) checkClaimSupport(version string) error {
+	if d.creditsClaims {
+		return nil
+	}
+
+	supported, err := tapassets.TapdCanClaim(version)
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition, "asset deposit "+
+			"claims: %v", err)
+	}
+	if !supported {
+		return status.Errorf(codes.FailedPrecondition, "tapd %s "+
+			"cannot credit a claimed asset; claims require tapd "+
+			"v0.9.0 or later", version)
 	}
 
 	return nil
@@ -231,8 +284,8 @@ func (d *assetDepositService) ClaimOf(ctx context.Context, requestID string) (
 	return claim, err
 }
 
-// resumeClaim signs and records the deposit's claim in tapd, or returns the
-// journaled claim.
+// resumeClaim signs and records the deposit's claim in the asset backend, or
+// returns the journaled claim.
 func (d *assetDepositService) resumeClaim(ctx context.Context,
 	deposit *db.AssetDeposit) (*tapassets.ClaimResult, error) {
 
@@ -281,9 +334,10 @@ func (d *assetDepositService) trackClaim(ctx context.Context,
 	return nil
 }
 
-// confirmClaims marks the claims buried at the finality depth by tapd's chain
-// tip, and hands every other pending claim to txconfirm again after a
-// restart. txconfirm follows a claim through reorgs until that depth.
+// confirmClaims marks the claims buried at the finality depth by the asset
+// backend's chain tip, and hands every other pending claim to txconfirm
+// again after a restart. txconfirm follows a claim through reorgs until that
+// depth.
 func (d *assetDepositService) confirmClaims(ctx context.Context) {
 	if d.claims == nil || d.claimer == nil {
 		return
@@ -305,7 +359,7 @@ func (d *assetDepositService) confirmClaims(ctx context.Context) {
 	}
 	info, err := d.backend.GetInfo(ctx)
 	if err != nil || info == nil {
-		d.log.DebugS(ctx, "Unable to read the tapd chain tip",
+		d.log.DebugS(ctx, "Unable to read the asset backend chain tip",
 			btclog.Fmt("error", "%v", err),
 		)
 
@@ -369,6 +423,10 @@ func (d *assetDepositService) retrackClaim(ctx context.Context,
 	if err != nil {
 		return err
 	}
+	deposit, err = d.withCurrentProof(ctx, deposit)
+	if err != nil {
+		return err
+	}
 	result, err := d.resumeClaim(ctx, deposit)
 	if err != nil {
 		return err
@@ -381,8 +439,11 @@ func (d *assetDepositService) retrackClaim(ctx context.Context,
 	return d.trackClaim(ctx, deposit, result.Tx)
 }
 
-// claimFinal reports whether tapd recorded the claim transaction in a block
-// at least claimFinalityDepth deep below tip.
+// claimFinal reports whether the asset backend recorded the claim
+// transaction in a block at least claimFinalityDepth deep below tip. With a
+// block hash reader, that block must also be the best chain's block at its
+// height: a backend that was down while the block left the chain still
+// reports it, and the claim is not confirmed until it is mined again.
 func (d *assetDepositService) claimFinal(ctx context.Context,
 	txid chainhash.Hash, tip uint32) (bool, error) {
 
@@ -397,6 +458,7 @@ func (d *assetDepositService) claimFinal(ctx context.Context,
 
 	var (
 		height    uint32
+		blockHash chainhash.Hash
 		confirmed bool
 	)
 	for _, transfer := range transfers {
@@ -405,14 +467,26 @@ func (d *assetDepositService) claimFinal(ctx context.Context,
 			transfer.AnchorTxBlockHash != [32]byte{} {
 
 			height = transfer.AnchorTxBlockHeight
+			blockHash = chainhash.Hash(transfer.AnchorTxBlockHash)
 			confirmed = true
 
 			break
 		}
 	}
+	if !confirmed || tip < height ||
+		tip-height+1 < claimFinalityDepth {
+		return false, nil
+	}
+	if d.bestBlockHash == nil {
+		return true, nil
+	}
 
-	return confirmed && tip >= height &&
-		tip-height+1 >= claimFinalityDepth, nil
+	best, err := d.bestBlockHash(ctx, height)
+	if err != nil {
+		return false, err
+	}
+
+	return best == blockHash, nil
 }
 
 // depositClaimRequest spends a deposit output through its owner's exit leaf.

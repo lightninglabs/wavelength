@@ -46,10 +46,10 @@ var errAssetWalletNotReady = errors.New("wallet is not ready")
 
 // initEmbeddedAssets creates the embedded asset backend on the daemon's
 // database, wallet seed and chain backend, and installs its asset VTXO
-// verifier. The wallet may still be locked, so the engine reaches the
-// wallet and the chain backend on each call, and follows the transfers an
-// earlier run left unconfirmed once the wallet services are up. The
-// returned cleanup stops following transfers.
+// verifier and its claimer. The wallet may still be locked, so the engine
+// reaches the wallet and the chain backend on each call, and follows the
+// transfers an earlier run left unconfirmed once the wallet services are up.
+// The returned cleanup stops following transfers.
 func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 	func(), error) {
 
@@ -63,10 +63,11 @@ func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 		return nil, err
 	}
 
+	engineStore := db.NewAssetEngineStore(store)
 	keys := &assetKeyRing{server: s}
 	client, err := embedded.NewClient(&embedded.Config{
 		Network:   tapsdk.Network(s.cfg.Network),
-		Store:     db.NewAssetEngineStore(store),
+		Store:     engineStore,
 		KeyRing:   keys,
 		Signer:    keys,
 		Chain:     &assetChain{server: s},
@@ -86,11 +87,26 @@ func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 		return nil, err
 	}
 
+	// The claim journal lives in the database beside the deposit journal,
+	// since a browser has no files.
+	claimer, err := s.newAssetClaimer(
+		client, &assetJournal{
+			store: engineStore,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	s.assetClient = client
 	s.embeddedAssets = client
 	s.assetVTXOVerifier = &groupTrustingVerifier{
 		verifier: verifier,
 		engine:   client,
+	}
+	s.assetClaimer = &groupTrustingClaimer{
+		claimer: claimer,
+		engine:  client,
 	}
 
 	// The engine follows its transfers through the chain backend, which
@@ -143,6 +159,50 @@ func (v *groupTrustingVerifier) VerifyAssetVTXO(ctx context.Context,
 		ctx, assetRef, assetAmount, commitmentTx, clientTree,
 		sealedPackage,
 	)
+}
+
+// groupTrustingClaimer claims composed outputs with the embedded engine. The
+// daemon claims an output it deposited or accepted in a round, so the group
+// of that output's asset is one it accepts proofs of. The engine forgets a
+// group it trusted for a round at a restart, and the exit of an asset VTXO
+// can follow one.
+type groupTrustingClaimer struct {
+	claimer assetClaimer
+	engine  *embedded.Client
+}
+
+// Prepare trusts the group of the claimed asset, then signs the claim.
+func (c *groupTrustingClaimer) Prepare(ctx context.Context,
+	request *tapassets.ClaimRequest) (*tapassets.ClaimResult, error) {
+
+	if err := c.trustClaimedGroup(request); err != nil {
+		return nil, err
+	}
+
+	return c.claimer.Prepare(ctx, request)
+}
+
+// Claim trusts the group of the claimed asset, then records the claim.
+func (c *groupTrustingClaimer) Claim(ctx context.Context,
+	request *tapassets.ClaimRequest) (*tapassets.ClaimResult, error) {
+
+	if err := c.trustClaimedGroup(request); err != nil {
+		return nil, err
+	}
+
+	return c.claimer.Claim(ctx, request)
+}
+
+// trustClaimedGroup trusts the group of the asset a claim names. The claimer
+// refuses a missing request.
+func (c *groupTrustingClaimer) trustClaimedGroup(
+	request *tapassets.ClaimRequest) error {
+
+	if request == nil {
+		return nil
+	}
+
+	return trustAssetGroup(c.engine, string(request.AssetRef))
 }
 
 // trustAssetGroup makes the engine verify proofs of the group an asset
@@ -327,6 +387,18 @@ func (c *assetChain) BlockHeader(ctx context.Context, height uint32) (
 
 	return nil, fmt.Errorf("chain backend %T serves no block headers",
 		backend)
+}
+
+// BlockHash returns the hash of the best-chain block at height.
+func (c *assetChain) BlockHash(ctx context.Context, height uint32) (
+	chainhash.Hash, error) {
+
+	header, err := c.BlockHeader(ctx, height)
+	if err != nil {
+		return chainhash.Hash{}, err
+	}
+
+	return header.BlockHash(), nil
 }
 
 // PublishTransaction broadcasts a transaction. A transaction the network
@@ -630,7 +702,8 @@ func (r assetConfRef[M]) TryTell(ctx context.Context, msg M) error {
 	}
 }
 
-// assetJournal keeps the asset deposit journal in the daemon's database.
+// assetJournal keeps the asset deposit and claim journals in the daemon's
+// database. Each journal prefixes its own keys, so the two share one table.
 type assetJournal struct {
 	store *db.AssetEngineStore
 }

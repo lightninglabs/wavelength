@@ -211,37 +211,49 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   cannot read, returns `Unavailable`. Board takes no lock; the round actor's
   turn is where a second board of one deposit is refused.
 - `ClaimAssetDeposit` returns a confirmed deposit that no round holds to the
-  tapd wallet, once the boarding exit delay has passed since its proof's
-  height. It refuses a tapd that `tapassets.TapdCanClaim` rejects, since such
-  a tapd cannot confirm a transfer spending an asset it does not hold.
-  `tapassets.Claimer` spends the deposit through the owner's composed exit
-  leaf into keys tapd derives, at the deposit's full value, so the claim pays
-  no fee; txconfirm relays it with a CPFP child from the daemon wallet. The
-  claim journal (`assets/claims`) pins tapd's keys and the signed
-  transaction, so a retry or a restart rebuilds the same claim.
-- A claim is reserved and recorded before tapd learns of it. The round actor
-  reserves the deposit (`round.ReserveAssetDepositClaimRequest`), refusing
-  while a round holds it and refusing to board it afterwards, and
+  asset wallet of the asset backend, once the boarding exit delay has passed
+  since its proof's height. The claim reads the proof and its height from
+  the backend again, since a reorganization deeper than the boarding depth
+  moves the deposit to another block after its row is written. It refuses a
+  tapd that `tapassets.TapdCanClaim` rejects, since such a tapd cannot
+  confirm a transfer spending an asset it does not hold. No version gates
+  the embedded engine. `tapassets.Claimer` spends the deposit through the
+  owner's composed exit leaf into keys the backend derives, at the
+  deposit's full value, so the claim pays no fee;
+  txconfirm relays it with a CPFP child from the daemon wallet. The claim
+  journal pins the backend's keys and the signed transaction, so a retry or
+  a restart rebuilds the same claim. The tapd backend keeps the journal in
+  files (`assets/claims`), and the embedded backend keeps it in the database
+  (`assetJournal`), beside the deposit journal.
+- A claim is reserved and recorded before the asset backend learns of it. The
+  round actor reserves the deposit (`round.ReserveAssetDepositClaimRequest`),
+  refusing while a round holds it and refusing to board it afterwards, and
   `asset_deposit_claims` records the claim. Board refuses a recorded claim,
   which covers a restart. txconfirm keeps no state across restarts, so the
   deposit watcher hands every pending claim to it again, and marks a claim
-  `claimed` only once tapd's transfer for it is
+  `claimed` only once the backend's transfer for it is
   `chainsource.DefaultFinalityDepth` blocks deep, the depth at which
-  txconfirm stops following it through reorgs.
-- One `tapassets.Claimer` (`Server.assetClaimer`), created when tapd
-  connects, claims both deposits (`deposit/` journal keys) and asset VTXOs
-  (`vtxo/`). The unroll registry hands a matured asset VTXO to
+  txconfirm stops following it through reorgs. On the embedded backend that
+  block must also be the best chain's block at its height: the engine still
+  reports a block that left the chain while the daemon was down, until the
+  claim is mined again.
+- One `tapassets.Claimer` (`Server.assetClaimer`) claims both deposits
+  (`deposit/` journal keys) and asset VTXOs (`vtxo/`). The tapd backend
+  creates it when tapd connects, and the embedded backend creates it with
+  the engine. The unroll registry hands a matured asset VTXO to
   `assetVTXOClaimer`, which takes the proof path and OP_TRUE witness of each
   issuance the VTXO holds from its sealed package, reads the block of every
   transaction on those paths through one-shot chainsource confirmations with
   `IncludeBlock` (bounded by `assetVTXOClaimChainTimeout`), and supplies the
-  confirmed proof files with the claim, since tapd never saw the tree's
-  history. This needs a tapd that
-  accepts `input_proof_files`; an older tapd refuses the publish and the
-  unroll retries at the next block.
-  The embedded backend creates no claimer: `ClaimAssetDeposit` returns
-  `FailedPrecondition` there, and the exit of an asset VTXO stops at
-  `vtxo.ErrAssetVTXORequiresTransition`.
+  confirmed proof files with the claim, since the backend never saw the
+  tree's history. tapd must accept `input_proof_files`; an older tapd refuses
+  the publish and the unroll retries at the next block.
+- The embedded engine verifies each proof file a claim supplies back to its
+  issuance before it records the claim, and a grouped asset verifies only
+  for a trusted group. `groupTrustingClaimer` therefore trusts the group of
+  the claimed asset before each claim: the group the engine trusted for the
+  round is forgotten at a restart, and the exit of an asset VTXO can follow
+  one.
 - `Server.run` registers a deferred `actorSystem.Shutdown()` **before** the
   deferred `db.Close()` so in-flight actor DB transactions drain before the
   connection pool tears down.

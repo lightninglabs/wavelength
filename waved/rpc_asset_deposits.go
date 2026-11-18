@@ -17,7 +17,7 @@ func (r *RPCServer) DepositAsset(ctx context.Context,
 	if deposits == nil {
 		return nil, status.Error(
 			codes.FailedPrecondition,
-			"asset deposits require assets.backend=tapd",
+			"asset deposits require an asset backend",
 		)
 	}
 	if err := r.requireWalletReady(); err != nil {
@@ -40,7 +40,7 @@ func (r *RPCServer) BoardAssetDeposit(ctx context.Context,
 	if deposits == nil {
 		return nil, status.Error(
 			codes.FailedPrecondition,
-			"asset deposits require assets.backend=tapd",
+			"asset deposits require an asset backend",
 		)
 	}
 	if err := r.requireWalletReady(); err != nil {
@@ -56,7 +56,7 @@ func (r *RPCServer) BoardAssetDeposit(ctx context.Context,
 }
 
 // ClaimAssetDeposit claims a confirmed asset deposit that no round holds back
-// to the tapd wallet through the owner's exit path.
+// to the asset wallet through the owner's exit path.
 func (r *RPCServer) ClaimAssetDeposit(ctx context.Context,
 	req *waverpc.ClaimAssetDepositRequest) (*waverpc.AssetDeposit, error) {
 
@@ -64,7 +64,7 @@ func (r *RPCServer) ClaimAssetDeposit(ctx context.Context,
 	if deposits == nil {
 		return nil, status.Error(
 			codes.FailedPrecondition,
-			"asset deposits require assets.backend=tapd",
+			"asset deposits require an asset backend",
 		)
 	}
 	if err := r.requireWalletReady(); err != nil {

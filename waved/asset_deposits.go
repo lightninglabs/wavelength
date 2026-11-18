@@ -119,6 +119,11 @@ type assetDepositService struct {
 	// does. tapd is asked for its version.
 	signsAnchors bool
 
+	// creditsClaims is set for a backend that confirms a transfer
+	// spending an asset it does not hold whatever version it reports, as
+	// the embedded engine does. tapd is asked for its version.
+	creditsClaims bool
+
 	// terms returns the operator terms the deposit policy commits to.
 	terms func() *types.OperatorTerms
 
@@ -139,6 +144,11 @@ type assetDepositService struct {
 	broadcastClaim claimBroadcaster
 	reserveClaim   claimReserver
 
+	// bestBlockHash checks the block a claim confirmed in against the
+	// best chain. It is nil for tapd, which follows the reorganizations
+	// of its own transfers.
+	bestBlockHash blockHashReader
+
 	// claimsMu guards trackedClaims, the claims txconfirm tracks in this
 	// process. txconfirm keeps no state across restarts.
 	claimsMu      sync.Mutex
@@ -158,6 +168,7 @@ type assetDepositConfig struct {
 	store            assetDepositStore
 	backend          assetDepositBackend
 	signsAnchors     bool
+	creditsClaims    bool
 	onboarder        assetOnboarder
 	terms            func() *types.OperatorTerms
 	quoteBoardingFee boardingFeeQuoter
@@ -167,6 +178,7 @@ type assetDepositConfig struct {
 	claimer          assetClaimer
 	broadcastClaim   claimBroadcaster
 	reserveClaim     claimReserver
+	bestBlockHash    blockHashReader
 }
 
 // newAssetDepositService returns a deposit service over its dependencies.
@@ -176,6 +188,7 @@ func newAssetDepositService(cfg *assetDepositConfig) *assetDepositService {
 		store:            cfg.store,
 		backend:          cfg.backend,
 		signsAnchors:     cfg.signsAnchors,
+		creditsClaims:    cfg.creditsClaims,
 		onboarder:        cfg.onboarder,
 		terms:            cfg.terms,
 		quoteBoardingFee: cfg.quoteBoardingFee,
@@ -185,6 +198,7 @@ func newAssetDepositService(cfg *assetDepositConfig) *assetDepositService {
 		claimer:          cfg.claimer,
 		broadcastClaim:   cfg.broadcastClaim,
 		reserveClaim:     cfg.reserveClaim,
+		bestBlockHash:    cfg.bestBlockHash,
 		trackedClaims:    make(map[chainhash.Hash]struct{}),
 		poll:             make(chan struct{}, 1),
 	}

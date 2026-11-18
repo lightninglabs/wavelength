@@ -245,7 +245,7 @@ func generatedRegistry() []serviceSpec {
 					Aliases:  []string{"claim-asset-deposit"},
 					Input:    "waverpc.ClaimAssetDepositRequest",
 					Output:   "waverpc.AssetDeposit",
-					Comments: "ClaimAssetDeposit spends a confirmed asset deposit that no round\nholds through the owner's exit path, once the exit delay has passed,\nand returns the asset to the tapd wallet. The claim pays its fee with a\nCPFP child from the daemon wallet. Retrying resumes the same claim.\nRequires a tapd that confirms transfers spending assets it does not\nhold.",
+					Comments: "ClaimAssetDeposit spends a confirmed asset deposit that no round\nholds through the owner's exit path, once the exit delay has passed,\nand returns the asset to the asset wallet of the asset backend. The\nclaim pays its fee with a CPFP child from the daemon wallet. Retrying\nresumes the same claim. Requires an asset backend; a tapd backend must\nrun tapd v0.9.0 or later, which confirms transfers spending assets it\ndoes not hold.",
 				},
 				{
 					Name:     "NewAssetReceiveKeys",
