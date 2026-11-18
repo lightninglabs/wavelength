@@ -28,6 +28,8 @@ func TestReceiptHintAPNS(t *testing.T) {
 	require.NotContains(t, payload["aps"], "alert")
 	require.Equal(t, "payment_activity", payload["wavelength"]["kind"])
 	require.Equal(t, "opaque-hash", payload["wavelength"]["event_id"])
+	require.NotContains(t, payload["wavelength"], "wake_reason")
+	require.NotContains(t, payload["wavelength"], "wake_deadline_unix")
 	wake, err := notificationPayload(Delivery{Scope: ScopeWake})
 	require.NoError(t, err)
 	require.NotContains(t, string(wake), "payment_activity")

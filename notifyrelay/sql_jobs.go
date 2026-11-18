@@ -13,9 +13,10 @@ import (
 // obligation. Disabled tokens still retain work; they cannot block a source's
 // cumulative ACK. Payment correlators deduplicate; ordinary wakes use the
 // source checkpoint and binding generation instead of growing a replay set.
+// The optional wake deadline describes the event and does not govern delivery.
 func enqueueSQLJobTx(ctx context.Context, q *sqlc.Queries,
 	sub sqlc.RelaySubscription, scope Scope, eventID string,
-	now time.Time) error {
+	wakeDeadlineUnix int64, now time.Time) error {
 
 	if sub.ExpiresAt <= now.Unix() {
 		return ErrNotFound
@@ -63,6 +64,7 @@ func enqueueSQLJobTx(ctx context.Context, q *sqlc.Queries,
 		ID: id, SubscriptionID: sub.ID,
 		Scope: string(scope), EventHash: hash,
 		NextAt: now.UnixNano(), ExpiresAt: expiry,
+		WakeDeadlineUnix: wakeDeadlineUnix,
 	}); err != nil {
 		return err
 	}
@@ -254,8 +256,9 @@ func sqlDelivery(job sqlc.RelayJob, sub sqlc.RelaySubscription,
 			job.DoneGeneration,
 		),
 		EventHash: job.EventHash, NextAt: job.NextAt,
-		ExpiresAt:  job.ExpiresAt,
-		ClaimToken: job.ClaimToken, LeaseUntil: job.LeaseUntil,
+		ExpiresAt:        job.ExpiresAt,
+		WakeDeadlineUnix: job.WakeDeadlineUnix,
+		ClaimToken:       job.ClaimToken, LeaseUntil: job.LeaseUntil,
 		Attempts: uint32(
 			job.Attempts,
 		),

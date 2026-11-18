@@ -48,7 +48,7 @@ func (h *sqlAuthHarness) sqlEnqueue(t *testing.T, id string, scope Scope,
 				}
 
 				return enqueueSQLJobTx(
-					t.Context(), q, sub, scope, event,
+					t.Context(), q, sub, scope, event, 0,
 					h.now,
 				)
 			},
@@ -315,7 +315,8 @@ func TestSQLPaymentReplayAndRollback(t *testing.T) {
 			return err
 		}
 		if err := enqueueSQLJobTx(
-			t.Context(), q, sub, ScopeAlert, "uncommitted", h.now,
+			t.Context(), q, sub, ScopeAlert, "uncommitted", 0,
+			h.now,
 		); err != nil {
 			return err
 		}
@@ -358,7 +359,9 @@ func TestSQLDedupQuotaIsPerInstallation(t *testing.T) {
 			return err
 		}
 
-		return enqueueSQLJobTx(ctx, q, sub, ScopeAlert, "full", h.now)
+		return enqueueSQLJobTx(
+			ctx, q, sub, ScopeAlert, "full", 0, h.now,
+		)
 	})
 	require.NoError(t, err)
 	pending, err := h.database.Queries.GetJob(ctx, "alert/"+id)

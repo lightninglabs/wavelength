@@ -57,17 +57,18 @@ type installation struct {
 // relayJob coalesces new work while a provider request is in flight. Completing
 // generation N cannot erase a newer N+1 admitted during that request.
 type relayJob struct {
-	ID             string `json:"id"`
-	SubscriptionID string `json:"subscription_id"`
-	Scope          Scope  `json:"scope"`
-	Generation     uint64 `json:"generation"`
-	DoneGeneration uint64 `json:"done_generation"`
-	EventHash      string `json:"event_hash"`
-	NextAt         int64  `json:"next_at"`
-	ExpiresAt      int64  `json:"expires_at"`
-	ClaimToken     string `json:"claim_token"`
-	LeaseUntil     int64  `json:"lease_until"`
-	Attempts       uint32 `json:"attempts"`
+	ID               string `json:"id"`
+	SubscriptionID   string `json:"subscription_id"`
+	Scope            Scope  `json:"scope"`
+	Generation       uint64 `json:"generation"`
+	DoneGeneration   uint64 `json:"done_generation"`
+	EventHash        string `json:"event_hash"`
+	NextAt           int64  `json:"next_at"`
+	ExpiresAt        int64  `json:"expires_at"`
+	WakeDeadlineUnix int64  `json:"wake_deadline_unix"`
+	ClaimToken       string `json:"claim_token"`
+	LeaseUntil       int64  `json:"lease_until"`
+	Attempts         uint32 `json:"attempts"`
 }
 
 // InstallationID derives the public routing identity before enrollment, so a
