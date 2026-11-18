@@ -416,8 +416,8 @@ func TestChainBackendConfRegistration(t *testing.T) {
 	}
 }
 
-// TestChainBackendSpendRegistration verifies that spend
-// registrations fire when an output is spent.
+// TestChainBackendSpendRegistration verifies that historical spends are
+// buffered before registration returns.
 func TestChainBackendSpendRegistration(t *testing.T) {
 	t.Parallel()
 
@@ -499,8 +499,8 @@ func TestChainBackendSpendRegistration(t *testing.T) {
 		require.Equal(t, uint32(1), spend.SpenderInputIndex)
 		require.Equal(t, int32(99), spend.SpendingHeight)
 
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for spend notification")
+	default:
+		t.Fatal("historical spend was not available on return")
 	}
 }
 
