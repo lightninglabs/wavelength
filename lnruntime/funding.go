@@ -545,13 +545,9 @@ func (f *FundingRuntime) cancelBacking(pendingID lndfunding.PendingChanID,
 	channelPoint *wire.OutPoint) error {
 
 	if channelPoint != nil {
-		channel, err := f.stateDB.FetchChannel(*channelPoint)
-		switch {
-		case err == nil:
-			return f.abandonPendingBacking(channel)
-
-		case !errors.Is(err, channeldb.ErrChannelNotFound):
-			return fmt.Errorf("find pending lnd channel: %w", err)
+		done, err := f.cancelStoredBacking(*channelPoint)
+		if done || err != nil {
+			return err
 		}
 	}
 
@@ -563,28 +559,68 @@ func (f *FundingRuntime) cancelBacking(pendingID lndfunding.PendingChanID,
 
 		return f.notifier.UnregisterVirtualFunding(channelPoint.Hash)
 	}
-	if channelPoint == nil {
+	if !missingFundingIntent(cancelErr, pendingID) {
 		return fmt.Errorf("cancel lnd funding intent: %w", cancelErr)
+	}
+	if channelPoint == nil {
+
+		// Before backing installation the intent is the only cleanup
+		// target. It may be gone before FundingCanceled is recorded.
+		return nil
 	}
 
 	// CompleteReservation removes the PSBT intent before it persists the
-	// pending channel. Re-read the channel DB to close that race.
-	channel, err := f.stateDB.FetchChannel(*channelPoint)
-	if err == nil {
-		return f.abandonPendingBacking(channel)
-	}
-	if !errors.Is(err, channeldb.ErrChannelNotFound) {
-		return fmt.Errorf("reconcile pending lnd channel: %w", err)
-	}
-	_, err = f.stateDB.FetchClosedChannel(channelPoint)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, channeldb.ErrClosedChannelNotFound) {
-		return fmt.Errorf("find canceled lnd channel: %w", err)
+	// pending channel. Absence alone cannot settle this case.
+	done, err := f.cancelStoredBacking(*channelPoint)
+	if done || err != nil {
+		return err
 	}
 
-	return fmt.Errorf("cancel lnd funding intent: %w", cancelErr)
+	return fmt.Errorf("reconcile missing funding intent for %v: %w",
+		channelPoint, cancelErr)
+}
+
+// missingFundingIntent requires wallet evidence for this exact ID. A legacy
+// untyped error or a joined cleanup failure is not proof of absence.
+func missingFundingIntent(err error, pendingID lndfunding.PendingChanID) bool {
+	type missingIntent interface {
+		MissingFundingIntent() [32]byte
+	}
+	for ; err != nil; err = errors.Unwrap(err) {
+		if missing, ok := err.(missingIntent); ok {
+			return missing.MissingFundingIntent() == pendingID
+		}
+	}
+
+	return false
+}
+
+// cancelStoredBacking distinguishes a pending channel we can abandon, an
+// already abandoned channel, and a point not yet recorded by lnd.
+func (f *FundingRuntime) cancelStoredBacking(point wire.OutPoint) (bool,
+	error) {
+
+	channel, err := f.stateDB.FetchChannel(point)
+	if err == nil {
+		return true, f.abandonPendingBacking(channel)
+	}
+	if !errors.Is(err, channeldb.ErrChannelNotFound) {
+		return false, fmt.Errorf("find pending lnd channel: %w", err)
+	}
+	closed, err := f.stateDB.FetchClosedChannel(&point)
+	if errors.Is(err, channeldb.ErrClosedChannelNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("find canceled lnd channel: %w", err)
+	}
+	if closed.CloseType != channeldb.Abandoned ||
+		closed.ChanPoint != point {
+		return false, fmt.Errorf("no abandoned lnd channel at %v",
+			point)
+	}
+
+	return true, nil
 }
 
 // abandonPendingBacking removes finalized channel state before Ark commits the
@@ -733,6 +769,18 @@ func nativeChannelDBType(initiator bool) chanstate.ChannelType {
 	}
 
 	return channelType
+}
+
+// isNativeChannelType reports whether an explicit wire type is exactly the
+// static-remote-key zero-fee-anchor commitment type.
+func isNativeChannelType(channelType *lnwire.ChannelType) bool {
+	if channelType == nil {
+		return false
+	}
+
+	return (*lnwire.RawFeatureVector)(channelType).Equals(
+		(*lnwire.RawFeatureVector)(nativeChannelType()),
+	)
 }
 
 // rejectInternalFundingPublish makes accidental use of lnd's wallet-funded
