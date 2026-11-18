@@ -78,6 +78,12 @@ func TestDurableRoundRejectsForfeitCollection(t *testing.T) {
 	id := round.RoundID(uuid.New())
 	missing := wire.OutPoint{Hash: [32]byte{1}, Index: 3}
 	peer := wire.OutPoint{Hash: [32]byte{2}, Index: 7}
+	collected := map[wire.OutPoint]*round.ForfeitSignatureResponse{
+		peer: {
+			RoundID:      id.String(),
+			VTXOOutpoint: peer,
+		},
+	}
 	collecting := &round.ForfeitSignaturesCollectingState{
 		RoundID: id,
 		Intents: round.Intents{Forfeits: []types.ForfeitRequest{
@@ -90,12 +96,7 @@ func TestDurableRoundRejectsForfeitCollection(t *testing.T) {
 		ExpectedForfeits: map[wire.OutPoint]*round.ConnectorLeafInfo{
 			missing: {}, peer: {},
 		},
-		CollectedForfeits: map[wire.OutPoint]*round.ForfeitSignatureResponse{
-			peer: {
-				RoundID:      id.String(),
-				VTXOOutpoint: peer,
-			},
-		},
+		CollectedForfeits: collected,
 	}
 	serverRef := actor.NewChannelTellOnlyRef[serverconn.ServerConnMsg](
 		"server", 1,
