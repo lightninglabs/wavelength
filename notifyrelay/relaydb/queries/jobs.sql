@@ -6,11 +6,13 @@ SELECT COUNT(*) FROM relay_jobs;
 
 -- name: CoalesceJob :exec
 INSERT INTO relay_jobs (
-    id, subscription_id, scope, generation, event_hash, next_at, expires_at
-) VALUES ($1, $2, $3, 1, $4, $5, $6)
+    id, subscription_id, scope, generation, event_hash, next_at, expires_at,
+    wake_deadline_unix
+) VALUES ($1, $2, $3, 1, $4, $5, $6, $7)
 ON CONFLICT (subscription_id, scope) DO UPDATE SET
     generation = relay_jobs.generation + 1,
-    event_hash = excluded.event_hash, expires_at = excluded.expires_at;
+    event_hash = excluded.event_hash, expires_at = excluded.expires_at,
+    wake_deadline_unix = excluded.wake_deadline_unix;
 
 -- name: GetDedup :one
 SELECT expires_at FROM relay_dedup

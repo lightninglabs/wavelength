@@ -3,6 +3,7 @@ package notifyrelay
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -78,6 +79,12 @@ func TestRoundWakeIgnoresMaintenanceQuietPeriod(t *testing.T) {
 	ordinary, err := h.store.claim(t.Context(), h.now)
 	require.NoError(t, err)
 	require.NotNil(t, ordinary)
+	payload, err := notificationPayload(*ordinary)
+	require.NoError(t, err)
+	var data map[string]map[string]any
+	require.NoError(t, json.Unmarshal(payload, &data))
+	require.Equal(t, "mailbox_update", data["wavelength"]["wake_reason"])
+	require.NotContains(t, data["wavelength"], "wake_deadline_unix")
 	require.NoError(
 		t,
 		h.store.complete(
@@ -87,16 +94,31 @@ func TestRoundWakeIgnoresMaintenanceQuietPeriod(t *testing.T) {
 			h.now,
 		),
 	)
-	admitRoundWake(t, h, f, id, 1, h.now.Add(time.Minute))
+	firstDeadline := h.now.Add(40 * time.Second)
+	admitRoundWake(t, h, f, id, 1, firstDeadline)
 	signing, err := h.store.claim(t.Context(), h.now)
 	require.NoError(t, err)
 	require.NotNil(t, signing)
 	require.Equal(t, ScopeRound, signing.job.Scope)
 	require.Equal(t, ScopeWake, signing.Scope, "existing silent host route")
-	payload, err := notificationPayload(*signing)
+	payload, err = notificationPayload(*signing)
 	require.NoError(t, err)
 	require.NotContains(t, string(payload), "alert")
-	admitRoundWake(t, h, f, id, 2, h.now.Add(time.Minute))
+	data = nil
+	require.NoError(t, json.Unmarshal(payload, &data))
+	require.Equal(t, "round_signing", data["wavelength"]["wake_reason"])
+	require.Equal(
+		t,
+		float64(
+			firstDeadline.Unix(),
+		),
+		data["wavelength"]["wake_deadline_unix"],
+	)
+	nextDeadline := h.now.Add(time.Minute)
+	admitRoundWake(t, h, f, id, 2, nextDeadline)
+	retry, err := notificationPayload(*signing)
+	require.NoError(t, err)
+	require.JSONEq(t, string(payload), string(retry))
 	require.NoError(
 		t,
 		h.store.complete(
@@ -120,6 +142,7 @@ func TestRoundWakeIgnoresMaintenanceQuietPeriod(t *testing.T) {
 	require.NotNil(
 		t, next, "new generation survives completion and restart",
 	)
+	require.Equal(t, nextDeadline.Unix(), next.job.WakeDeadlineUnix)
 }
 
 // TestRoundWakeExpiredAndReplay consumes source progress without refreshing
@@ -184,6 +207,15 @@ func TestScheduledRoundWakeWindowAndRestart(t *testing.T) {
 		t, time.Unix(deadline.Unix(), 0).UnixNano(),
 		sent.ExpiresAt.UnixNano(),
 	)
+	payload, err := notificationPayload(*sent)
+	require.NoError(t, err)
+	var data map[string]map[string]any
+	require.NoError(t, json.Unmarshal(payload, &data))
+	require.Equal(t, "scheduled_round", data["wavelength"]["wake_reason"])
+	require.Equal(
+		t, float64(cutoff), data["wavelength"]["wake_deadline_unix"],
+	)
+	require.NotContains(t, data["wavelength"], "kind")
 	require.NoError(
 		t,
 		peer.complete(

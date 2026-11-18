@@ -90,7 +90,7 @@ func TestFutureRoundSchedulesCannotBlockDelivery(t *testing.T) {
 		}
 
 		return enqueueSQLJobTx(
-			t.Context(), q, sub, ScopeSchedule, "", h.now,
+			t.Context(), q, sub, ScopeSchedule, "", 0, h.now,
 		)
 	})
 	require.ErrorIs(t, err, ErrCapacity)
@@ -115,7 +115,7 @@ func TestMaintenanceCapacityCannotBlockRoundSigning(t *testing.T) {
 		}
 
 		return enqueueSQLJobTx(
-			t.Context(), q, sub, ScopeAlert, "another-payment",
+			t.Context(), q, sub, ScopeAlert, "another-payment", 0,
 			h.now,
 		)
 	})
