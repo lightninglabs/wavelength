@@ -40,3 +40,14 @@ WHERE session_id = $1;
 -- Incoming snapshots cannot contribute outgoing input or retry diagnostics.
 SELECT * FROM oor_session_registry
 WHERE session_id = $1 AND direction = 1;
+
+-- name: GetOORDiagnosticPackage :one
+-- A stored package may be a local transfer even if its registry row is gone.
+SELECT p.direction,
+    (EXISTS (SELECT 1 FROM oor_session_registry r WHERE r.session_id = p.session_id) OR
+     EXISTS (SELECT 1 FROM oor_dispatch_attempts d WHERE d.session_id = p.session_id) OR
+     EXISTS (SELECT 1 FROM oor_vtxo_bindings b WHERE b.session_id = p.session_id) OR
+     EXISTS (SELECT 1 FROM vtxos v WHERE v.outpoint_hash = p.session_id) OR
+     EXISTS (SELECT 1 FROM ledger_entries l WHERE l.session_id = p.session_id)) AS wallet_evidence
+FROM oor_packages p
+WHERE p.session_id = $1;

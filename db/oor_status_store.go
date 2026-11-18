@@ -37,7 +37,7 @@ type OORStatusCursor struct {
 }
 
 // OORStatusStore reads merged package and registry status in one read snapshot.
-// It never loads Ark PSBTs or checkpoint rows.
+// The status List and Get methods never load Ark PSBTs or checkpoint rows.
 type OORStatusStore struct {
 	*TransactionExecutor[*sqlc.Queries]
 }

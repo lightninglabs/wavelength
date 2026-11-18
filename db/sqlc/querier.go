@@ -141,6 +141,8 @@ type Querier interface {
 	GetInternalKeyByID(ctx context.Context, id int64) (InternalKey, error)
 	// Macaroon root key store queries.
 	GetMacaroonRootKey(ctx context.Context, id []byte) (Macaroon, error)
+	// A stored package may be a local transfer even if its registry row is gone.
+	GetOORDiagnosticPackage(ctx context.Context, sessionID []byte) (GetOORDiagnosticPackageRow, error)
 	GetOORDispatchAttemptByIdempotencyKey(ctx context.Context, idempotencyKey string) (OorDispatchAttempt, error)
 	GetOORDispatchAttemptBySessionID(ctx context.Context, sessionID []byte) (OorDispatchAttempt, error)
 	// Incoming snapshots cannot contribute outgoing input or retry diagnostics.

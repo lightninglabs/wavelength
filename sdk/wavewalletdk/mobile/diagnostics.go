@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -36,7 +35,7 @@ func DiagnosticRead(reqJSON []byte) ([]byte, error) {
 	}
 	rpc := client.ArkRPC()
 	var response proto.Message
-	var oorAmounts map[string]int64
+	var oorRecords map[string]diagnosticOORRecord
 	switch req.View {
 	case "vtxos":
 		statuses := []waverpc.VTXOStatus{
@@ -94,33 +93,15 @@ func DiagnosticRead(reqJSON []byte) ([]byte, error) {
 		)
 
 	case "oor":
-		oorAmounts = make(map[string]int64)
 		sessions, readErr := rpc.ListOORSessions(
-			ctx, &waverpc.ListOORSessionsRequest{},
+			ctx, &waverpc.ListOORSessionsRequest{
+				PageToken: req.PageToken,
+			},
 		)
 		if readErr != nil {
 			return nil, readErr
 		}
-		unspecified := waverpc.
-			OORSessionDirection_OOR_SESSION_DIRECTION_UNSPECIFIED
-		outgoing := waverpc.
-			OORSessionDirection_OOR_SESSION_DIRECTION_OUTGOING
-		for _, session := range sessions.GetSessions() {
-			direction := session.GetDirection()
-			if direction == unspecified {
-				continue
-			}
-			amount, readErr := client.OORAmount(
-				ctx, session.GetSessionId(),
-				direction == outgoing,
-			)
-			if readErr != nil {
-				return nil, readErr
-			}
-			if amount != nil {
-				oorAmounts[session.GetSessionId()] = *amount
-			}
-		}
+		oorRecords = diagnosticOORRecords(ctx, client, sessions)
 		response = sessions
 
 	case "swaps":
@@ -130,11 +111,8 @@ func DiagnosticRead(reqJSON []byte) ([]byte, error) {
 		if readErr != nil {
 			return nil, readErr
 		}
-		// Proofs of payment and invoices are not needed to diagnose
-		// states.
-		for _, swap := range swaps.GetSwaps() {
-			swap.Preimage = ""
-			swap.Invoice = ""
+		for i, swap := range swaps.GetSwaps() {
+			swaps.Swaps[i] = diagnosticSwap(swap)
 		}
 		response = swaps
 
@@ -150,12 +128,12 @@ func DiagnosticRead(reqJSON []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	return marshalDiagnostic(response, oorAmounts)
+	return marshalDiagnostic(response, oorRecords)
 }
 
 // marshalDiagnostic preserves protobuf integer strings and optional OOR values.
 func marshalDiagnostic(response proto.Message,
-	oorAmounts map[string]int64) ([]byte, error) {
+	oorRecords map[string]diagnosticOORRecord) ([]byte, error) {
 
 	data, err := (protojson.MarshalOptions{
 		UseProtoNames: true, EmitUnpopulated: true,
@@ -169,7 +147,7 @@ func marshalDiagnostic(response proto.Message,
 		return nil, err
 	}
 
-	if oorAmounts != nil {
+	if oorRecords != nil {
 		var records []map[string]json.RawMessage
 		if err := json.Unmarshal(
 			object["sessions"], &records,
@@ -183,12 +161,23 @@ func marshalDiagnostic(response proto.Message,
 			); err != nil {
 				return nil, err
 			}
-			if amount, ok := oorAmounts[id]; ok {
-				record["amount_sat"] = json.RawMessage(
-					strconv.Quote(
-						strconv.FormatInt(amount, 10),
-					),
-				)
+			if item, ok := oorRecords[id]; ok {
+				if item.amount != nil {
+					record["amount_sat"], err = json.Marshal(
+						fmt.Sprint(*item.amount),
+					)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if item.details != nil {
+					record["diagnostic"], err = json.Marshal(
+						item.details,
+					)
+					if err != nil {
+						return nil, err
+					}
+				}
 			}
 		}
 		object["sessions"], err = json.Marshal(records)
