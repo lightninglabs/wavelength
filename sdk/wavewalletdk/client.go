@@ -482,6 +482,21 @@ func (c *Client) Deposit(ctx context.Context, req DepositRequest) (
 func (c *Client) Receive(ctx context.Context, req ReceiveRequest) (
 	*ReceiveResult, error) {
 
+	return c.receive(ctx, req, false)
+}
+
+// ReceiveOnActiveChannel creates an invoice backed only by existing channel
+// liquidity. Neither an old daemon nor an unavailable channel triggers a retry.
+func (c *Client) ReceiveOnActiveChannel(ctx context.Context,
+	req ReceiveRequest) (*ReceiveResult, error) {
+
+	return c.receive(ctx, req, true)
+}
+
+// receive keeps result and receipt mapping identical for both invoice paths.
+func (c *Client) receive(ctx context.Context, req ReceiveRequest,
+	activeChannelOnly bool) (*ReceiveResult, error) {
+
 	if err := c.requireWalletRPC(); err != nil {
 		return nil, err
 	}
@@ -489,12 +504,21 @@ func (c *Client) Receive(ctx context.Context, req ReceiveRequest) (
 		return nil, fmt.Errorf("amount_sat must be positive")
 	}
 
-	resp, err := c.wallet.Recv(ctx, &wavewalletrpc.RecvRequest{
+	recv := c.wallet.Recv
+	if activeChannelOnly {
+		recv = c.wallet.RecvOnActiveChannel
+	}
+	resp, err := recv(ctx, &wavewalletrpc.RecvRequest{
 		AmtSat:    req.AmountSat,
 		Memo:      req.Memo,
 		RequestId: req.RequestID,
 	})
 	if err != nil {
+		if activeChannelOnly {
+			return nil, fmt.Errorf("create active-channel receive "+
+				"invoice: %w", err)
+		}
+
 		return nil, fmt.Errorf("create receive invoice: %w", err)
 	}
 

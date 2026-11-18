@@ -5,7 +5,11 @@ package wavewalletdk
 import "github.com/lightninglabs/wavelength/waved"
 
 // configureSwapRuntime keeps default builds compiling.
-func configureSwapRuntime(_ *waved.Config, enabled bool) error {
+func configureSwapRuntime(cfg *waved.Config) error {
+	if cfg.Swap.ArkChannelReceiveEnabled {
+		return ErrWalletRPCUnavailable
+	}
+
 	return nil
 }
 

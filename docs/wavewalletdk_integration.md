@@ -249,6 +249,44 @@ fmt.Println("entry:", send.Entry.ID, send.Entry.Status)
 fmt.Println("actual outflow:", send.ActualAmountSat)
 ```
 
+## Payments on an existing Ark channel
+
+Set `cfg.ArkChannelsEnabled = true` **before** `Start`. This mode needs
+`lwwallet`, continuous mailbox ingress (not `HostDrivenIngress`), and a
+channel-capable SwapDK hub. Create or unlock the wallet and wait for
+readiness. The daemon authenticates its operator and swap mailbox requests
+with wallet-owned keys; the application does not supply a channel signer.
+
+1. **Fund outbound capacity.** Persist a distinct idempotency key for the
+   promotion, then call
+   `client.PromoteVTXO(ctx, wavewalletdk.PromoteVTXORequest{AmountSat: 50000, IdempotencyKey: key})`.
+   The wallet selects its VTXOs. The result identifies the channel by hex
+   `ChannelID`. After an uncertain result, use the **same** key and amount;
+   a fresh key asks for a second channel.
+2. **Spend from the channel.** Call
+   `client.PayOnActiveChannel(ctx, wavewalletdk.PayOnActiveChannelRequest{Invoice: bolt11, MaxFeeSat: 10})`.
+   Success returns the payment hash, preimage, channel ID, private amount and
+   fee. Spending shifts balance to the hub side, creating inbound capacity.
+   Ordinary `PrepareSend` / `SendPrepared` do not spend this channel balance.
+3. **Receive into the channel.** Call
+   `client.ReceiveOnActiveChannel(ctx, wavewalletdk.ReceiveRequest{AmountSat: 1000, Memo: "refund"})`.
+   Hand out the returned `Invoice` only on success. The hub needs an existing
+   active channel with sufficient inbound capacity; selection at invoice
+   creation does not reserve liquidity until payment. A rejection does not
+   create a channel, issue a vHTLC invoice, or start a credit receive.
+
+An ordinary `client.Receive` keeps the wallet's vHTLC and sub-floor credit
+routing even with the channel runtime enabled. The distinct wallet RPC
+`RecvOnActiveChannel` fails on an older daemon instead of silently creating
+an ordinary invoice. Its HTTP route is `POST /v1/wallet/recv-on-active-channel`.
+Promotion and channel pay use `ArkChannelService`, which is available over
+embedded or remote gRPC, not remote HTTP. An embedded WASM wallet uses local
+gRPC for these calls even though its operator and hub transports are REST.
+
+See [mobile binding requests](wavewalletdk_mobile.md#ark-channel-operations)
+and the [channel lifecycle](ark-channel-lifecycle.md) for liquidity and
+recovery semantics.
+
 ## Native btcwallet RPC
 
 `BtcwalletRPC` exposes btcsuite btcwallet's native `walletrpc.WalletService`
