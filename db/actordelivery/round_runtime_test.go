@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/db"
@@ -37,6 +38,178 @@ func (r *roundRuntimeQuery[M, R]) Ask(_ context.Context, _ M) actor.Future[R] {
 	promise.Complete(fn.Ok(r.response))
 
 	return promise.Future()
+}
+
+// roundRuntimeCollectingStore stages a collecting attempt through startup.
+// Domain writes still go to the real store in the actor's SQL transaction.
+type roundRuntimeCollectingStore struct {
+	round.RoundStore
+	state *round.ForfeitSignaturesCollectingState
+}
+
+// ListActiveRounds supplies the staged attempt for the initial import.
+func (s *roundRuntimeCollectingStore) ListActiveRounds(_ context.Context) (
+	[]*round.Round, error) {
+
+	return []*round.Round{{RoundID: s.state.RoundID}}, nil
+}
+
+// FetchState supplies the pre-checkpoint state without running tree signing.
+func (s *roundRuntimeCollectingStore) FetchState(_ context.Context,
+	id round.RoundID) (*round.Round, round.ClientState, error) {
+
+	return &round.Round{RoundID: id}, s.state, nil
+}
+
+// TestDurableRoundRejectsForfeitCollection sends a refusal through the same
+// durable mailbox as the VTXO manager. The refusal must commit the failed
+// state and release the peer's reservation without a signature submission.
+func TestDurableRoundRejectsForfeitCollection(t *testing.T) {
+	testDB := db.NewTestDB(t)
+	clk := clock.NewDefaultClock()
+	store, err := NewTxAwareDeliveryStoreFromDB(
+		testDB.DB, testDB.Backend(), clk, btclog.Disabled,
+	)
+	require.NoError(t, err)
+	domain := db.NewStore(
+		testDB.DB, testDB.Queries, testDB.Backend(), btclog.Disabled,
+	)
+	roundStore := domain.NewRoundStore(&chaincfg.MainNetParams, clk)
+	id := round.RoundID(uuid.New())
+	missing := wire.OutPoint{Hash: [32]byte{1}, Index: 3}
+	peer := wire.OutPoint{Hash: [32]byte{2}, Index: 7}
+	collecting := &round.ForfeitSignaturesCollectingState{
+		RoundID: id,
+		Intents: round.Intents{Forfeits: []types.ForfeitRequest{
+			{
+				VTXOOutpoint: &missing,
+			}, {
+				VTXOOutpoint: &peer,
+			},
+		}},
+		ExpectedForfeits: map[wire.OutPoint]*round.ConnectorLeafInfo{
+			missing: {}, peer: {},
+		},
+		CollectedForfeits: map[wire.OutPoint]*round.ForfeitSignatureResponse{
+			peer: {
+				RoundID:      id.String(),
+				VTXOOutpoint: peer,
+			},
+		},
+	}
+	serverRef := actor.NewChannelTellOnlyRef[serverconn.ServerConnMsg](
+		"server", 1,
+	)
+	managerRef := actor.NewChannelTellOnlyRef[round.VTXOManagerMsg](
+		"manager", 1,
+	)
+	timerRef := actor.NewChannelTellOnlyRef[timeout.Msg]("timer", 1)
+	cfg := &round.RoundClientConfig{
+		Name: "round-client", Logger: btclog.Disabled,
+		RoundStore: &roundRuntimeCollectingStore{
+			RoundStore: roundStore, state: collecting,
+		},
+		VTXOStore: roundStore,
+		OperatorTerms: &types.OperatorTerms{
+			MinConfirmations: 1,
+		},
+		ChainParams: &chaincfg.MainNetParams,
+		WalletActor: &roundRuntimeQuery[
+			wallet.WalletMsg,
+			wallet.WalletResp,
+		]{
+			response: &wallet.RegisterConfirmationNotifierResponse{
+				Success: true,
+			},
+		},
+		ChainSource: &roundRuntimeQuery[
+			chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+		]{response: &chainsource.BestHeightResponse{
+			Height: 100,
+		}},
+		ServerConn:   serverRef,
+		TimeoutActor: timerRef,
+		VTXOManager:  managerRef,
+	}
+	runtime, err := round.NewDurableRoundClientActor(cfg, store)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer cancel()
+		require.NoError(t, runtime.StopAndWait(ctx))
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, runtime.Start(ctx))
+
+	ref := runtime.Ref()
+	reason := "input is exiting"
+	require.NoError(
+		t,
+		ref.Tell(
+			ctx, &round.ForfeitSignatureRejected{
+				RoundID:      id.String(),
+				VTXOOutpoint: missing,
+				Reason:       reason,
+			},
+		),
+	)
+	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+		resp, err := ref.Ask(
+			ctx, &round.GetClientStateRequest{},
+		).Await(ctx).Unpack()
+		require.NoError(collect, err)
+		state, ok := resp.(*round.GetClientStateResponse)
+		require.True(collect, ok, "response is %T", resp)
+		info := state.States[id.String()]
+		failed, ok := info.State.(*round.ClientFailedState)
+		require.True(collect, ok, "state is %T", info.State)
+		require.True(collect, failed.Recoverable)
+		require.Contains(collect, failed.Reason, missing.String())
+		require.Contains(collect, failed.Reason, reason)
+	}, 5*time.Second, 20*time.Millisecond)
+
+	// Publish only after the failed state is committed. These are the
+	// normal outbox and mailbox paths for rollback and timer cancellation.
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		require.NoError(t, system.Shutdown(context.Background()))
+	})
+	require.NoError(
+		t,
+		actor.RegisterWithReceptionist(
+			system.Receptionist(),
+			actor.NewServiceKey[actor.Message, any](
+				cfg.Name,
+			),
+			runtime.OutboxRef(),
+		),
+	)
+	codec := actor.NewMessageCodec()
+	round.RegisterDurableClientMessages(codec)
+	publisher := actor.NewOutboxPublisher(
+		actor.DefaultOutboxPublisherConfig(store, codec, system),
+	)
+	t.Cleanup(publisher.Stop)
+	publisher.PublishPending()
+
+	msg, ok := managerRef.AwaitMessage(5 * time.Second)
+	require.True(t, ok, "missing reservation release")
+	release, ok := msg.(*actormsg.ReleaseForfeitRequest)
+	require.True(t, ok, "received %T", msg)
+	require.Equal(t, id.String(), release.RoundID)
+	require.ElementsMatch(
+		t, []wire.OutPoint{missing, peer}, release.Outpoints,
+	)
+	timer, ok := timerRef.AwaitMessage(5 * time.Second)
+	require.True(t, ok, "missing collection timer cancellation")
+	require.IsType(t, &timeout.CancelTimeoutRequest{}, timer)
+	require.Empty(t, serverRef.Messages())
+	active, err := roundStore.ListActiveRounds(ctx)
+	require.NoError(t, err)
+	require.Empty(t, active, "no signature checkpoint may be written")
 }
 
 // TestRoundRuntimeRestart restores a pre-admission round through the actual

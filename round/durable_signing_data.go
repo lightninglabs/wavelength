@@ -223,3 +223,44 @@ func decodeDurableForfeitResponse(raw []byte) (*ForfeitSignatureResponse,
 
 	return v, nil
 }
+
+// encodeDurableForfeitRejection preserves the attempt identity and diagnostic
+// across mailbox delivery and replay.
+func encodeDurableForfeitRejection(v *ForfeitSignatureRejected) ([]byte,
+	error) {
+
+	point := durableOutpoint(v.VTXOOutpoint)
+	roundID, reason := []byte(v.RoundID), []byte(v.Reason)
+
+	return encodeDurableFields(
+		tlv.MakePrimitiveRecord(1, &point),
+		tlv.MakePrimitiveRecord(3, &roundID),
+		tlv.MakePrimitiveRecord(5, &reason),
+	)
+}
+
+// decodeDurableForfeitRejection restores the input identity so the collecting
+// state can fence rollback to the exact outstanding request.
+func decodeDurableForfeitRejection(raw []byte) (*ForfeitSignatureRejected,
+	error) {
+
+	var point, roundID, reason []byte
+	err := decodeDurableFields(
+		raw, tlv.MakePrimitiveRecord(1, &point),
+		tlv.MakePrimitiveRecord(3, &roundID),
+		tlv.MakePrimitiveRecord(5, &reason),
+	)
+	if err != nil {
+		return nil, err
+	}
+	outpoint, err := parseDurableOutpoint(point)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ForfeitSignatureRejected{
+		VTXOOutpoint: outpoint,
+		RoundID:      string(roundID),
+		Reason:       string(reason),
+	}, nil
+}
