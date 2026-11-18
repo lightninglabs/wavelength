@@ -550,6 +550,10 @@ type directedSendFixture struct {
 	// Each restart binds a fresh port before connecting a new client.
 	rpcAddr string
 
+	// metricsAddr is the bound metrics address for the current launch, or
+	// empty when metrics are disabled.
+	metricsAddr string
+
 	// serverCancel cancels the currently running daemon, and serverErrChan
 	// receives its run error. Both are replaced on every launch().
 	serverCancel  context.CancelFunc
@@ -689,6 +693,10 @@ func (f *directedSendFixture) launch() {
 	defer readyCancel()
 	require.NoError(t, server.WaitForWalletServicesReady(readyCtx))
 	f.rpcAddr = server.RPCAddr().String()
+	f.metricsAddr = ""
+	if addr := server.MetricsAddr(); addr != nil {
+		f.metricsAddr = addr.String()
+	}
 
 	conn, err := f.dial(f.cfg.RPC.MacaroonPath)
 	require.NoError(t, err)
@@ -851,20 +859,6 @@ func startFakeMailboxServer(t *testing.T, operatorMailbox string,
 	}
 
 	return listener.Addr().String(), serverImpl, stopFn
-}
-
-// newLoopbackAddr reserves and returns a free loopback TCP address for a test
-// server to bind immediately afterward.
-func newLoopbackAddr(t *testing.T) string {
-	t.Helper()
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	addr := listener.Addr().String()
-	require.NoError(t, listener.Close())
-
-	return addr
 }
 
 // seedLiveVTXO creates the daemon database ahead of startup and inserts one
