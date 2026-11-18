@@ -39,11 +39,28 @@ function generate() {
 	for file in *.proto; do
 		echo "  Generating ${file}"
 
+		# Local controls use gRPC; authenticated peer controls use only
+		# mailbox RPC. Do not generate the opposite transport adapter.
+		grpc=1
+		mailbox=1
+		case "${package}/${file}" in
+			rpc/arkchannelrpc/ark_channel.proto) mailbox=0 ;;
+			rpc/arkchannelrpc/ark_channel_peer.proto) grpc=0 ;;
+			mailbox/pb/*) mailbox=0 ;;
+		esac
+
 		# Generate the standard Go protos.
 		protoc -I/usr/local/include -I"${googleapis_include}" -I. -I.. \
 			--go_out=. --go_opt=paths=source_relative \
-			--go-grpc_out=. --go-grpc_opt=paths=source_relative \
 			"${file}"
+
+		if [ "${grpc}" = "1" ]; then
+			protoc -I/usr/local/include -I"${googleapis_include}" -I. -I.. \
+				--go-grpc_out=. --go-grpc_opt=paths=source_relative \
+				"${file}"
+		else
+			rm -f "${file%.proto}_grpc.pb.go"
+		fi
 
 		gateway_config="${file%.proto}.yaml"
 		if [ "${gateway}" = "1" ] && [ -f "${gateway_config}" ]; then
@@ -59,10 +76,12 @@ function generate() {
 		#
 		# The mailbox edge proto (mailboxpb) defines the underlying transport and
 		# should not get an RPC-over-mailbox overlay, so we exclude it.
-		if [ "${package}" != "mailbox/pb" ]; then
+		if [ "${mailbox}" = "1" ]; then
 			protoc -I/usr/local/include -I"${googleapis_include}" -I. -I.. \
 				--mailboxrpc_out=. --mailboxrpc_opt=paths=source_relative \
 				"${file}"
+		else
+			rm -f "${file%.proto}_mailboxrpc.pb.go"
 		fi
 	done
 
@@ -94,6 +113,9 @@ generate "rpc/swapclientrpc" 1
 
 # Generate optional daemon-owned simplified wallet RPC protos.
 generate "rpc/wavewalletrpc" 1
+
+# Generate Ark-channel local and authenticated peer control protos.
+generate "rpc/arkchannelrpc"
 
 # Generate waverpc protos for the client daemon's own gRPC API.
 generate "waverpc" 1

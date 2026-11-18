@@ -1,0 +1,421 @@
+syntax = "proto3";
+
+package arkchannelrpc;
+
+option go_package = "github.com/lightninglabs/wavelength/rpc/arkchannelrpc";
+
+// ArkChannelService is the local Wavelength control surface for channels
+// backed by unpublished Ark transactions.
+service ArkChannelService {
+    // PromoteVTXO turns existing wallet liquidity into an active OOR-backed
+    // channel. The daemon derives every protocol parameter from amount_sat.
+    rpc PromoteVTXO (PromoteVTXORequest) returns (PromoteVTXOResponse);
+
+    // PayLightningInvoice atomically holds the private leg, asks the hub to
+    // dispatch the public invoice, and settles with the public preimage.
+    rpc PayLightningInvoice (PayLightningInvoiceRequest)
+        returns (PayLightningInvoiceResponse);
+
+    // MaterializeAndForceClose publishes the Ark ancestry, exact channel
+    // backing, and lnd's latest commitment transaction.
+    rpc MaterializeAndForceClose (MaterializeAndForceCloseRequest)
+        returns (MaterializeAndForceCloseResponse);
+
+    // RefreshChannel settles one clean channel into ordinary replacement
+    // VTXOs without materializing its Lightning channel point.
+    rpc RefreshChannel (RefreshChannelRequest) returns (RefreshChannelResponse);
+
+    // GetChannel returns the durable Ark lifecycle state for one channel.
+    rpc GetChannel (GetChannelRequest) returns (GetChannelResponse);
+
+    // ListChannels returns every channel that still needs recovery,
+    // observation, or operator action.
+    rpc ListChannels (ListChannelsRequest) returns (ListChannelsResponse);
+}
+
+message PromoteVTXORequest {
+    int64 amount_sat = 1;
+    string idempotency_key = 2;
+}
+
+message PromoteVTXOResponse {
+    ArkChannel channel = 1;
+}
+
+message PayLightningInvoiceRequest {
+    string payment_request = 1;
+    uint64 max_fee_sat = 2;
+}
+
+message PayLightningInvoiceResponse {
+    bytes payment_hash = 1;
+    bytes preimage = 2;
+    int64 private_amount_sat = 3;
+    int64 fee_sat = 4;
+    bytes channel_id = 5;
+}
+
+message MaterializeAndForceCloseRequest {
+    bytes channel_id = 1;
+}
+
+message MaterializeAndForceCloseResponse {
+    ArkChannel channel = 1;
+    bytes backing_txid = 2;
+    bytes commitment_txid = 3;
+}
+
+message GetPeerInfoRequest {
+}
+
+message GetPeerInfoResponse {
+    bytes hub_node_key = 1;
+    bytes hub_ark_key = 2;
+    bytes hub_channel_key = 3;
+    bytes ark_operator_key = 4;
+    uint32 channel_delay = 5;
+    uint32 funder_delay = 6;
+    uint32 min_exit_delay = 7;
+    reserved 8;
+    reserved "hub_funder_key";
+}
+
+message RegisterPromotionRequest {
+    ChannelTerms terms = 1;
+}
+
+message RegisterPromotionResponse {
+    ArkChannel channel = 1;
+}
+
+message GetFundingChannelRequest {
+    bytes channel_id = 1;
+}
+
+message GetFundingChannelResponse {
+    ChannelTerms terms = 1;
+    ChannelVTXOBinding binding = 2;
+    ChannelBacking backing = 3;
+    uint32 phase = 4;
+    bool oor_finalized = 5;
+    bool client_recovery_ready = 6;
+    string failure = 7;
+    uint64 revision = 8;
+    bool oor_aborted = 9;
+    bool hub_recovery_ready = 10;
+}
+
+message BindPreparedOORRequest {
+    bytes channel_id = 1;
+    ChannelVTXOBinding binding = 2;
+}
+
+message BindPreparedOORResponse {
+    ArkChannel channel = 1;
+}
+
+message SignBackingRequest {
+    bytes channel_id = 1;
+    ChannelTerms terms = 2;
+    ChannelVTXOBinding binding = 3;
+    bytes funding_psbt = 4;
+}
+
+message SignBackingResponse {
+    bytes signature = 1;
+}
+
+message InstallBackingRequest {
+    bytes channel_id = 1;
+    ChannelTerms terms = 2;
+    ChannelVTXOBinding binding = 3;
+    ChannelBacking backing = 4;
+}
+
+message InstallBackingResponse {
+}
+
+message InstallRecoveryPackageRequest {
+    bytes channel_id = 1;
+    ChannelTerms terms = 2;
+    ChannelVTXOBinding binding = 3;
+    ChannelRecoveryPackage recovery = 4;
+}
+
+message InstallRecoveryPackageResponse {
+}
+
+message OORRecoverySource {
+    bytes txid = 1;
+    uint32 output_index = 2;
+    int64 amount_sat = 3;
+    bytes pk_script = 4;
+}
+
+message ChannelRecoveryPackage {
+    ChannelRecoveryDescriptor source_descriptor = 1;
+    repeated ChannelRecoveryOORPackage oor_packages = 2;
+}
+
+message ChannelRecoveryDescriptor {
+    repeated ChannelRecoveryAncestry ancestry = 1;
+    string round_id = 2;
+    bytes commitment_txid = 3;
+    int32 batch_expiry = 4;
+    int32 chain_depth = 5;
+    int32 created_height = 6;
+    int32 construction_version = 7;
+}
+
+message ChannelRecoveryAncestry {
+    bytes tree_path = 1;
+    bytes commitment_txid = 2;
+    repeated uint32 input_indices = 3;
+    uint32 tree_depth = 4;
+    int32 commitment_height = 5;
+}
+
+message ChannelRecoveryOORPackage {
+    bytes session_id = 1;
+    int32 direction = 2;
+    bytes ark_psbt = 3;
+    repeated bytes checkpoint_psbts = 4;
+}
+
+message FundingStatusRequest {
+    ChannelTerms terms = 1;
+    ChannelBacking backing = 2;
+}
+
+message FundingStatusResponse {
+    bool ready = 1;
+}
+
+enum ChannelEventType {
+    CHANNEL_EVENT_TYPE_UNSPECIFIED = 0;
+    CHANNEL_EVENT_TYPE_FUNDING_FINALIZED = 1;
+    CHANNEL_EVENT_TYPE_OOR_FINALIZED = 2;
+    CHANNEL_EVENT_TYPE_RECOVERY_PACKAGE_INSTALLED = 6;
+    CHANNEL_EVENT_TYPE_OOR_ABORTED = 9;
+
+    reserved 3, 4, 5, 7, 8;
+    reserved "CHANNEL_EVENT_TYPE_FUNDING_PEER_READY";
+}
+
+message ApplyChannelEventRequest {
+    bytes channel_id = 1;
+    ChannelEventType event_type = 2;
+    uint32 party = 3;
+    bytes oor_session_id = 4;
+    bytes channel_point_txid = 5;
+    uint32 channel_point_index = 6;
+    string failure_reason = 7;
+}
+
+message ApplyChannelEventResponse {
+    ArkChannel channel = 1;
+}
+
+message PrepareOutgoingPaymentRequest {
+    string payment_request = 1;
+    uint64 max_fee_sat = 2;
+}
+
+message PrepareOutgoingPaymentResponse {
+    bytes payment_hash = 1;
+    int64 private_amount_sat = 2;
+    int64 fee_sat = 3;
+    bytes channel_id = 4;
+    uint64 reserved_scid = 5;
+}
+
+message CancelOutgoingPaymentRequest {
+    bytes payment_hash = 1;
+    string reason = 2;
+}
+
+message CancelOutgoingPaymentResponse {
+    bool cancelled = 1;
+}
+
+message RegisterIncomingPaymentRequest {
+    bytes payment_hash = 1;
+    int64 amount_sat = 2;
+    uint64 reserved_scid = 3;
+}
+
+message RegisterIncomingPaymentResponse {
+    bool registered = 1;
+    reserved 2;
+    reserved "channel_capacity_sat";
+    bytes channel_id = 3;
+}
+
+message CancelIncomingPaymentRequest {
+    bytes payment_hash = 1;
+    string reason = 2;
+}
+
+message CancelIncomingPaymentResponse {
+    bool cancelled = 1;
+}
+
+message ChannelTerms {
+    bytes channel_id = 1;
+    uint32 kind = 2;
+    uint32 funder = 3;
+    bytes pending_channel_id = 4;
+    uint64 reserved_scid = 5;
+    int64 capacity_sat = 6;
+    bytes client_node_key = 7;
+    bytes hub_node_key = 8;
+    reserved 9;
+    reserved "payment_hash";
+    ChannelVTXOTerms vtxo = 10;
+}
+
+message ChannelVTXOTerms {
+    bytes client_ark_key = 1;
+    bytes hub_ark_key = 2;
+    bytes ark_operator_key = 3;
+    bytes client_channel_key = 4;
+    bytes hub_channel_key = 5;
+    bytes funder_key = 6;
+    uint32 channel_delay = 7;
+    uint32 funder_delay = 8;
+    uint32 min_exit_delay = 9;
+}
+
+message ChannelVTXOBinding {
+    bytes oor_session_id = 1;
+    bytes outpoint_txid = 2;
+    uint32 outpoint_index = 3;
+    int64 amount_sat = 4;
+    bytes ark_transaction = 5;
+    bytes policy_template = 6;
+    bytes pk_script = 7;
+}
+
+message ChannelBacking {
+    bytes transaction = 1;
+    bytes channel_point_txid = 2;
+    uint32 channel_point_index = 3;
+}
+
+message RefreshChannelRequest {
+    // channel_id is the 32-byte durable Ark channel identifier.
+    bytes channel_id = 1;
+    reserved 2;
+    reserved "fee_rate_sat_per_kw";
+}
+
+message RefreshChannelResponse {
+    ArkChannel channel = 1;
+}
+
+message GetChannelRequest {
+    bytes channel_id = 1;
+}
+
+message GetChannelResponse {
+    ArkChannel channel = 1;
+}
+
+message ListChannelsRequest {
+}
+
+message ListChannelsResponse {
+    repeated ArkChannel channels = 1;
+}
+
+message ArkChannel {
+    bytes channel_id = 1;
+    string kind = 2;
+    string phase = 3;
+    string funder = 4;
+    int64 capacity_sat = 5;
+    string source_outpoint = 6;
+    string channel_point = 7;
+    bytes refresh_oor_txid = 8;
+    uint64 revision = 9;
+    uint64 reserved_scid = 10;
+    int64 local_balance_sat = 11;
+    int64 remote_balance_sat = 12;
+    bool balance_available = 13;
+    string balance_error = 14;
+}
+
+message GetCooperativeCloseTermsRequest {
+    bytes channel_id = 1;
+    bytes client_delivery_script = 2;
+    reserved 3;
+    reserved "fee_rate_sat_per_kw";
+}
+
+message GetCooperativeCloseTermsResponse {
+    CooperativeCloseRequest request = 1;
+    reserved 2, 3;
+    reserved "clean_state", "settlement";
+}
+
+message CompleteCooperativeCloseRequest {
+    bytes channel_id = 1;
+    CooperativeCloseProposal proposal = 2;
+    reserved 3;
+    reserved "client_signature";
+    CooperativeCloseRequest request = 4;
+}
+
+message CompleteCooperativeCloseResponse {
+    CooperativeClose settlement = 1;
+}
+
+message ConfirmCooperativeCloseRequest {
+    bytes channel_id = 1;
+    bytes authorization_receipt = 2;
+}
+
+message ConfirmCooperativeCloseResponse {
+}
+
+message PublishCooperativeCloseRequest {
+    bytes channel_id = 1;
+    bytes settlement_txid = 2;
+}
+
+message PublishCooperativeCloseResponse {
+    bytes settlement_txid = 1;
+    bool hub_finalized = 2;
+}
+
+message AbortCooperativeCloseRequest {
+    bytes channel_id = 1;
+}
+
+message AbortCooperativeCloseResponse {
+    ArkChannel channel = 1;
+}
+
+message CooperativeCloseRequest {
+    bytes client_delivery_script = 1;
+    bytes hub_delivery_script = 2;
+    reserved 3;
+    reserved "fee_rate_sat_per_kw";
+}
+
+message CooperativeCloseProposal {
+    bytes transaction = 1;
+    uint64 commitment_height = 2;
+    int64 client_balance_sat = 3;
+    int64 hub_balance_sat = 4;
+    int64 client_output_sat = 5;
+    int64 hub_output_sat = 6;
+    reserved 7;
+    reserved "fee_sat";
+}
+
+message CooperativeClose {
+    CooperativeCloseProposal proposal = 1;
+    bytes transaction = 2;
+    bytes txid = 3;
+}

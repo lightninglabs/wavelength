@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package arkchannelrpc;
+
+import "ark_channel.proto";
+
+option go_package = "github.com/lightninglabs/wavelength/rpc/arkchannelrpc";
+
+// ArkChannelPeerService coordinates authenticated cooperative closes.
+// It is served only over the peer mailbox, never through local gRPC.
+service ArkChannelPeerService {
+    // GetCooperativeCloseTerms quotes the two payout destinations. It does not
+    // reserve, sign, or quiesce; the client persists the terms first.
+    rpc GetCooperativeCloseTerms (GetCooperativeCloseTermsRequest)
+        returns (GetCooperativeCloseTermsResponse);
+
+    // CompleteCooperativeClose lets the hub validate clean lnd balances and
+    // durably authorize the exact 3-of-3 OOR checkpoint. The client and Ark
+    // operator sign later in the ordinary OOR protocol.
+    rpc CompleteCooperativeClose (CompleteCooperativeCloseRequest)
+        returns (CompleteCooperativeCloseResponse);
+
+    // ConfirmCooperativeClose proves the client durably received the exact
+    // hub authorization before OOR submission can start.
+    rpc ConfirmCooperativeClose (ConfirmCooperativeCloseRequest)
+        returns (ConfirmCooperativeCloseResponse);
+
+    // PublishCooperativeClose reports the finalized ordinary OOR session and
+    // waits for the hub to observe its replacement VTXO and archive lnd.
+    rpc PublishCooperativeClose (PublishCooperativeCloseRequest)
+        returns (PublishCooperativeCloseResponse);
+
+    // AbortCooperativeClose releases the hub's quiescence barrier before the
+    // ordinary OOR crosses its signing point of no return.
+    rpc AbortCooperativeClose (AbortCooperativeCloseRequest)
+        returns (AbortCooperativeCloseResponse);
+}
+
+// ArkChannelFundingPeerService coordinates authenticated channel creation
+// and the public Lightning bridge. It is served only over the peer mailbox.
+service ArkChannelFundingPeerService {
+    rpc GetPeerInfo (GetPeerInfoRequest) returns (GetPeerInfoResponse);
+    rpc RegisterPromotion (RegisterPromotionRequest)
+        returns (RegisterPromotionResponse);
+    rpc GetFundingChannel (GetFundingChannelRequest)
+        returns (GetFundingChannelResponse);
+    rpc BindPreparedOOR (BindPreparedOORRequest)
+        returns (BindPreparedOORResponse);
+    rpc SignBacking (SignBackingRequest) returns (SignBackingResponse);
+    rpc InstallBacking (InstallBackingRequest) returns (InstallBackingResponse);
+    rpc InstallRecoveryPackage (InstallRecoveryPackageRequest)
+        returns (InstallRecoveryPackageResponse);
+    rpc FundingFinalized (FundingStatusRequest) returns (FundingStatusResponse);
+    rpc ChannelActive (FundingStatusRequest) returns (FundingStatusResponse);
+    // ApplyChannelEvent accepts only peer-owned facts. The receiver must bind
+    // party-bearing events to the authenticated mailbox party and reject
+    // local lnd, chain, or publication evidence.
+    rpc ApplyChannelEvent (ApplyChannelEventRequest)
+        returns (ApplyChannelEventResponse);
+    rpc PrepareOutgoingPayment (PrepareOutgoingPaymentRequest)
+        returns (PrepareOutgoingPaymentResponse);
+    rpc CancelOutgoingPayment (CancelOutgoingPaymentRequest)
+        returns (CancelOutgoingPaymentResponse);
+    rpc RegisterIncomingPayment (RegisterIncomingPaymentRequest)
+        returns (RegisterIncomingPaymentResponse);
+    rpc CancelIncomingPayment (CancelIncomingPaymentRequest)
+        returns (CancelIncomingPaymentResponse);
+}
