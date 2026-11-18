@@ -46,7 +46,7 @@ github.com/lightninglabs/wavelength/unroll.behavior.ensureSourceSpendWatches awa
 github.com/lightninglabs/wavelength/unroll.behavior.ensureSpendWatch await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
 github.com/lightninglabs/wavelength/unroll.behavior.routeOutbox await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
 github.com/lightninglabs/wavelength/unroll.behavior.startSweep await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
-github.com/lightninglabs/wavelength/unroll.behavior.stopRejectedSweep await=2 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
+github.com/lightninglabs/wavelength/unroll.behavior.stopRejectedSweep await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
 github.com/lightninglabs/wavelength/unroll.behavior.watchDeferredCheckpoint await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
 github.com/lightninglabs/wavelength/unroll.estimateSweepFeeRate await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
 github.com/lightninglabs/wavelength/unroll.registryBehavior.childState await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise

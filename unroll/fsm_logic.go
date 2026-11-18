@@ -92,6 +92,19 @@ func processEventWithJob(ctx context.Context, job *JobState, event Event,
 	case *TxFailedEvent:
 		applyFailedEvent(nextJob, e)
 
+	case *SweepDustEvent:
+		if nextJob.RejectedSweep.IsNone() ||
+			nextJob.RejectedSweep.UnsafeFromSome() != e.Txid ||
+			nextJob.RetrySame {
+
+			nextJob.RejectedSweep = fn.Some(e.Txid)
+			nextJob.RepriceAfter = nextJob.Height
+		}
+		nextJob.RetrySame = false
+		nextJob.PlannerState.Sweep.Status =
+			unrollplan.SweepStatusPending
+		nextJob.PlannerState.Sweep.Txid = fn.None[chainhash.Hash]()
+
 	case *SweepBroadcastedEvent:
 		nextJob.RejectedSweep = fn.None[chainhash.Hash]()
 		nextJob.RepriceAfter = 0

@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/btcsuite/btcwallet/wallet/txrules"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx/arktx"
 	"github.com/lightninglabs/wavelength/unroll"
@@ -419,15 +420,17 @@ func (p *VHTLCExitSpendPolicy) BuildSpendTx(ctx context.Context,
 		req.FeeRateSatPerVByte * estimatedVHTLCExitVBytes,
 	)
 	exitValue := inputValue - fee
-	if exitValue <= 0 {
-		return nil, fmt.Errorf("exit value %d not positive "+
-			"after fee %d", exitValue, fee)
-	}
-
-	tx.AddTxOut(&wire.TxOut{
+	output := &wire.TxOut{
 		Value:    int64(exitValue),
 		PkScript: append([]byte(nil), req.DestinationPkScript...),
-	})
+	}
+	if exitValue <= 0 || txrules.IsDustOutput(
+		output, txrules.DefaultRelayFeePerKb,
+	) {
+		return nil, fmt.Errorf("%w: value %d after fee %d",
+			unroll.ErrExitSpendDust, exitValue, fee)
+	}
+	tx.AddTxOut(output)
 
 	prevFetcher := txscript.NewCannedPrevOutputFetcher(
 		req.TargetOutput.PkScript, req.TargetOutput.Value,

@@ -453,3 +453,74 @@ type testError struct {
 func (e *testError) Error() string {
 	return e.msg
 }
+
+// payoutSigner counts signing to prove uneconomic outputs are rejected before
+// either vHTLC recovery leaf authorizes the transaction.
+type payoutSigner struct {
+	input.Signer
+	calls int
+}
+
+// SignOutputRaw records a call and delegates to the real fixture signer.
+func (s *payoutSigner) SignOutputRaw(tx *wire.MsgTx,
+	desc *input.SignDescriptor) (input.Signature, error) {
+
+	s.calls++
+
+	return s.Signer.SignOutputRaw(tx, desc)
+}
+
+// TestVHTLCExitPolicyDustBoundary applies the same script-aware dust rule to
+// both claim and refund leaves, including exact-threshold relayable payouts.
+func TestVHTLCExitPolicyDustBoundary(t *testing.T) {
+	newRefundPolicy := NewRefundWithoutReceiverExitSpendPolicy
+	for _, action := range []string{
+		vhtlcrecovery.ActionClaim,
+		vhtlcrecovery.ActionRefundWithoutReceiver,
+	} {
+		t.Run(action, func(t *testing.T) {
+			job, preimage, sender, receiver := testPolicyJob(
+				t, action,
+			)
+			var policy *VHTLCExitSpendPolicy
+			var err error
+			var signer input.Signer = sender
+			if action == vhtlcrecovery.ActionClaim {
+				policy, err = NewClaimExitSpendPolicy(
+					job, preimage,
+				)
+				signer = receiver
+			} else {
+				policy, err = newRefundPolicy(job)
+			}
+			require.NoError(t, err)
+
+			for _, payout := range []int64{-1, 0, 1, 329, 330} {
+				target := testPolicyTargetOutput(t, job)
+				target.Value = estimatedVHTLCExitVBytes + payout
+				spy := &payoutSigner{Signer: signer}
+				req := unroll.ExitSpendRequest{
+					TargetOutpoint:      job.VTXOOutpoint,
+					TargetOutput:        target,
+					DestinationPkScript: target.PkScript,
+					FeeRateSatPerVByte:  1,
+					CurrentHeight:       job.RefundLocktime,
+					Signer:              spy,
+				}
+				tx, err := policy.BuildSpendTx(t.Context(), req)
+				if payout < 330 {
+					require.ErrorIs(
+						t, err, unroll.ErrExitSpendDust,
+					)
+					require.Nil(t, tx)
+					require.Zero(t, spy.calls)
+
+					continue
+				}
+				require.NoError(t, err)
+				require.Equal(t, payout, tx.TxOut[0].Value)
+				require.Equal(t, 1, spy.calls)
+			}
+		})
+	}
+}
