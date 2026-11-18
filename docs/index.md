@@ -33,6 +33,7 @@ into specific topics below.
 | [sdk-wake-ingress-architecture.md](sdk-wake-ingress-architecture.md) | SDK intake ownership, durable handoffs, domain commits and restart limits |
 | [sdk-process-next.md](sdk-process-next.md) | Guarded single-batch host API and cancellation contract |
 | [mobile_round_runtime_architecture.md](mobile_round_runtime_architecture.md) | Ownership, durable turns, signer recovery and storage boundaries |
+| [channel-storage.md](channel-storage.md) | Persistent channel databases on native and WASM hosts |
 | [mobile-runtime-recovery-execplan.md](mobile-runtime-recovery-execplan.md) | Persistent round runtime implementation and recovery validation |
 | [mailbox-consumption-plan.md](mailbox-consumption-plan.md) | Execution plan for durable consumer ownership and semantic replay safety |
 | [mailbox_ingress_safety.md](mailbox_ingress_safety.md) | Durable ingress handoff, quarantine, replay retention, and recovery |
