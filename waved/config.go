@@ -774,6 +774,15 @@ type SwapConfig struct {
 	// DefaultMaxActiveReceiveSwaps.
 	MaxActiveReceiveSwaps int `mapstructure:"maxactivereceiveswaps"`
 
+	// ArkChannelReceiveEnabled permits explicit receives on existing active
+	// channels. Ordinary swap invoices are unaffected.
+	ArkChannelReceiveEnabled bool `mapstructure:"arkchannelreceiveenabled"`
+
+	// SuppressArkChannelRuntime keeps embedded wallets off the peer mailbox
+	// unless they explicitly enable channels. Standalone daemons retain
+	// channel management independently of their receive policy.
+	SuppressArkChannelRuntime bool `mapstructure:"-"`
+
 	// VHTLCRecovery controls when the daemon-owned swap runtime escalates
 	// an already-armed vHTLC recovery row from cooperative retry into
 	// on-chain unroll.
@@ -825,6 +834,11 @@ type SwapConfig struct {
 	// pending credit-backed send is about to spend. Nil in builds without
 	// the credit subsystem; set programmatically, never from config files.
 	CreditEarmarkSetter func(credit.EarmarkFunc) `mapstructure:"-"`
+
+	// ArkChannelMailbox is the authenticated swapdk-server mailbox edge
+	// published by swapclientserver for the channel control runtime. It is
+	// process wiring, never user configuration.
+	ArkChannelMailbox mailboxpb.MailboxServiceClient `mapstructure:"-"`
 }
 
 // CreditConfig configures the daemon-owned credit subsystem.

@@ -58,6 +58,61 @@ func TestReadConfigFileLoadsProperties(t *testing.T) {
 	}
 }
 
+// TestArkChannelReceiveFlagIsOptIn verifies direct channel receives stay off by
+// default and can be enabled through the daemon's public flag surface.
+func TestArkChannelReceiveFlagIsOptIn(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		flagValue string
+		want      bool
+	}{
+		{
+			name: "default disabled",
+		},
+		{
+			name:      "explicitly enabled",
+			flagValue: "true",
+			want:      true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := waved.DefaultConfig()
+			v := viper.New()
+			flags := pflag.NewFlagSet(
+				"waved-test", pflag.ContinueOnError,
+			)
+			registerSwapRuntimeFlags(flags, cfg)
+			if err := v.BindPFlags(flags); err != nil {
+				t.Fatalf("bind swap flags: %v", err)
+			}
+			if test.flagValue != "" {
+				if err := flags.Set(
+					"swap.arkchannelreceiveenabled",
+					test.flagValue,
+				); err != nil {
+
+					t.Fatalf("set channel receive flag: %v",
+						err)
+				}
+			}
+			if err := v.Unmarshal(cfg); err != nil {
+				t.Fatalf("unmarshal config: %v", err)
+			}
+			if cfg.Swap.ArkChannelReceiveEnabled != test.want {
+				t.Fatalf("want channel receive "+
+					"enabled=%v, got %v", test.want,
+					cfg.Swap.ArkChannelReceiveEnabled)
+			}
+		})
+	}
+}
+
 // TestReadConfigFileIgnoresMissingDefault checks that a missing default config
 // file does not block first startup.
 func TestReadConfigFileIgnoresMissingDefault(t *testing.T) {
