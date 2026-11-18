@@ -103,7 +103,14 @@ func TestDiagnosticJSONPreservesPublicValuesAndUnknownAmounts(t *testing.T) {
 		},
 	}
 
-	raw, err := marshalDiagnostic(response, map[string]int64{"known": 3000})
+	amount := int64(3000)
+	raw, err := marshalDiagnostic(
+		response, &diagnosticOORPage{
+			records: map[string]diagnosticOORRecord{
+				"known": {amount: &amount},
+			},
+		},
+	)
 	require.NoError(t, err)
 	var decoded struct {
 		Sessions []map[string]json.RawMessage `json:"sessions"`
@@ -112,7 +119,7 @@ func TestDiagnosticJSONPreservesPublicValuesAndUnknownAmounts(t *testing.T) {
 	require.JSONEq(t, `"3000"`, string(decoded.Sessions[0]["amount_sat"]))
 	require.NotContains(t, decoded.Sessions[1], "amount_sat")
 	raw, err = marshalDiagnostic(
-		&waverpc.ListOORSessionsResponse{}, map[string]int64{},
+		&waverpc.ListOORSessionsResponse{}, &diagnosticOORPage{},
 	)
 	require.NoError(t, err)
 	require.Contains(t, string(raw), `"sessions":[]`)

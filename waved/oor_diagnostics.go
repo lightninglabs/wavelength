@@ -92,3 +92,41 @@ func diagnosticReceivedAmount(
 
 	return &total
 }
+
+// ReadOORDiagnosticPackages compares a status page with locally persisted
+// package evidence. All IDs use the display byte order of ListOORSessions.
+func (s *Server) ReadOORDiagnosticPackages(ctx context.Context,
+	sessionIDs []string) (map[string]db.OORDiagnosticPackage, error) {
+
+	if len(sessionIDs) > defaultListOORSessionsPageSize {
+		return nil, fmt.Errorf("OOR package diagnostics exceed one " +
+			"page")
+	}
+	if s.db == nil {
+		return nil, nil
+	}
+	ids := make([]chainhash.Hash, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		id, err := chainhash.NewHashFromStr(sessionID)
+		if err != nil {
+			return nil, err
+		}
+
+		ids = append(ids, *id)
+	}
+	store := db.NewOORStatusStore(
+		db.NewStore(
+			s.db.DB, s.db.Queries, s.db.Backend(), s.log,
+		),
+	)
+	packages, err := store.DiagnosticPackages(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]db.OORDiagnosticPackage, len(packages))
+	for id, pkg := range packages {
+		out[id.String()] = pkg
+	}
+
+	return out, nil
+}

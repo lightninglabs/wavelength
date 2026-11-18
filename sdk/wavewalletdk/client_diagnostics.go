@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/waved"
 )
 
@@ -41,4 +42,22 @@ func (c *Client) OORAmount(ctx context.Context, sessionID string,
 	defer release()
 
 	return c.readOORAmount(callCtx, sessionID, outgoing)
+}
+
+// OORDiagnosticPackages identifies local recovery ancestry among bounded
+// OOR status results. It borrows the embedded store through the last read.
+func (c *Client) OORDiagnosticPackages(ctx context.Context, ids []string) (
+	map[string]db.OORDiagnosticPackage, error) {
+
+	if c == nil || c.readOORDiagnosticPackages == nil {
+		return nil, errors.New("OOR package diagnostics require an " +
+			"embedded wallet")
+	}
+	callCtx, release, err := c.beginLocalCall(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	return c.readOORDiagnosticPackages(callCtx, ids)
 }

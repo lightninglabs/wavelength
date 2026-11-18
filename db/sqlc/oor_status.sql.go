@@ -7,7 +7,32 @@ package sqlc
 
 import (
 	"context"
+	"database/sql"
 )
+
+const GetOORDiagnosticPackage = `-- name: GetOORDiagnosticPackage :one
+SELECT p.direction,
+    (EXISTS (SELECT 1 FROM oor_session_registry r WHERE r.session_id = p.session_id) OR
+     EXISTS (SELECT 1 FROM oor_dispatch_attempts d WHERE d.session_id = p.session_id) OR
+     EXISTS (SELECT 1 FROM oor_vtxo_bindings b WHERE b.session_id = p.session_id) OR
+     EXISTS (SELECT 1 FROM vtxos v WHERE v.outpoint_hash = p.session_id) OR
+     EXISTS (SELECT 1 FROM ledger_entries l WHERE l.session_id = p.session_id)) AS wallet_evidence
+FROM oor_packages p
+WHERE p.session_id = $1
+`
+
+type GetOORDiagnosticPackageRow struct {
+	Direction      int32
+	WalletEvidence sql.NullBool
+}
+
+// A stored package may be a local transfer even if its registry row is gone.
+func (q *Queries) GetOORDiagnosticPackage(ctx context.Context, sessionID []byte) (GetOORDiagnosticPackageRow, error) {
+	row := q.db.QueryRowContext(ctx, GetOORDiagnosticPackage, sessionID)
+	var i GetOORDiagnosticPackageRow
+	err := row.Scan(&i.Direction, &i.WalletEvidence)
+	return i, err
+}
 
 const GetOOROutgoingStatusSnapshot = `-- name: GetOOROutgoingStatusSnapshot :one
 SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at FROM oor_session_registry

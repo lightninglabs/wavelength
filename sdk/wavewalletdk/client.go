@@ -78,6 +78,8 @@ type Client struct {
 		error)
 	readOORAmount func(context.Context, string, bool) (
 		*int64, error)
+	readOORDiagnosticPackages func(context.Context, []string) (
+		map[string]db.OORDiagnosticPackage, error)
 	readLightningReceipts func(context.Context,
 		waved.LightningReceiptRequest) ([]waved.LightningReceipt, error)
 
