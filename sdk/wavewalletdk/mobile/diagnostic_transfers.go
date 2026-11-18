@@ -21,13 +21,22 @@ type diagnosticOORRecord struct {
 	details *diagnosticOORDetails
 }
 
+// diagnosticOORPage reports optional reads that failed after the main OOR
+// status page was loaded. The rows remain available even in that case.
+type diagnosticOORPage struct {
+	records                    map[string]diagnosticOORRecord
+	PackageEvidenceUnavailable bool `json:"package_evidence_unavailable,omitempty"`
+	SwapEvidenceUnavailable    bool `json:"swap_evidence_unavailable,omitempty"`
+}
+
 // diagnosticOORDetails is additive mobile JSON. Missing or unfamiliar kinds
 // must leave a row visible. A claim amount is the output received into Ark.
 type diagnosticOORDetails struct {
-	Kind             string          `json:"kind,omitempty"`
-	ClaimedAmountSat *int64          `json:"claimed_amount_sat,string,omitempty"`
-	RelatedSwap      json.RawMessage `json:"related_swap,omitempty"`
-	AmountReadFailed bool            `json:"amount_read_failed,omitempty"`
+	Kind                    string          `json:"kind,omitempty"`
+	ClaimedAmountSat        *int64          `json:"claimed_amount_sat,string,omitempty"`
+	RelatedSwap             json.RawMessage `json:"related_swap,omitempty"`
+	AmountReadFailed        bool            `json:"amount_read_failed,omitempty"`
+	ClaimedAmountReadFailed bool            `json:"claimed_amount_read_failed,omitempty"`
 }
 
 const (
@@ -39,24 +48,28 @@ const (
 // diagnosticOORRecords enriches a finite page with local evidence. An amount
 // lookup or optional evidence failure leaves the status list usable.
 func diagnosticOORRecords(ctx context.Context, client *wavewalletdk.Client,
-	page *waverpc.ListOORSessionsResponse) map[string]diagnosticOORRecord {
+	response *waverpc.ListOORSessionsResponse) *diagnosticOORPage {
 
-	if len(page.GetSessions()) == 0 {
+	if len(response.GetSessions()) == 0 {
 		return nil
 	}
-	ids := make([]string, 0, len(page.GetSessions()))
-	for _, session := range page.GetSessions() {
+	ids := make([]string, 0, len(response.GetSessions()))
+	for _, session := range response.GetSessions() {
 		ids = append(ids, session.GetSessionId())
 	}
-	packages, _ := client.OORDiagnosticPackages(ctx, ids)
-	swaps, _ := client.SwapRPC().ListSwaps(
+	packages, packageErr := client.OORDiagnosticPackages(ctx, ids)
+	swaps, swapErr := client.SwapRPC().ListSwaps(
 		ctx, &swapclientrpc.ListSwapsRequest{},
 	)
 
-	return describeOORRecords(
-		ctx, page.GetSessions(), packages, swaps.GetSwaps(),
-		client.OORAmount,
-	)
+	return &diagnosticOORPage{
+		records: describeOORRecords(
+			ctx, response.GetSessions(), packages, swaps.GetSwaps(),
+			client.OORAmount,
+		),
+		PackageEvidenceUnavailable: packageErr != nil,
+		SwapEvidenceUnavailable:    swapErr != nil,
+	}
 }
 
 // describeOORRecords uses exact session identity for claim links and preserves
@@ -112,12 +125,13 @@ func describeOORRecords(ctx context.Context, sessions []*waverpc.OORSessionInfo,
 				waverpc.OORSessionDirection_OOR_SESSION_DIRECTION_INCOMING {
 
 				details.ClaimedAmountSat = record.amount
+				details.ClaimedAmountReadFailed = details.AmountReadFailed
 			} else {
 				amount, err := readAmount(ctx, id, false)
 				if err == nil {
 					details.ClaimedAmountSat = amount
 				}
-				details.AmountReadFailed = err != nil
+				details.ClaimedAmountReadFailed = err != nil
 			}
 		}
 

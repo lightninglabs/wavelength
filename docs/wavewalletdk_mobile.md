@@ -367,6 +367,19 @@ states. Round lists support the daemon's opaque continuation token. Swap
 inspection omits invoice and preimage fields. Hosts must preserve their normal
 wallet authentication gate before displaying or sharing diagnostics.
 
+The `oor` view accepts `PageToken` and returns `next_page_token`. Each session
+may have a `diagnostic` object. `kind` is `stored_package` for a package with
+unproven wallet involvement, `recovery_package` for verified ancestry of a
+wallet package on the page, or `lightning_receive_claim` for an exact link to
+a Lightning receive. Keep records with absent or unfamiliar kinds visible.
+
+A claim includes the redacted `related_swap` summary and, when known, its
+`claimed_amount_sat` as an integer string. The amount is the confirmed local
+wallet output total. The ordinary `amount_sat` keeps its existing transfer
+semantics. Each amount is optional and has a separate read failure flag. The
+page-level `diagnostic` can also report `package_evidence_unavailable` or
+`swap_evidence_unavailable` while returning the OOR statuses.
+
 ## Optional native log capture
 
 Set `diagnostic_logs: true` in the mobile startup config to capture native logs.

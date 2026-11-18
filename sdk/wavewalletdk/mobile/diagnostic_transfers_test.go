@@ -8,7 +8,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
@@ -21,6 +23,8 @@ func TestDiagnosticOORRecordsRetainUnknownAndFailedSessions(t *testing.T) {
 	failed := waverpc.OORSessionStatus_OOR_SESSION_STATUS_FAILED
 	outgoing := waverpc.OORSessionDirection_OOR_SESSION_DIRECTION_OUTGOING
 	incoming := waverpc.OORSessionDirection_OOR_SESSION_DIRECTION_INCOMING
+	claimTxid := chainhash.Hash{1, 2, 3}
+	listedClaim := claimTxid.String()
 	page := &waverpc.ListOORSessionsResponse{
 		NextPageToken: "older",
 		Sessions: []*waverpc.OORSessionInfo{
@@ -35,7 +39,7 @@ func TestDiagnosticOORRecordsRetainUnknownAndFailedSessions(t *testing.T) {
 				Status:    completed,
 			},
 			{
-				SessionId: "claim",
+				SessionId: listedClaim,
 				Direction: outgoing,
 				Status:    completed,
 			},
@@ -67,7 +71,7 @@ func TestDiagnosticOORRecordsRetainUnknownAndFailedSessions(t *testing.T) {
 	}
 	claim := &swapclientrpc.SwapSummary{
 		Direction:      swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE,
-		ClaimSessionId: "claim",
+		ClaimSessionId: oor.SessionID(claimTxid).String(),
 		PaymentHash:    "parent",
 		AmountSat:      800,
 		Invoice:        "private invoice",
@@ -77,7 +81,10 @@ func TestDiagnosticOORRecordsRetainUnknownAndFailedSessions(t *testing.T) {
 		error) {
 
 		switch {
-		case id == "claim" && !outgoing:
+		case id == listedClaim:
+			if outgoing {
+				return nil, errors.New("unreadable request")
+			}
 			amount := int64(1200)
 
 			return &amount, nil
@@ -98,7 +105,9 @@ func TestDiagnosticOORRecordsRetainUnknownAndFailedSessions(t *testing.T) {
 		t.Context(), page.Sessions, packages,
 		[]*swapclientrpc.SwapSummary{claim}, readAmount,
 	)
-	raw, err := marshalDiagnostic(page, records)
+	raw, err := marshalDiagnostic(page, &diagnosticOORPage{
+		records: records, SwapEvidenceUnavailable: true,
+	})
 	require.NoError(t, err)
 	var decoded struct {
 		Sessions []map[string]json.RawMessage `json:"sessions"`
@@ -106,6 +115,7 @@ func TestDiagnosticOORRecordsRetainUnknownAndFailedSessions(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &decoded))
 	require.Len(t, decoded.Sessions, 6)
 	require.Contains(t, string(raw), `"next_page_token":"older"`)
+	require.Contains(t, string(raw), `"swap_evidence_unavailable":true`)
 	require.JSONEq(
 		t, `{"kind":"recovery_package"}`,
 		string(decoded.Sessions[0]["diagnostic"]),
@@ -116,6 +126,18 @@ func TestDiagnosticOORRecordsRetainUnknownAndFailedSessions(t *testing.T) {
 	)
 	require.NotContains(t, decoded.Sessions[2], "amount_sat")
 	require.Contains(t, string(raw), `"claimed_amount_sat":"1200"`)
+	require.Contains(
+		t, string(decoded.Sessions[2]["diagnostic"]),
+		`"amount_read_failed":true`,
+	)
+	require.NotContains(
+		t, string(decoded.Sessions[2]["diagnostic"]),
+		"claimed_amount_read_failed",
+	)
+	require.Contains(
+		t, string(decoded.Sessions[2]["diagnostic"]),
+		`"amount_sat":"800"`,
+	)
 	require.Contains(t, string(raw), `"payment_hash":"parent"`)
 	require.NotContains(t, string(raw), claim.Invoice)
 	require.NotContains(t, string(raw), claim.Preimage)
@@ -152,4 +174,25 @@ func TestDiagnosticClaimSwapsRequiresUniqueReceiveEvidence(t *testing.T) {
 	require.Equal(t, map[string]*swapclientrpc.SwapSummary{
 		"ok": want, "duplicate": nil,
 	}, claims)
+}
+
+// TestDiagnosticCreditLedgerDirectionKeepsWireValue verifies the bridge
+// publishes lowercase ledger directions alongside protobuf operation states.
+func TestDiagnosticCreditLedgerDirectionKeepsWireValue(t *testing.T) {
+	raw, err := marshalDiagnostic(&swapclientrpc.ListCreditsResponse{
+		Operations: []*swapclientrpc.CreditOperation{{
+			OperationId: "op",
+			State: swapclientrpc.
+				CreditOperationState_CREDIT_OPERATION_STATE_DEBITED,
+		}},
+		LedgerEntries: []*swapclientrpc.CreditLedgerEntry{{
+			OperationId: "op", Direction: "debit", AmountSat: 40,
+		}},
+	}, nil)
+	require.NoError(t, err)
+	require.Contains(
+		t, string(raw), `"state":"CREDIT_OPERATION_STATE_DEBITED"`,
+	)
+	require.Contains(t, string(raw), `"direction":"debit"`)
+	require.Contains(t, string(raw), `"amount_sat":"40"`)
 }

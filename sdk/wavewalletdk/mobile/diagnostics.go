@@ -35,7 +35,7 @@ func DiagnosticRead(reqJSON []byte) ([]byte, error) {
 	}
 	rpc := client.ArkRPC()
 	var response proto.Message
-	var oorRecords map[string]diagnosticOORRecord
+	var oorPage *diagnosticOORPage
 	switch req.View {
 	case "vtxos":
 		statuses := []waverpc.VTXOStatus{
@@ -101,7 +101,7 @@ func DiagnosticRead(reqJSON []byte) ([]byte, error) {
 		if readErr != nil {
 			return nil, readErr
 		}
-		oorRecords = diagnosticOORRecords(ctx, client, sessions)
+		oorPage = diagnosticOORRecords(ctx, client, sessions)
 		response = sessions
 
 	case "swaps":
@@ -128,12 +128,12 @@ func DiagnosticRead(reqJSON []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	return marshalDiagnostic(response, oorRecords)
+	return marshalDiagnostic(response, oorPage)
 }
 
 // marshalDiagnostic preserves protobuf integer strings and optional OOR values.
 func marshalDiagnostic(response proto.Message,
-	oorRecords map[string]diagnosticOORRecord) ([]byte, error) {
+	oorPage *diagnosticOORPage) ([]byte, error) {
 
 	data, err := (protojson.MarshalOptions{
 		UseProtoNames: true, EmitUnpopulated: true,
@@ -147,7 +147,16 @@ func marshalDiagnostic(response proto.Message,
 		return nil, err
 	}
 
-	if oorRecords != nil {
+	if oorPage != nil {
+		if oorPage.PackageEvidenceUnavailable ||
+			oorPage.SwapEvidenceUnavailable {
+
+			pageInfo, err := json.Marshal(oorPage)
+			if err != nil {
+				return nil, err
+			}
+			object["diagnostic"] = pageInfo
+		}
 		var records []map[string]json.RawMessage
 		if err := json.Unmarshal(
 			object["sessions"], &records,
@@ -161,7 +170,7 @@ func marshalDiagnostic(response proto.Message,
 			); err != nil {
 				return nil, err
 			}
-			if item, ok := oorRecords[id]; ok {
+			if item, ok := oorPage.records[id]; ok {
 				if item.amount != nil {
 					record["amount_sat"], err = json.Marshal(
 						fmt.Sprint(*item.amount),
