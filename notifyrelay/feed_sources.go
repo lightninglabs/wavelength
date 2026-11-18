@@ -269,13 +269,17 @@ func (s *SQLStore) bindFeedTx(ctx context.Context, q *sqlc.Queries, owner,
 		request.ExpiresAtUnix > sub.ExpiresAt {
 		return ManagementResult{}, ErrNotFound
 	}
-	if err := q.PutFeedBinding(ctx, sqlc.PutFeedBindingParams{
+	changed, err := q.PutFeedBinding(ctx, sqlc.PutFeedBindingParams{
 		SourceID: source.config.ID, SubscriptionID: sub.ID,
 		FeedToken:    token,
 		EventClasses: int32(request.EventClasses),
 		ExpiresAt:    request.ExpiresAtUnix,
-	}); err != nil {
+	})
+	if err != nil {
 		return ManagementResult{}, err
+	}
+	if changed == 0 {
+		return ManagementResult{}, ErrNotFound
 	}
 
 	return ManagementResult{

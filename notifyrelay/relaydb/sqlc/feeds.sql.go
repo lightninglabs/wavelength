@@ -38,6 +38,34 @@ func (q *Queries) AdvanceFeedBinding(ctx context.Context, arg AdvanceFeedBinding
 	return result.RowsAffected()
 }
 
+const deleteRevokedFeedJobs = `-- name: DeleteRevokedFeedJobs :exec
+DELETE FROM relay_jobs
+WHERE relay_jobs.subscription_id = $1
+    AND NOT EXISTS (
+        SELECT 1 FROM relay_feed_bindings AS b
+        WHERE b.subscription_id = relay_jobs.subscription_id
+            AND b.expires_at > $2
+            AND (b.event_classes & CASE relay_jobs.scope
+                WHEN 'wake' THEN 1
+                WHEN 'alert' THEN 2
+                WHEN 'round' THEN 4
+                WHEN 'schedule' THEN 4
+            END) != 0
+    )
+`
+
+type DeleteRevokedFeedJobsParams struct {
+	SubscriptionID string
+	NowUnix        int64
+}
+
+// Jobs coalesce per subscription and scope. Keep jobs that a second live
+// binding can still authorize.
+func (q *Queries) DeleteRevokedFeedJobs(ctx context.Context, arg DeleteRevokedFeedJobsParams) error {
+	_, err := q.db.ExecContext(ctx, deleteRevokedFeedJobs, arg.SubscriptionID, arg.NowUnix)
+	return err
+}
+
 const getFeedBinding = `-- name: GetFeedBinding :one
 SELECT source_id, subscription_id, feed_token, event_classes, expires_at, last_generation, scheduled_cutoff FROM relay_feed_bindings WHERE source_id = $1 AND subscription_id = $2
 `
@@ -127,7 +155,7 @@ func (q *Queries) MarkScheduledBinding(ctx context.Context, arg MarkScheduledBin
 	return result.RowsAffected()
 }
 
-const putFeedBinding = `-- name: PutFeedBinding :exec
+const putFeedBinding = `-- name: PutFeedBinding :execrows
 INSERT INTO relay_feed_bindings (
     source_id, subscription_id, feed_token, event_classes, expires_at
 ) VALUES ($1, $2, $3, $4, $5)
@@ -136,6 +164,7 @@ ON CONFLICT (source_id, subscription_id) DO UPDATE SET
     expires_at = excluded.expires_at,
     last_generation = CASE WHEN relay_feed_bindings.feed_token = excluded.feed_token
         THEN relay_feed_bindings.last_generation ELSE 0 END
+WHERE relay_feed_bindings.expires_at > 0
 `
 
 type PutFeedBindingParams struct {
@@ -146,13 +175,35 @@ type PutFeedBindingParams struct {
 	ExpiresAt      int64
 }
 
-func (q *Queries) PutFeedBinding(ctx context.Context, arg PutFeedBindingParams) error {
-	_, err := q.db.ExecContext(ctx, putFeedBinding,
+func (q *Queries) PutFeedBinding(ctx context.Context, arg PutFeedBindingParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, putFeedBinding,
 		arg.SourceID,
 		arg.SubscriptionID,
 		arg.FeedToken,
 		arg.EventClasses,
 		arg.ExpiresAt,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const revokeFeedBinding = `-- name: RevokeFeedBinding :exec
+INSERT INTO relay_feed_bindings (
+    source_id, subscription_id, feed_token, event_classes, expires_at
+) VALUES ($1, $2, $3, 1, 0)
+ON CONFLICT (source_id, subscription_id) DO UPDATE SET expires_at = 0
+`
+
+type RevokeFeedBindingParams struct {
+	SourceID       string
+	SubscriptionID string
+	FeedToken      []byte
+}
+
+// A zero expiry is terminal for this source and subscription.
+func (q *Queries) RevokeFeedBinding(ctx context.Context, arg RevokeFeedBindingParams) error {
+	_, err := q.db.ExecContext(ctx, revokeFeedBinding, arg.SourceID, arg.SubscriptionID, arg.FeedToken)
 	return err
 }

@@ -15,9 +15,6 @@ import (
 	"google.golang.org/grpc"
 )
 
-// feedServiceName is the fixed event service on a reserved subscriber mailbox.
-const feedServiceName = "mailbox.v1.WakeFeedService"
-
 // ErrFeedSource hides source responses and credentials from diagnostics. A bad
 // envelope or unsupported version stops progress rather than acknowledging an
 // obligation this binary cannot interpret.
@@ -178,20 +175,27 @@ func (f *feedIngress) flushAck(ctx context.Context, state sqlc.RelaySource,
 	})
 }
 
+// feedOccurrence is a validated producer event or terminal route removal.
+type feedOccurrence struct {
+	event   *pb.WakeFeedEvent
+	revoked bool
+}
+
 // validateBatch accepts an ordered v1 feed prefix from the configured source.
 // Sequence gaps are legal after producer expiry/revocation. Empty responses
 // never advance a cursor. Malformed or unsupported feed data remains unacked.
 func (f *feedIngress) validateBatch(response *pb.PullResponse, cursor int64) (
-	[]*pb.WakeFeedEvent, error) {
+	[]feedOccurrence, error) {
 
 	if response == nil || !response.GetStatus().GetOk() ||
 		len(response.Envelopes) > 64 {
 		return nil, ErrFeedSource
 	}
-	events := make([]*pb.WakeFeedEvent, 0, len(response.Envelopes))
+	events := make([]feedOccurrence, 0, len(response.Envelopes))
 	prior := uint64(cursor)
 	version := pb.MailboxProtocolVersionV1
 	for _, envelope := range response.Envelopes {
+		rpc := envelope.GetRpc()
 		if envelope == nil || envelope.EventSeq == 0 ||
 			envelope.EventSeq < uint64(cursor) ||
 			(len(events) > 0 && envelope.EventSeq <= prior) ||
@@ -199,9 +203,9 @@ func (f *feedIngress) validateBatch(response *pb.PullResponse, cursor int64) (
 			envelope.ProtocolVersion != version ||
 			envelope.Sender != f.source.config.PublicKey ||
 			envelope.Recipient != f.source.mailboxID ||
-			envelope.GetRpc().GetKind() != pb.RpcMeta_KIND_EVENT ||
-			envelope.GetRpc().GetService() != feedServiceName ||
-			envelope.GetRpc().GetMethod() != "Wake" {
+			rpc.GetKind() != pb.RpcMeta_KIND_EVENT ||
+			rpc.GetService() != notification.FeedServiceName ||
+			rpc.GetMethod() != "Wake" {
 			return nil, ErrFeedSource
 		}
 		event := new(pb.WakeFeedEvent)
@@ -210,7 +214,16 @@ func (f *feedIngress) validateBatch(response *pb.PullResponse, cursor int64) (
 			notification.ValidateFeedEvent(event) != nil {
 			return nil, ErrFeedSource
 		}
-		events = append(events, event)
+		revoked, err := notification.IsFeedRevocation(envelope, event)
+		if err != nil {
+			return nil, ErrFeedSource
+		}
+		events = append(
+			events, feedOccurrence{
+				event:   event,
+				revoked: revoked,
+			},
+		)
 		prior = envelope.EventSeq
 	}
 	if len(events) > 0 && response.NextCursor != prior+1 {
@@ -223,7 +236,7 @@ func (f *feedIngress) validateBatch(response *pb.PullResponse, cursor int64) (
 // commitBatch fences a stale replica before any job write. Jobs, binding
 // progress and the pending-ACK checkpoint share one serializable transaction.
 func (f *feedIngress) commitBatch(ctx context.Context, prior sqlc.RelaySource,
-	token string, next int64, events []*pb.WakeFeedEvent) error {
+	token string, next int64, events []feedOccurrence) error {
 
 	return f.store.database.Write(ctx, func(q *sqlc.Queries) error {
 		now := time.Now()
@@ -243,8 +256,18 @@ func (f *feedIngress) commitBatch(ctx context.Context, prior sqlc.RelaySource,
 		if claimed.Cursor != prior.Cursor {
 			return ErrFeedSource
 		}
-		for _, event := range events {
-			if err := f.admitEvent(ctx, q, event, now); err != nil {
+		for _, occurrence := range events {
+			var err error
+			if occurrence.revoked {
+				err = f.revokeBinding(
+					ctx, q, occurrence.event, now,
+				)
+			} else {
+				err = f.admitEvent(
+					ctx, q, occurrence.event, now,
+				)
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -265,6 +288,37 @@ func (f *feedIngress) commitBatch(ctx context.Context, prior sqlc.RelaySource,
 		}
 
 		return nil
+	})
+}
+
+// revokeBinding fences this source's grant even if removal preceded the
+// app's first bind. The source can change only its own binding. This path
+// needs no assertion from the installation that owns the subscription.
+func (f *feedIngress) revokeBinding(ctx context.Context, q *sqlc.Queries,
+	event *pb.WakeFeedEvent, now time.Time) error {
+
+	sub, err := q.GetSubscription(ctx, event.GrantId)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if sub.ExpiresAt <= now.Unix() {
+		return nil
+	}
+	err = q.RevokeFeedBinding(ctx, sqlc.RevokeFeedBindingParams{
+		SourceID:       f.source.config.ID,
+		SubscriptionID: sub.ID,
+		FeedToken:      event.FeedToken,
+	})
+	if err != nil {
+		return err
+	}
+
+	return q.DeleteRevokedFeedJobs(ctx, sqlc.DeleteRevokedFeedJobsParams{
+		SubscriptionID: sub.ID,
+		NowUnix:        now.Unix(),
 	})
 }
 
@@ -315,11 +369,12 @@ func (f *feedIngress) admitEvent(ctx context.Context, q *sqlc.Queries,
 	// The authenticated ordered source stream is authoritative for its
 	// token. Never wait for an app round trip while holding an aggregate
 	// feed prefix.
-	if err := q.PutFeedBinding(ctx, sqlc.PutFeedBindingParams{
+	changed, err := q.PutFeedBinding(ctx, sqlc.PutFeedBindingParams{
 		SourceID: f.source.config.ID, SubscriptionID: sub.ID,
 		FeedToken: event.FeedToken, EventClasses: int32(classes),
 		ExpiresAt: sub.ExpiresAt,
-	}); err != nil {
+	})
+	if err != nil || changed == 0 {
 		return err
 	}
 	round := classes&event.EventClasses&notification.FeedClassRound != 0
@@ -353,7 +408,7 @@ func (f *feedIngress) admitEvent(ctx context.Context, q *sqlc.Queries,
 			return err
 		}
 	}
-	changed, err := q.AdvanceFeedBinding(ctx, sqlc.AdvanceFeedBindingParams{
+	changed, err = q.AdvanceFeedBinding(ctx, sqlc.AdvanceFeedBindingParams{
 		SourceID: f.source.config.ID, SubscriptionID: sub.ID,
 		FeedToken: event.FeedToken, Generation: int64(event.Generation),
 		NowUnix: now.Unix(),

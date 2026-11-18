@@ -28,6 +28,9 @@ type Querier interface {
 	DeleteClaimedJob(ctx context.Context, arg DeleteClaimedJobParams) (int64, error)
 	DeleteExpiredScheduleJob(ctx context.Context, arg DeleteExpiredScheduleJobParams) error
 	DeleteInstallationSubscriptions(ctx context.Context, installationID string) error
+	// Jobs coalesce per subscription and scope. Keep jobs that a second live
+	// binding can still authorize.
+	DeleteRevokedFeedJobs(ctx context.Context, arg DeleteRevokedFeedJobsParams) error
 	DeleteScopeJob(ctx context.Context, arg DeleteScopeJobParams) error
 	DeleteSubscription(ctx context.Context, arg DeleteSubscriptionParams) error
 	FinishJob(ctx context.Context, arg FinishJobParams) (int64, error)
@@ -52,11 +55,13 @@ type Querier interface {
 	PruneExpiredDedup(ctx context.Context, arg PruneExpiredDedupParams) (int64, error)
 	PruneExpiredJobs(ctx context.Context, arg PruneExpiredJobsParams) (int64, error)
 	PutDedup(ctx context.Context, arg PutDedupParams) error
-	PutFeedBinding(ctx context.Context, arg PutFeedBindingParams) error
+	PutFeedBinding(ctx context.Context, arg PutFeedBindingParams) (int64, error)
 	PutInstallation(ctx context.Context, arg PutInstallationParams) (int64, error)
 	PutSubscription(ctx context.Context, arg PutSubscriptionParams) (int64, error)
 	ReleaseInstallation(ctx context.Context, arg ReleaseInstallationParams) (int64, error)
 	ReleaseSource(ctx context.Context, arg ReleaseSourceParams) error
+	// A zero expiry is terminal for this source and subscription.
+	RevokeFeedBinding(ctx context.Context, arg RevokeFeedBindingParams) error
 	SetRoundJobWindow(ctx context.Context, arg SetRoundJobWindowParams) error
 }
 

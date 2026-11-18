@@ -8,6 +8,7 @@ import (
 	"time"
 
 	pb "github.com/lightninglabs/wavelength/mailbox/pb"
+	"github.com/lightninglabs/wavelength/notification"
 	"github.com/lightninglabs/wavelength/notifyrelay/relaydb/sqlc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/anypb"
@@ -51,8 +52,9 @@ func TestSourceCommitWakesDeliveryBeforeAck(t *testing.T) {
 		ProtocolVersion: pb.MailboxProtocolVersionV1, EventSeq: 1,
 		Sender: source.config.PublicKey, Recipient: source.mailboxID,
 		Body: body, Rpc: &pb.RpcMeta{
-			Kind: pb.RpcMeta_KIND_EVENT, Service: feedServiceName,
-			Method: "Wake",
+			Kind:    pb.RpcMeta_KIND_EVENT,
+			Service: notification.FeedServiceName,
+			Method:  "Wake",
 		},
 	}
 	available := make(chan struct{})
