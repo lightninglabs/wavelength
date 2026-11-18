@@ -121,6 +121,7 @@ type NativeNodeConfig struct {
 	OnChannelRestoreFailure  func(wire.OutPoint, error)
 	ChannelLifecycle         contractcourt.AuxChannelLifecycle
 	ShouldDisableChannelAdds func(wire.OutPoint) (bool, error)
+	ShouldHoldExternalClose  func(wire.OutPoint) (bool, error)
 }
 
 // NativeNodeFactory attaches a configured peer to an application-owned engine.
@@ -211,6 +212,8 @@ func newNativeNode(cfg NativeNodeConfig,
 			// it here can race a redundant channel_reestablish
 			// against this initial link installation.
 			linkConfig.SyncStates = false
+			linkConfig.ShouldHoldExternalClose =
+				cfg.ShouldHoldExternalClose
 			if _, err := runtime.AddLink(
 				channel.OpenChannel, linkConfig,
 			); err != nil {
@@ -469,6 +472,7 @@ func (n *NativeNode) restoredLinkConfig(state *chanstate.OpenChannel) (
 	if err != nil {
 		return LinkConfig{}, err
 	}
+	linkConfig.ShouldHoldExternalClose = n.cfg.ShouldHoldExternalClose
 	if n.cfg.ShouldDisableChannelAdds != nil {
 		disabled, err := n.cfg.ShouldDisableChannelAdds(
 			state.FundingOutpoint,
