@@ -1765,6 +1765,11 @@ func (s *paySession) tryCooperativeRefund(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
+	signer, ok := s.client.server.(refundPayoutAuthorizer)
+	if !ok {
+		return false, nil
+	}
+
 	funded, err := s.observeRefundableVHTLC(ctx)
 	if err != nil {
 		return false, newRetryableActionError(
@@ -1794,11 +1799,12 @@ func (s *paySession) tryCooperativeRefund(ctx context.Context) (bool, error) {
 	}
 
 	input := CustomInput{
-		Outpoint:           s.vhtlcOutpoint,
-		VTXOPolicyTemplate: s.vhtlcPolicyTemplate,
-		SpendPath:          spendPath,
-		AmountSat:          s.vhtlcAmount,
-		PkScript:           s.vhtlcPkScript,
+		Outpoint:             s.vhtlcOutpoint,
+		VTXOPolicyTemplate:   s.vhtlcPolicyTemplate,
+		SpendPath:            spendPath,
+		AmountSat:            s.vhtlcAmount,
+		PkScript:             s.vhtlcPkScript,
+		PreserveSourceOwners: true,
 	}
 
 	prepared, err := s.client.daemon.PrepareOORWithCustomInputs(
@@ -1815,6 +1821,13 @@ func (s *paySession) tryCooperativeRefund(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	request, err := s.refundPayoutRequest(
+		ctx, input, preparedInput.CheckpointPSBT, prepared.ArkPSBT,
+		refundPubKey,
+	)
+	if err != nil {
+		return false, newRetryableActionError(err)
+	}
 
 	// Bound only the external authorization peer. Preparing, submitting
 	// and persisting an accepted OOR keep the caller's lifetime so a slow
@@ -1822,9 +1835,8 @@ func (s *paySession) tryCooperativeRefund(ctx context.Context) (bool, error) {
 	authCtx, cancel := context.WithTimeout(
 		ctx, cooperativeRefundAuthTimeout,
 	)
-	authorization, err := s.client.server.AuthorizeInSwapRefund(
-		authCtx, s.cfg.PaymentHash, s.vhtlcOutpoint, s.vhtlcAmount,
-		s.vhtlcPolicyTemplate, spendPath, preparedInput.CheckpointPSBT,
+	authorization, err := signer.AuthorizeInSwapRefundPackage(
+		authCtx, request,
 	)
 	cancel()
 	if err != nil {
@@ -1854,9 +1866,17 @@ func (s *paySession) tryCooperativeRefund(ctx context.Context) (bool, error) {
 				"empty response"),
 		)
 	}
+	// A legacy peer may ignore the payout request. Do not record an OOR
+	// session that cannot settle, or starve the sender-only timeout.
+	if authorization.PayoutSignature == nil {
+		return false, nil
+	}
 
 	input.ExternalSignatures = []TaprootScriptSignature{
 		authorization.Signature,
+	}
+	input.PayoutSignatures = []TaprootScriptSignature{
+		*authorization.PayoutSignature,
 	}
 
 	refundSessionID, err := s.client.daemon.SendOORWithCustomInputs(
@@ -1898,6 +1918,43 @@ func (s *paySession) tryCooperativeRefund(ctx context.Context) (bool, error) {
 	}
 
 	return true, nil
+}
+
+// refundPayoutRequest authorizes this exact package to pay the wallet's fresh
+// receive key. The swap server cannot infer that key from the original swap.
+func (s *paySession) refundPayoutRequest(ctx context.Context, input CustomInput,
+	checkpointPSBT, arkPSBT, refundKey []byte) (
+	*swaprpc.AuthorizeInSwapRefundRequest, error) {
+
+	if input.AmountSat <= 0 || len(checkpointPSBT) == 0 ||
+		len(arkPSBT) == 0 {
+		return nil, fmt.Errorf("incomplete prepared refund package")
+	}
+	identity, err := s.client.daemon.IdentityPubKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+	hash := s.cfg.PaymentHash
+	proof, err := newSwapOwnerProof(
+		ctx, s.client.daemon, identity, swapRecoveryAuthRefundPayout,
+		s.client.currentTime().Unix(), hash[:], checkpointPSBT, arkPSBT,
+		refundKey,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &swaprpc.AuthorizeInSwapRefundRequest{
+		PaymentHash:         hash[:],
+		VhtlcOutpoint:       input.Outpoint,
+		VhtlcAmountSat:      uint64(input.AmountSat),
+		VhtlcPolicyTemplate: input.VTXOPolicyTemplate,
+		RefundSpendPath:     input.SpendPath,
+		CheckpointPsbt:      checkpointPSBT,
+		ArkPsbt:             arkPSBT,
+		OwnerProof:          proof,
+		RefundPubkey:        refundKey,
+	}, nil
 }
 
 // preparedCustomInput returns the prepared checkpoint signing data for one
