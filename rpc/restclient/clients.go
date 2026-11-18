@@ -1215,6 +1215,17 @@ func (c *WalletServiceClient) Recv(ctx context.Context,
 	return out, err
 }
 
+// LookupRecv reads the result of an earlier keyed receive.
+func (c *WalletServiceClient) LookupRecv(ctx context.Context,
+	in *wavewalletrpc.LookupRecvRequest, _ ...grpc.CallOption) (
+	*wavewalletrpc.RecvResponse, error) {
+
+	out := new(wavewalletrpc.RecvResponse)
+	err := c.client.Post(ctx, "/v1/wallet/lookup-recv", in, out)
+
+	return out, err
+}
+
 // List returns a wallet list view.
 func (c *WalletServiceClient) List(ctx context.Context,
 	in *wavewalletrpc.ListRequest, _ ...grpc.CallOption) (

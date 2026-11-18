@@ -1430,8 +1430,10 @@ type StartReceiveRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// amount_sat is the Lightning amount to receive into Ark.
 	AmountSat int64 `protobuf:"varint,1,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
-	// idempotency_key is reserved for a future daemon-level duplicate-start
-	// guard.
+	// idempotency_key optionally names this receive. The daemon stores it
+	// with the receive it creates and refuses a second receive under the
+	// same key. Read the existing receive with GetSwap's
+	// receive_idempotency_key.
 	IdempotencyKey string `protobuf:"bytes,2,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	// memo is an optional human-readable label to embed as the BOLT-11
 	// invoice description.
@@ -1803,9 +1805,13 @@ func (x *ListSwapsResponse) GetSwaps() []*SwapSummary {
 type GetSwapRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// payment_hash identifies the persisted swap to fetch.
-	PaymentHash   string `protobuf:"bytes,1,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	PaymentHash string `protobuf:"bytes,1,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// receive_idempotency_key fetches the receive created with this
+	// StartReceive idempotency_key instead. Set exactly one of
+	// payment_hash and receive_idempotency_key.
+	ReceiveIdempotencyKey string `protobuf:"bytes,2,opt,name=receive_idempotency_key,json=receiveIdempotencyKey,proto3" json:"receive_idempotency_key,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *GetSwapRequest) Reset() {
@@ -1841,6 +1847,13 @@ func (*GetSwapRequest) Descriptor() ([]byte, []int) {
 func (x *GetSwapRequest) GetPaymentHash() string {
 	if x != nil {
 		return x.PaymentHash
+	}
+	return ""
+}
+
+func (x *GetSwapRequest) GetReceiveIdempotencyKey() string {
+	if x != nil {
+		return x.ReceiveIdempotencyKey
 	}
 	return ""
 }
@@ -2055,8 +2068,11 @@ type SwapSummary struct {
 	// available_credit_sat is the balance considered when the receive route was
 	// planned.
 	AvailableCreditSat uint64 `protobuf:"varint,26,opt,name=available_credit_sat,json=availableCreditSat,proto3" json:"available_credit_sat,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// memo is the invoice memo a receive was created with. It is empty for
+	// pays and for receives stored before memos were recorded.
+	Memo          string `protobuf:"bytes,27,opt,name=memo,proto3" json:"memo,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SwapSummary) Reset() {
@@ -2271,6 +2287,13 @@ func (x *SwapSummary) GetAvailableCreditSat() uint64 {
 	return 0
 }
 
+func (x *SwapSummary) GetMemo() string {
+	if x != nil {
+		return x.Memo
+	}
+	return ""
+}
+
 var File_swap_client_proto protoreflect.FileDescriptor
 
 const file_swap_client_proto_rawDesc = "" +
@@ -2394,16 +2417,17 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x10ListSwapsRequest\x12!\n" +
 	"\fpending_only\x18\x01 \x01(\bR\vpendingOnly\"E\n" +
 	"\x11ListSwapsResponse\x120\n" +
-	"\x05swaps\x18\x01 \x03(\v2\x1a.swapclientrpc.SwapSummaryR\x05swaps\"3\n" +
+	"\x05swaps\x18\x01 \x03(\v2\x1a.swapclientrpc.SwapSummaryR\x05swaps\"k\n" +
 	"\x0eGetSwapRequest\x12!\n" +
-	"\fpayment_hash\x18\x01 \x01(\tR\vpaymentHash\"A\n" +
+	"\fpayment_hash\x18\x01 \x01(\tR\vpaymentHash\x126\n" +
+	"\x17receive_idempotency_key\x18\x02 \x01(\tR\x15receiveIdempotencyKey\"A\n" +
 	"\x0fGetSwapResponse\x12.\n" +
 	"\x04swap\x18\x01 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"e\n" +
 	"\x15SubscribeSwapsRequest\x12)\n" +
 	"\x10include_existing\x18\x01 \x01(\bR\x0fincludeExisting\x12!\n" +
 	"\fpending_only\x18\x02 \x01(\bR\vpendingOnly\"H\n" +
 	"\x16SubscribeSwapsResponse\x12.\n" +
-	"\x04swap\x18\x01 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xca\b\n" +
+	"\x04swap\x18\x01 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xde\b\n" +
 	"\vSwapSummary\x12:\n" +
 	"\tdirection\x18\x01 \x01(\x0e2\x1c.swapclientrpc.SwapDirectionR\tdirection\x12!\n" +
 	"\fpayment_hash\x18\x02 \x01(\tR\vpaymentHash\x12.\n" +
@@ -2432,7 +2456,8 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x14requested_amount_sat\x18\x17 \x01(\x04R\x12requestedAmountSat\x12.\n" +
 	"\x13attached_credit_sat\x18\x18 \x01(\x04R\x11attachedCreditSat\x12$\n" +
 	"\x0edust_limit_sat\x18\x19 \x01(\x04R\fdustLimitSat\x120\n" +
-	"\x14available_credit_sat\x18\x1a \x01(\x04R\x12availableCreditSat*c\n" +
+	"\x14available_credit_sat\x18\x1a \x01(\x04R\x12availableCreditSat\x12\x12\n" +
+	"\x04memo\x18\x1b \x01(\tR\x04memo*c\n" +
 	"\rSwapDirection\x12\x1e\n" +
 	"\x1aSWAP_DIRECTION_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12SWAP_DIRECTION_PAY\x10\x01\x12\x1a\n" +

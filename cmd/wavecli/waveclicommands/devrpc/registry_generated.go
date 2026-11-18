@@ -537,6 +537,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "",
 				},
 				{
+					Name:     "LookupRecv",
+					Aliases:  []string{"lookup-recv"},
+					Input:    "wavewalletrpc.LookupRecvRequest",
+					Output:   "wavewalletrpc.RecvResponse",
+					Comments: "",
+				},
+				{
 					Name:     "List",
 					Aliases:  []string{"list"},
 					Input:    "wavewalletrpc.ListRequest",
