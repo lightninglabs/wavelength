@@ -3,9 +3,9 @@
 ## Purpose
 
 Database abstractions and persistent storage for all wavelength state:
-boarding intents, boarding sweeps, rounds, VTXOs, OOR sessions, actor
-delivery checkpoints, and client-side fee accounting. Supports SQLite and
-PostgreSQL backends.
+boarding intents, boarding sweeps, rounds, VTXOs, OOR sessions, Ark channel
+coordination, actor delivery checkpoints, and client-side fee accounting.
+Supports SQLite and PostgreSQL backends.
 
 ## Key Types
 
@@ -72,6 +72,19 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   idempotency key or session id. It stores the canonical recipient record
   before the first transport enqueue and remains authoritative after the
   mutable session row becomes terminal or changes direction.
+- `ArkChannelStoreDB` — implements `arkchannel.Store` (constructed via
+  `Store.NewArkChannelStore(clk)` / `NewArkChannelStore`). One revisioned
+  `ark_channels` row per channel holds only facts that cross the Ark and lnd
+  databases: immutable terms, lifecycle phase, prepared OOR source, backing
+  transaction and channel point, per-party finalization and recovery flags,
+  and the cooperative-close request and result. Methods: `Create` (insert at
+  revision one, `ON CONFLICT (channel_id) DO NOTHING`), `Get`,
+  `GetByPendingChannelID`, `GetByChannelPoint`, `ListNonTerminal`, and
+  `CompareAndSwap`. `Create` and `CompareAndSwap` run each snapshot through
+  `arkchannel.RestoreState`, so the store cannot write a row that the domain
+  FSM would refuse to restore. `arkchannel.ErrNotFound` and
+  `arkchannel.ErrConflict` report typed misses; a write that affects no rows
+  is a conflict, not a silent success.
 - `LedgerStoreDB` — implements `ledger.LedgerStore`. Wraps
   `sqlc.InsertClientLedgerEntry` (ON CONFLICT DO NOTHING followed by an exact
   winner-payload comparison, so contradictory key reuse fails). Joins the
@@ -155,7 +168,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   they are returned after the transaction, never from inside it, so the
   executor logs no warning. The same store keeps the asset deposit journal
   (`LoadJournalEntry` / `StoreJournalEntry`) for the embedded backend.
-- `LatestMigrationVersion = 31` — current schema version.
+- `LatestMigrationVersion = 32` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -205,8 +218,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   persistence), `ledger` (interfaces + domain types), `wallet` (domain
   types for boarding sweeps and the pending-intent outbox), `vtxo`
   (VTXO/ancestry domain types), `round` (round-state domain types),
-  `vhtlcrecovery` (recovery-job domain types).
-- **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (storage
+  `vhtlcrecovery` (recovery-job domain types), `arkchannel` (Ark channel
+  snapshot and record types plus its `Store` interface).
+- **Depended on by**: `round`, `vtxo`, `oor`, `wallet`, `arkchannel` (storage
   interfaces), `waved` (wires DB backends).
 
 ## Invariants
@@ -298,6 +312,30 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   replacement. After takeover, the incoming lifecycle's current status and
   snapshot are the state that boot restore must resume; the separate dispatch
   row still answers keyed replay.
+- **An Ark channel's materialization identities are unique in the database,
+  not just in Go.** `idx_ark_channels_reserved_scid` (UNIQUE on
+  `reserved_scid`) and `idx_ark_channels_source` (UNIQUE on
+  `(oor_session_id, source_index)` where both are non-NULL) ensure that a
+  reserved virtual SCID and a prepared OOR output each identify exactly one
+  channel. `pending_channel_id` is unique for the same reason on lnd's funding
+  correlation ID, and `idx_ark_channels_channel_point` keeps one channel per
+  funding outpoint. SQL enforcement prevents peer-supplied identities from
+  binding two channels to the same materialization.
+- `ark_channels` mutations compare and swap on `revision`, which starts at one
+  and is incremented by the update. A zero-row update means that the caller's
+  expected revision is stale, so the store returns
+  `arkchannel.ErrConflict`. Immutable terms are absent from the update and
+  cannot be rewritten by a stale writer.
+- `pre_ponr_started_at` uses
+  `COALESCE(pre_ponr_started_at, <arg>)`. The first checkpoint after OOR
+  preparation begins stamps it, while later state changes preserve it. This
+  keeps pre-point-of-no-return expiry tied to the age of preparation instead
+  of the most recent write.
+- `ListNonTerminalArkChannels` keeps a cooperatively closed channel (phase 8)
+  resumable while `cooperative_close_txid IS NOT NULL`. Its signed replacement
+  VTXOs still require source-ancestry defense, so restart recovery must keep
+  observing it. Only phase 10 (failed) and a closed channel without a recorded
+  close transaction drop out.
 - `unilateral_exit_jobs.exit_policy_kind` and `exit_policy_ref`
   persist the durable final spend policy identity. Standard timeout
   jobs use `standard_vtxo_timeout` with an empty ref; policy-specific
@@ -476,6 +514,10 @@ when adding one.
   post-step detects the old refresh/exit collision and reconstructs the
   missing net exit-send row from the surviving refresh-send and exit-fee rows,
   repairing the overstated VTXO balance atomically with the key rewrite.
+- `000032_ark_channels` — creates the channel record and its uniqueness and
+  recovery indexes. It stores signed Ark backing, each peer's recovery
+  readiness, observed source spends, preparation start time, and cooperative
+  settlement. Lightning commitments, HTLCs and payment attempts stay in lnd.
 
 - `000021_round_admission_deadlines` — records accepted attempt expiry and
   closure separately from signature checkpoints. Deadline constraints only

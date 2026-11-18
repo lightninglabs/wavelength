@@ -1,0 +1,589 @@
+package db
+
+import (
+	"bytes"
+	"testing"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
+	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/arkchannel"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
+	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/stretchr/testify/require"
+)
+
+// TestArkChannelStoreRoundTrip verifies revisions, optional backing fields,
+// unsigned SCIDs, and non-terminal recovery scans.
+func TestArkChannelStoreRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	store := newArkChannelStoreForTest(t)
+	coordinator, err := arkchannel.NewCoordinator(store)
+	require.NoError(t, err)
+	terms := testArkChannelTerms(t, arkchannel.KindPromotion, 1)
+	terms.ReservedSCID = lnwire.ShortChannelID{
+		BlockHeight: 0x800001,
+		TxIndex:     1,
+	}.ToUint64()
+
+	requested, err := coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	require.False(t, requested.CreatedAt.IsZero())
+	require.False(t, requested.UpdatedAt.IsZero())
+	require.True(t, requested.PrePONRStartedAt.IsZero())
+	armed, _, err := coordinator.Apply(
+		t.Context(), terms.ID, &arkchannel.OORPreparationStarted{},
+	)
+	require.NoError(t, err)
+	require.True(t, armed.Snapshot.OORPreparationStarted)
+	require.Nil(t, armed.Snapshot.Source)
+	require.False(t, armed.PrePONRStartedAt.IsZero())
+	prePONRStartedAt := armed.PrePONRStartedAt
+	binding := testArkChannelBinding(terms)
+	bound, _, err := coordinator.Apply(
+		t.Context(), terms.ID, &arkchannel.BindVTXO{
+			Binding: binding,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, prePONRStartedAt, bound.PrePONRStartedAt)
+	backing := testArkChannelBacking(t, terms, binding)
+	for _, event := range []arkchannel.Event{
+		&arkchannel.BackingSigned{
+			Backing: backing,
+		},
+		&arkchannel.FundingFinalized{
+			Party: arkchannel.PartyClient,
+		},
+		&arkchannel.FundingFinalized{
+			Party: arkchannel.PartyHub,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+
+	loaded, err := store.Get(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, arkchannel.PhaseBackingReady, loaded.Snapshot.Phase)
+	require.Equal(t, terms.ReservedSCID, loaded.Snapshot.Terms.ReservedSCID)
+	require.Equal(t, backing, *loaded.Snapshot.Backing)
+	require.Equal(t, binding, *loaded.Snapshot.Source)
+	require.Equal(t, prePONRStartedAt, loaded.PrePONRStartedAt)
+	byPendingID, err := store.GetByPendingChannelID(
+		t.Context(), terms.PendingChannelID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, loaded, byPendingID)
+	byChannelPoint, err := store.GetByChannelPoint(
+		t.Context(), backing.ChannelPoint,
+	)
+	require.NoError(t, err)
+	require.Equal(t, loaded, byChannelPoint)
+
+	_, err = store.CompareAndSwap(
+		t.Context(), terms.ID, bound.Revision, bound.Snapshot,
+	)
+	require.ErrorIs(t, err, arkchannel.ErrConflict)
+
+	failedTerms := testArkChannelTerms(t, arkchannel.KindPromotion, 2)
+	_, err = coordinator.Request(t.Context(), failedTerms)
+	require.NoError(t, err)
+	_, _, err = coordinator.Apply(
+		t.Context(), failedTerms.ID, &arkchannel.Fail{
+			Reason: "negotiation rejected",
+		},
+	)
+	require.NoError(t, err)
+
+	records, err := store.ListNonTerminal(t.Context())
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	require.Equal(t, terms.ID, records[0].Snapshot.Terms.ID)
+}
+
+// TestArkChannelStoreRejectsDuplicateProtocolBindings proves a virtual SCID
+// and prepared OOR output cannot identify more than one channel.
+func TestArkChannelStoreRejectsDuplicateProtocolBindings(t *testing.T) {
+	t.Parallel()
+
+	t.Run("reserved SCID", func(t *testing.T) {
+		store := newArkChannelStoreForTest(t)
+		coordinator, err := arkchannel.NewCoordinator(store)
+		require.NoError(t, err)
+		first := testArkChannelTerms(t, arkchannel.KindPromotion, 20)
+		second := testArkChannelTerms(t, arkchannel.KindPromotion, 21)
+		second.ReservedSCID = first.ReservedSCID
+
+		_, err = coordinator.Request(t.Context(), first)
+		require.NoError(t, err)
+		_, err = coordinator.Request(t.Context(), second)
+		require.Error(t, err)
+		require.True(t, IsUniqueConstraintViolation(err), err)
+	})
+
+	t.Run("prepared source", func(t *testing.T) {
+		store := newArkChannelStoreForTest(t)
+		coordinator, err := arkchannel.NewCoordinator(store)
+		require.NoError(t, err)
+		first := testArkChannelTerms(t, arkchannel.KindPromotion, 22)
+		second := first.Clone()
+		second.ID[0]++
+		second.PendingChannelID[0]++
+		second.ReservedSCID += 1 << 16
+
+		_, err = coordinator.Request(t.Context(), first)
+		require.NoError(t, err)
+		_, err = coordinator.Request(t.Context(), second)
+		require.NoError(t, err)
+		binding := testArkChannelBinding(first)
+		_, _, err = coordinator.Apply(
+			t.Context(), first.ID, &arkchannel.BindVTXO{
+				Binding: binding,
+			},
+		)
+		require.NoError(t, err)
+		_, _, err = coordinator.Apply(
+			t.Context(), second.ID, &arkchannel.BindVTXO{
+				Binding: binding,
+			},
+		)
+		require.Error(t, err)
+		require.True(t, IsUniqueConstraintViolation(err), err)
+	})
+}
+
+// TestArkChannelStoreCooperativeCloseRoundTrip verifies the compact SQL facts
+// reconstruct and validate the exact hub-authorized OOR close.
+func TestArkChannelStoreCooperativeCloseRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		rotated bool
+	}{{
+		"legacy",
+		false,
+	}, {
+		"rotated",
+		true,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			testArkChannelCloseRoundTrip(t, tc.rotated)
+		})
+	}
+}
+
+// testArkChannelCloseRoundTrip rebuilds the signed close from SQL, without
+// access to the currently advertised operator key.
+func testArkChannelCloseRoundTrip(t *testing.T, rotated bool) {
+	t.Helper()
+	store := newArkChannelStoreForTest(t)
+	coordinator, err := arkchannel.NewCoordinator(store)
+	require.NoError(t, err)
+	terms := testArkChannelTerms(t, arkchannel.KindPromotion, 8)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	hubKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	terms.VTXO.ClientArkKey = testArkChannelCompressedKey(clientKey)
+	terms.VTXO.HubArkKey = testArkChannelCompressedKey(hubKey)
+	terms.VTXO.ArkOperatorKey = testArkChannelCompressedKey(operatorKey)
+	binding := testArkChannelBinding(terms)
+	backing := testArkChannelBacking(t, terms, binding)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	for _, event := range []arkchannel.Event{
+		&arkchannel.BindVTXO{
+			Binding: binding,
+		},
+		&arkchannel.BackingSigned{
+			Backing: backing,
+		},
+		&arkchannel.FundingFinalized{
+			Party: arkchannel.PartyClient,
+		},
+		&arkchannel.FundingFinalized{
+			Party: arkchannel.PartyHub,
+		},
+		&arkchannel.OORFinalized{
+			SessionID: binding.OORSessionID,
+		},
+		&arkchannel.RecoveryPackageInstalled{
+			Party: arkchannel.PartyClient,
+		},
+		&arkchannel.RecoveryPackageInstalled{
+			Party: arkchannel.PartyHub,
+		},
+		&arkchannel.ChannelActive{
+			ChannelPointHash:  backing.ChannelPoint.Hash,
+			ChannelPointIndex: backing.ChannelPoint.Index,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+	request := arkchannel.CooperativeCloseRequest{
+		Initiator:            arkchannel.PartyClient,
+		ClientDeliveryScript: clientKey.PubKey().SerializeCompressed(),
+		HubDeliveryScript:    hubKey.PubKey().SerializeCompressed(),
+	}
+	if rotated {
+		next, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+		encode := arkscript.EncodeStandardVTXOTemplate
+		request.ClientDeliveryScript, err = encode(
+			clientKey.PubKey(), next.PubKey(),
+			terms.VTXO.MinExitDelay,
+		)
+		require.NoError(t, err)
+		request.HubDeliveryScript, err = encode(
+			hubKey.PubKey(), next.PubKey(), terms.VTXO.MinExitDelay,
+		)
+		require.NoError(t, err)
+	}
+	_, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &arkchannel.RequestCooperativeClose{
+			Request: request,
+		},
+	)
+	require.NoError(t, err)
+	template, err := arkchannel.NewCooperativeCloseTemplate(
+		terms, binding, request, 70_000, 30_000, 9,
+	)
+	require.NoError(t, err)
+	hubSig := testArkChannelCloseSignature(
+		t, template, terms, arkchannel.PartyHub, hubKey,
+	)
+	arkDesc, err := template.ArkSignDescriptor(
+		terms, arkchannel.PartyHub, keychain.KeyDescriptor{
+			PubKey: hubKey.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	hubArkSig, err := input.NewMockSigner(
+		[]*btcec.PrivateKey{hubKey}, nil,
+	).SignOutputRaw(template.ArkTransaction(), arkDesc)
+	require.NoError(t, err)
+	settlement, err := template.Complete(
+		terms, binding, request, hubSig, hubArkSig,
+	)
+	require.NoError(t, err)
+	for _, event := range []arkchannel.Event{
+		&arkchannel.CooperativeCloseSigned{
+			Close: settlement,
+		},
+		&arkchannel.CooperativeCloseReady{
+			Receipt: settlement.AuthorizationReceipt(),
+		},
+		&arkchannel.CooperativeClosePublished{
+			TxID: settlement.TxID,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+
+	loaded, err := store.Get(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(
+		t, arkchannel.PhaseCoopClosePublished, loaded.Snapshot.Phase,
+	)
+	require.Equal(t, request, *loaded.Snapshot.CooperativeCloseRequest)
+	require.Equal(t, settlement, *loaded.Snapshot.CooperativeClose)
+
+	_, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &arkchannel.CooperativeCloseFinalized{},
+	)
+	require.NoError(t, err)
+	loaded, err = store.Get(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, arkchannel.PhaseClosed, loaded.Snapshot.Phase)
+	records, err := store.ListNonTerminal(t.Context())
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	require.Equal(t, terms.ID, records[0].Snapshot.Terms.ID)
+}
+
+// TestArkChannelStoreNotFound verifies the shared coordinator sentinel.
+func TestArkChannelStoreNotFound(t *testing.T) {
+	t.Parallel()
+
+	store := newArkChannelStoreForTest(t)
+	_, err := store.Get(t.Context(), arkchannel.ID{99})
+	require.ErrorIs(t, err, arkchannel.ErrNotFound)
+	_, err = store.GetByChannelPoint(
+		t.Context(), wire.OutPoint{
+			Hash: chainhash.Hash{99},
+		},
+	)
+	require.ErrorIs(t, err, arkchannel.ErrNotFound)
+}
+
+// TestArkChannelStoreOwnerScope pins reads, writes and uniqueness to the
+// shared SQL database rather than the set of online peers.
+func TestArkChannelStoreOwnerScope(t *testing.T) {
+	t.Parallel()
+	store := newArkChannelStoreForTest(t)
+	a := testArkChannelTerms(t, arkchannel.KindPromotion, 1)
+	b := testArkChannelTerms(t, arkchannel.KindPromotion, 2)
+	alice, bob := store.ForPeer(a.ClientNodeKey), store.ForPeer(
+		b.ClientNodeKey,
+	)
+	state, err := arkchannel.NewState(a)
+	require.NoError(t, err)
+	record, err := alice.Create(t.Context(), state.Snapshot())
+	require.NoError(t, err)
+	_, err = bob.Create(t.Context(), state.Snapshot())
+	require.ErrorIs(t, err, arkchannel.ErrNotFound)
+	_, err = bob.Get(t.Context(), a.ID)
+	require.ErrorIs(t, err, arkchannel.ErrNotFound)
+	_, err = bob.GetByPendingChannelID(t.Context(), a.PendingChannelID)
+	require.ErrorIs(t, err, arkchannel.ErrNotFound)
+	_, err = bob.GetBySCID(t.Context(), a.ReservedSCID)
+	require.ErrorIs(t, err, arkchannel.ErrNotFound)
+	known, err := alice.GetBySCID(t.Context(), a.ReservedSCID)
+	require.NoError(t, err)
+	require.Equal(t, a.ID, known.Snapshot.Terms.ID)
+	records, err := bob.ListNonTerminal(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, records)
+	forged := record.Snapshot.Clone()
+	forged.Terms.ClientNodeKey = b.ClientNodeKey
+	_, err = bob.CompareAndSwap(t.Context(), a.ID, record.Revision, forged)
+	require.Error(t, err)
+	got, err := alice.Get(t.Context(), a.ID)
+	require.NoError(t, err)
+	require.Equal(t, record.Revision, got.Revision)
+	for _, duplicate := range []string{"scid", "pending"} {
+		terms := b
+		if duplicate == "scid" {
+			terms.ReservedSCID = a.ReservedSCID
+		} else {
+			terms.PendingChannelID = a.PendingChannelID
+		}
+		other, err := arkchannel.NewState(terms)
+		require.NoError(t, err)
+		_, err = bob.Create(t.Context(), other.Snapshot())
+		require.Error(t, err)
+	}
+}
+
+// newArkChannelStoreForTest creates a migrated SQL-backed channel store.
+func newArkChannelStoreForTest(t *testing.T) *ArkChannelStoreDB {
+	t.Helper()
+
+	raw := NewTestDB(t)
+	store := NewStore(
+		raw.DB, raw.Queries, raw.Backend(), btclog.Disabled,
+	)
+
+	return NewArkChannelStore(store, clock.NewDefaultClock())
+}
+
+// testArkChannelTerms creates valid immutable SQL fixtures.
+func testArkChannelTerms(t *testing.T, kind arkchannel.Kind,
+	seed byte) arkchannel.Terms {
+
+	t.Helper()
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	hubKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	newPolicyKey := func(role byte) [33]byte {
+		key := testArkChannelPolicyKey(seed, role)
+		var serialized [33]byte
+		copy(serialized[:], key.PubKey().SerializeCompressed())
+
+		return serialized
+	}
+
+	var clientNodeKey, hubNodeKey [33]byte
+	copy(clientNodeKey[:], clientKey.PubKey().SerializeCompressed())
+	copy(hubNodeKey[:], hubKey.PubKey().SerializeCompressed())
+
+	terms := arkchannel.Terms{
+		ID: arkchannel.ID{
+			seed,
+			1,
+		},
+		Kind:   kind,
+		Funder: arkchannel.PartyClient,
+		PendingChannelID: [32]byte{
+			seed,
+			2,
+		},
+		Capacity: btcutil.Amount(100_000),
+		ReservedSCID: lnwire.ShortChannelID{
+			BlockHeight: 16_000_000 + uint32(seed),
+			TxIndex:     uint32(seed),
+		}.ToUint64(),
+		ClientNodeKey: clientNodeKey,
+		HubNodeKey:    hubNodeKey,
+		VTXO: arkchannel.VTXOTerms{
+			ClientArkKey:     newPolicyKey(1),
+			HubArkKey:        newPolicyKey(2),
+			ArkOperatorKey:   newPolicyKey(3),
+			ClientChannelKey: newPolicyKey(4),
+			HubChannelKey:    newPolicyKey(5),
+			FunderKey:        newPolicyKey(6),
+			ChannelDelay:     144,
+			FunderDelay:      576,
+			MinExitDelay:     144,
+		},
+	}
+
+	return terms
+}
+
+// testArkChannelPolicyKey returns a deterministic policy key for one SQL
+// fixture role.
+func testArkChannelPolicyKey(seed, role byte) *btcec.PrivateKey {
+	keyBytes := bytes.Repeat([]byte{role}, 32)
+	keyBytes[0] ^= seed
+	key, _ := btcec.PrivKeyFromBytes(keyBytes)
+
+	return key
+}
+
+// testArkChannelBinding creates an exact VTXO binding fixture.
+func testArkChannelBinding(terms arkchannel.Terms) arkchannel.VTXOBinding {
+	policy, pkScript, err := terms.VTXO.Artifacts()
+	if err != nil {
+		panic(err)
+	}
+
+	amount := terms.Capacity + 1_000
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash: chainhash.Hash{terms.ID[0], 5},
+		},
+	})
+	for i := 0; i < 3; i++ {
+		tx.AddTxOut(&wire.TxOut{
+			Value:    int64(i + 1),
+			PkScript: []byte{0x51},
+		})
+	}
+	tx.AddTxOut(&wire.TxOut{
+		Value:    int64(amount),
+		PkScript: pkScript,
+	})
+	var arkTransaction bytes.Buffer
+	if err := tx.Serialize(&arkTransaction); err != nil {
+		panic(err)
+	}
+	sessionID := [32]byte(tx.TxHash())
+
+	return arkchannel.VTXOBinding{
+		OORSessionID: sessionID,
+		OutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash(sessionID),
+			Index: 3,
+		},
+		Amount:         amount,
+		ArkTransaction: arkTransaction.Bytes(),
+		PolicyTemplate: policy,
+		PkScript:       pkScript,
+	}
+}
+
+// testArkChannelBacking creates a signed funding transaction fixture.
+func testArkChannelBacking(t *testing.T, terms arkchannel.Terms,
+	binding arkchannel.VTXOBinding) arkchannel.Backing {
+
+	t.Helper()
+	packet, err := psbt.New(nil, []*wire.TxOut{{
+		Value:    int64(terms.Capacity),
+		PkScript: []byte{0x51, 0x20, 7},
+	}}, 2, 0, nil)
+	require.NoError(t, err)
+	template, err := arkchannel.NewBackingTemplate(packet, terms, binding)
+	require.NoError(t, err)
+	clientSig := testArkChannelBackingSignature(
+		t, template, terms, arkchannel.PartyClient,
+		testArkChannelPolicyKey(terms.ID[0], 4),
+	)
+	hubSig := testArkChannelBackingSignature(
+		t, template, terms, arkchannel.PartyHub,
+		testArkChannelPolicyKey(terms.ID[0], 5),
+	)
+	backing, err := template.Complete(
+		terms, binding, clientSig, hubSig,
+	)
+	require.NoError(t, err)
+
+	return backing
+}
+
+// testArkChannelBackingSignature signs one endpoint's backing branch.
+func testArkChannelBackingSignature(t *testing.T,
+	template *arkchannel.BackingTemplate, terms arkchannel.Terms,
+	party arkchannel.Party, key *btcec.PrivateKey) input.Signature {
+
+	t.Helper()
+	desc, err := template.SignDescriptor(
+		terms, party, keychain.KeyDescriptor{
+			PubKey: key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	sig, err := input.NewMockSigner(
+		[]*btcec.PrivateKey{key}, nil,
+	).SignOutputRaw(template.Packet().UnsignedTx, desc)
+	require.NoError(t, err)
+
+	return sig
+}
+
+// testArkChannelCompressedKey encodes one policy key.
+func testArkChannelCompressedKey(key *btcec.PrivateKey) [33]byte {
+	var encoded [33]byte
+	copy(encoded[:], key.PubKey().SerializeCompressed())
+
+	return encoded
+}
+
+// testArkChannelCloseSignature signs one endpoint's immediate VTXO role.
+func testArkChannelCloseSignature(t *testing.T,
+	template *arkchannel.CooperativeCloseTemplate, terms arkchannel.Terms,
+	party arkchannel.Party, key *btcec.PrivateKey) input.Signature {
+
+	t.Helper()
+	desc, err := template.SignDescriptor(
+		terms, party, keychain.KeyDescriptor{
+			PubKey: key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	sig, err := input.NewMockSigner(
+		[]*btcec.PrivateKey{key}, nil,
+	).SignOutputRaw(
+		testArkChannelProposalTx(t, template.Proposal()), desc,
+	)
+	require.NoError(t, err)
+
+	return sig
+}
+
+// testArkChannelProposalTx decodes one unsigned OOR checkpoint proposal.
+func testArkChannelProposalTx(t *testing.T,
+	proposal arkchannel.CooperativeCloseProposal) *wire.MsgTx {
+
+	t.Helper()
+	packet, err := psbtutil.Parse(proposal.Transaction)
+	require.NoError(t, err)
+
+	return packet.UnsignedTx
+}
