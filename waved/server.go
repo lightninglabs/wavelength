@@ -29,6 +29,7 @@ import (
 	"github.com/lightninglabs/lndclient"
 	tapsdk "github.com/lightninglabs/tap-sdk"
 	"github.com/lightninglabs/tap-sdk/embedded"
+	"github.com/lightninglabs/wavelength/arkchannel/unrollbridge"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/btcwbackend"
@@ -47,6 +48,7 @@ import (
 	"github.com/lightninglabs/wavelength/lib/recovery"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/lndbackend"
+	"github.com/lightninglabs/wavelength/lnruntime"
 	"github.com/lightninglabs/wavelength/lwwallet"
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
@@ -54,6 +56,7 @@ import (
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/proofkeys"
 	"github.com/lightninglabs/wavelength/round"
+	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
 	"github.com/lightninglabs/wavelength/rpc/oorpb"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/rpcauth"
@@ -421,7 +424,6 @@ type Server struct {
 	walletRef           fn.Option[actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
-	oorRegistry *oor.OORRegistryActor
 	// durableRoundActor owns the opt-in persistent round consumer
 	// lifecycle.
 	durableRoundActor *round.DurableRoundClientActor
@@ -429,10 +431,18 @@ type Server struct {
 	incomingVTXOActor *actor.DurableActor[
 		*vtxo.IncomingVTXOMsg, vtxo.IncomingVTXOResp,
 	]
-	creditRegistry     *credit.Registry
-	vhtlcRecoveryStore *db.VHTLCRecoveryStoreDB
-	vhtlcRecovery      *coordinator.Service
-	vhtlcPreimages     *unrollpolicy.PreimageResolverRegistry
+	oorRegistry              *oor.OORRegistryActor
+	creditRegistry           *credit.Registry
+	vhtlcRecoveryStore       *db.VHTLCRecoveryStoreDB
+	arkChannelStore          *db.ArkChannelStoreDB
+	arkChannelMu             sync.RWMutex
+	arkChannelController     ArkChannelController
+	arkChannelMailboxRuntime *serverconn.Runtime
+	arkChannelPeerIngress    *lnruntime.PeerMessageIngress
+	arkChannelStartupWg      sync.WaitGroup
+	vhtlcRecovery            *coordinator.Service
+	vhtlcRecoveryTarget      *vhtlcRecoveryTargetMaterializer
+	vhtlcPreimages           *unrollpolicy.PreimageResolverRegistry
 
 	// ledgerStore exposes the client-side ledger DB adapter for
 	// read-only RPC handlers (GetFeeHistory). Writes go through
@@ -463,10 +473,12 @@ type Server struct {
 	// accessors (see GetVTXOLineageTx) can build the same proof DAG
 	// the registry would build, without re-deriving the wiring. The
 	// field is typed as harnessProofAssembler — a narrow interface
-	// that exposes ONLY the terminal-tolerant entry point — so the
-	// production EnsureProof path remains reachable solely through
-	// the unroll registry's own ProofAssembler reference.
+	// that exposes ONLY the terminal-tolerant entry point.
 	proofAssembler harnessProofAssembler
+
+	// channelFundingProofs uses the registry's production capability.
+	// Unlike the harness accessor, it rejects terminal wallet inputs.
+	channelFundingProofs unroll.ProofAssembler
 
 	// unrollRegistryRef is the actor ref for the unilateral-exit registry.
 	// Set during daemon initialization when the unroll subsystem is wired.
@@ -1508,13 +1520,11 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 		if s.outboxPublisher != nil {
 			s.outboxPublisher.Stop()
 		}
-
 		if rt := s.loadRuntime(); rt != nil {
 			s.setServerConnected(false)
 			//nolint:contextcheck // owned shutdown
 			_ = rt.StopAndWait(shutdownCtx)
 		}
-
 		if s.actorSystem != nil {
 			//nolint:contextcheck // owned shutdown
 			err := s.actorSystem.Shutdown(shutdownCtx)
@@ -1695,6 +1705,11 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	waverpc.RegisterMacaroonServiceServer(
 		s.grpcServer, s.rpcServer,
 	)
+	arkchannelrpc.RegisterArkChannelServiceServer(
+		s.grpcServer, &arkChannelRPCServer{
+			server: s,
+		},
+	)
 	if cleanup := registerBtcwalletRPC(s.grpcServer, s); cleanup != nil {
 		defer cleanup()
 	}
@@ -1718,6 +1733,16 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 			defer cleanup()
 		}
 	}
+	// The Ark channel runtime borrows the swap registrar's mailbox
+	// transport. Register this defer after registrar cleanup defers so it
+	// runs first.
+	defer func() {
+		s.arkChannelStartupWg.Wait()
+		joinCtx := context.WithoutCancel(ctx)
+		if err := s.stopArkChannelProcess(joinCtx); err != nil {
+			s.log.WarnS(joinCtx, "Ark channel shutdown failed", err)
+		}
+	}()
 	activePermissions, err := registeredRPCPermissions(s.grpcServer)
 	// Preserve the no-auth development mode's support for custom services
 	// without daemon-defined permissions. When authentication is enabled,
@@ -1822,9 +1847,17 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	)
 	defer stopHeightRepair()
 
+	// A wallet-ready hook can fail after the channel startup supervisor
+	// begins retrying. Cancel even on that exit before joining either.
+	walletCtx, stopWallet := context.WithCancel(ctx)
+	var deferredWg sync.WaitGroup
+	defer func() {
+		stopWallet()
+		deferredWg.Wait()
+	}()
 	if s.isWalletReady() {
 		err := s.startWalletReadyServices(
-			ctx, chainSourceRef, timeoutRef,
+			walletCtx, chainSourceRef, timeoutRef,
 		)
 		if err != nil {
 			return err
@@ -1836,14 +1869,13 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 		// The WaitGroup ensures the goroutine completes (or
 		// is cancelled) before RunWithContext returns and
 		// defers start tearing down resources.
-		var deferredWg sync.WaitGroup
 		deferredWg.Add(1)
 		go func() {
 			defer deferredWg.Done()
 
 			select {
 			case <-s.walletReady:
-			case <-ctx.Done():
+			case <-walletCtx.Done():
 				return
 			}
 
@@ -1858,7 +1890,7 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 			}
 
 			err := s.startWalletReadyServices(
-				ctx, chainSourceRef, timeoutRef,
+				walletCtx, chainSourceRef, timeoutRef,
 			)
 			if err != nil {
 				if ctx.Err() != nil {
@@ -1874,7 +1906,6 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 				return
 			}
 		}()
-		defer deferredWg.Wait()
 
 		s.log.InfoS(ctx, "Wallet not ready, waiting for "+
 			"InitWallet or UnlockWallet RPC",
@@ -1954,6 +1985,7 @@ func (s *Server) finishWalletStartup(ctx context.Context) error {
 			return err
 		}
 	}
+	s.startArkChannelProcessSupervisor(ctx)
 
 	if err := s.runWalletReadyHooks(ctx); err != nil {
 		return err
@@ -6358,6 +6390,8 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	s.ueStore = ueStore
 	recoveryStore := dbStore.NewVHTLCRecoveryStore(s.clk)
 	s.vhtlcRecoveryStore = recoveryStore
+	channelStore := dbStore.NewArkChannelStore(s.clk)
+	s.arkChannelStore = channelStore
 	preimages := s.vhtlcPreimages
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 
@@ -6432,6 +6466,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		ArtifactStore: oorStore,
 	}
 	s.proofAssembler = proofAssembler
+	s.channelFundingProofs = proofAssembler
 	legacyProofScanFloor := s.cfg.legacyProofScanFloor()
 
 	// Adapt the VTXO manager ref into a tell-only exit observer so the
@@ -6472,9 +6507,12 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		MaxSweepFeeRateSatPerVByte: s.unrollMaxFeeRate(),
 		SweepFeeRateFallbackSatPerVByte: s.
 			unrollSweepFeeRateFallback(),
-		ExitSpendPolicyResolver: unrollpolicy.ExitSpendPolicyResolver{
-			Jobs:     recoveryStore,
-			Preimage: preimages,
+		ExitSpendPolicyResolver: unroll.PolicyResolvers{
+			unrollpolicy.ExitSpendPolicyResolver{
+				Jobs:     recoveryStore,
+				Preimage: preimages,
+			},
+			unrollbridge.Resolver{Channels: channelStore},
 		},
 		AssetClaimer: s.unrollAssetClaimer(chainSourceRef),
 		ArmedExitPolicy: func(ctx context.Context,
@@ -6515,6 +6553,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		return err
 	}
 	s.vhtlcRecovery = recoverySvc
+	s.vhtlcRecoveryTarget = materializer
 
 	err = s.initFraudWatcher(ctx, chainSourceRef)
 	if err != nil {
