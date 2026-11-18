@@ -43,7 +43,9 @@ func (s *OORStatusStore) DiagnosticPackages(ctx context.Context,
 				oorPackageDirectionOutgoingCode {
 
 				local[id] = true
-			} else if row.Direction == oorPackageDirectionIncomingCode {
+				continue
+			}
+			if row.Direction == oorPackageDirectionIncomingCode {
 				local[id] = false
 				result[id] = OORDiagnosticPackage{}
 			}
