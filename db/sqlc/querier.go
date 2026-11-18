@@ -17,6 +17,7 @@ type Querier interface {
 	// returns the event_seq the database assigned (monotonic, not necessarily
 	// contiguous). Callers use it as the resumable-subscribe cursor for the update.
 	AppendActivityEvent(ctx context.Context, arg AppendActivityEventParams) (int64, error)
+	AuthorizeArkFundingBacking(ctx context.Context, arg AuthorizeArkFundingBackingParams) (int64, error)
 	// BackfillLedgerRoundUuid stamps the canonical UUID string form onto every
 	// entry carrying the given raw round_id that does not have one yet. The
 	// round_uuid IS NULL guard makes re-running the backfill (e.g. after a crash
@@ -25,6 +26,7 @@ type Querier interface {
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
 	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
 	CloseRoundAdmissionDeadline(ctx context.Context, roundID string) error
+	CompareAndSwapArkChannel(ctx context.Context, arg CompareAndSwapArkChannelParams) (int64, error)
 	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error)
 	ConstrainRoundAdmissionDeadline(ctx context.Context, arg ConstrainRoundAdmissionDeadlineParams) error
 	// CountActivityEntriesByStatus returns the number of current-state rows in the
@@ -105,6 +107,10 @@ type Querier interface {
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
 	// GetActivityEntry returns one entry by its canonical id.
 	GetActivityEntry(ctx context.Context, canonicalID string) (ActivityEntry, error)
+	GetArkChannel(ctx context.Context, channelID []byte) (ArkChannel, error)
+	GetArkChannelByChannelPoint(ctx context.Context, arg GetArkChannelByChannelPointParams) (ArkChannel, error)
+	GetArkChannelByPendingID(ctx context.Context, pendingChannelID []byte) (ArkChannel, error)
+	GetArkChannelBySCID(ctx context.Context, reservedScid []byte) (ArkChannel, error)
 	GetAssetDeposit(ctx context.Context, requestID string) (AssetDeposit, error)
 	GetAssetDepositByOutpoint(ctx context.Context, arg GetAssetDepositByOutpointParams) (AssetDeposit, error)
 	GetAssetDepositClaim(ctx context.Context, requestID string) (AssetDepositClaim, error)
@@ -190,6 +196,8 @@ type Querier interface {
 	// The ledger actor uses it to recognise a boarding deposit's funding input as
 	// a UTXO whose value it already credited to wallet_balance.
 	GetWalletUTXOLogCreatedByOutpoint(ctx context.Context, arg GetWalletUTXOLogCreatedByOutpointParams) (WalletUtxoLog, error)
+	// Ark channel coordination queries.
+	InsertArkChannel(ctx context.Context, arg InsertArkChannelParams) (int64, error)
 	// InsertAssetDeposit records a deposit request before the asset backend
 	// funds it. A request ID already recorded inserts nothing.
 	InsertAssetDeposit(ctx context.Context, arg InsertAssetDepositParams) (int64, error)
@@ -272,6 +280,7 @@ type Querier interface {
 	ListAllCreditOperations(ctx context.Context) ([]CreditOperation, error)
 	ListAllOORSessionRegistry(ctx context.Context) ([]OorSessionRegistry, error)
 	ListAllVTXOs(ctx context.Context) ([]Vtxo, error)
+	ListArkRecoveryPeers(ctx context.Context) ([][]byte, error)
 	ListAssetDepositClaimsByStatus(ctx context.Context, status string) ([]AssetDepositClaim, error)
 	ListAssetDeposits(ctx context.Context) ([]AssetDeposit, error)
 	ListAssetDepositsByStatus(ctx context.Context, status string) ([]AssetDeposit, error)
@@ -397,6 +406,10 @@ type Querier interface {
 	// Also filter on spent = FALSE to handle VTXOs marked spent via the earlier
 	// flag before the status field was introduced.
 	ListLiveVTXOs(ctx context.Context) ([]Vtxo, error)
+	// Phase 8 is closed and phase 10 is failed. A cooperatively closed channel
+	// remains resumable because its signed replacement VTXOs still need source
+	// ancestry defense. Cancelling also remains resumable.
+	ListNonTerminalArkChannels(ctx context.Context) ([]ArkChannel, error)
 	// Status 1 = Completed, 2 = Failed (anchored to Go iota in
 	// db/credit_operation_store.go CreditOpStatus).
 	ListNonTerminalCreditOperations(ctx context.Context) ([]CreditOperation, error)
@@ -421,6 +434,7 @@ type Querier interface {
 	// ListOwnedAssetEngineProofs returns every output the wallet holds or held.
 	ListOwnedAssetEngineProofs(ctx context.Context) ([]AssetEngineProof, error)
 	ListOwnedReceiveScripts(ctx context.Context) ([]OwnedReceiveScript, error)
+	ListPeerArkChannels(ctx context.Context, clientNodeKey []byte) ([]ArkChannel, error)
 	// Only status = 'pending' rows replay; a 'failed' intent is terminally
 	// retired and must not be re-submitted on restart.
 	ListPendingBoardIntents(ctx context.Context) ([]ListPendingBoardIntentsRow, error)
@@ -575,6 +589,7 @@ type Querier interface {
 	// while returning the current canonical projection for every selected event.
 	// Removed internal activity has no replay rows and cannot reappear here.
 	ReadCurrentActivityEvents(ctx context.Context, arg ReadCurrentActivityEventsParams) ([]ReadCurrentActivityEventsRow, error)
+	RecordArkFundingSignature(ctx context.Context, arg RecordArkFundingSignatureParams) (int64, error)
 	RenewOwnedReceiveScriptRegistration(ctx context.Context, arg RenewOwnedReceiveScriptRegistrationParams) (int64, error)
 	// RepairCreditReceivePollCapActivity narrowly reopens an inbound credit
 	// receive that an older client marked terminal after exhausting its local poll
