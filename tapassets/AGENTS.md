@@ -51,6 +51,13 @@ Durable journals retain committed packages for restart recovery.
 - `BuildAssetTree` / `AssetTreeRequest` / `TreeMaterializerConfig` — Builds an
   asset VTXO tree beneath a batch output, returning a `lib/tree.Tree` whose
   node outputs commit to the asset transitions.
+- `BuildOORTransfer` / `OORTransferRequest` / `OORTransfer` — Commits the
+  asset transitions of an OOR transfer that spends one asset VTXO: the VTXO's
+  pieces move into its checkpoint output, then into the new asset VTXOs (a
+  recipient and the sender's asset change) of the Ark transaction. Bitcoin
+  checkpoints, such as a leased carrier, and Bitcoin outputs ride along
+  unchanged. The Ark package holds every new asset VTXO's proof, so
+  `DecodeAssetVTXOClaimInputs` reads their pieces from it.
 - `TreeRootAssetSource` / `TreeRootAssetInput` — The asset states held by the
   batch output that the tree's root node spends. `BatchAnchorCommit.RootSource`
   feeds straight into `TreeMaterializerConfig.Root`.
@@ -154,6 +161,15 @@ Durable journals retain committed packages for restart recovery.
   Each extra input becomes a co-input path of the proof path step, which
   tap-sdk bounds. Plans above the bound fail with
   `ErrTooManyTransitionInputs` before tapd seals anything.
+- **An asset Ark transaction is still canonical.** It orders outputs by
+  value and script like any Ark transaction, but an asset output's script
+  commits to a root that depends on the output order through the split
+  commitment. `BuildOORTransfer` previews a layout and accepts it only once
+  the composed scripts sort into that layout, varying the OP_TRUE key domain
+  when the layout does not settle (`ErrOOROrderingUnresolved` after
+  `maxOOROrderingNonces`). Two outputs may not pay the same value to the
+  same script, where an asset output counts with its uncomposed policy
+  script.
 - **An asset VTXO is verified against its round, not a wallet.**
   `VTXOVerifier` requires the leaf package to seal the leaf's own
   transaction, and every asset output to land in the VTXO under an OP_TRUE
