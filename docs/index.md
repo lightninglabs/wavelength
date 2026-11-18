@@ -22,6 +22,7 @@ into specific topics below.
 | [sdk_layered_architecture.md](sdk_layered_architecture.md) | SDK layering rationale: `sdk/ark` facade, remote vs. embedded modes, `sdk/swaps` future direction |
 | [swap_system.md](swap_system.md) | End-to-end swap walkthrough: vHTLC tree (collaborative vs. unilateral-exit leaves), receive (out-swap) and pay (in-swap) flows, the off-chain-first cancellation/timeout recovery ladder, same-Ark p2p detection, swap-server RPCs, and proof-gated indexer authorization, with mermaid diagrams |
 | [wavewalletdk_integration.md](wavewalletdk_integration.md) | Basic `wavewalletdk` integration flow, startup/config examples, swap accounting, and wrapper guidance |
+| [ark-channel-lifecycle.md](ark-channel-lifecycle.md) | Client promotion, active-channel payments, cooperative settlement and force close |
 | [canonical_activity_log_design.md](canonical_activity_log_design.md) | Design (#774): a canonical store with stable cross-restart ids replacing the derive-on-read activity feed — a current-state `activity_entries` projection plus an append-only, sequence-numbered `activity_events` log (mailbox-style cursor) for resumable subscribe; foundation of the event-log epic (#776) |
 | [wavewalletrpc_build.md](wavewalletrpc_build.md) | How to build and install the daemon and CLI with the wallet RPC subserver enabled (`wavewalletrpc` + `swapruntime` tags) |
 | [exit_ancestry_export.md](exit_ancestry_export.md) | Signed ancestry bundle format and external CPFP executor contract |

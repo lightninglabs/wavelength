@@ -51,6 +51,7 @@ type mobileConfig struct {
 	AssetGroupKeys []string `json:"asset_group_keys"`
 
 	// Swap server.
+	ArkChannelsEnabled     bool   `json:"ark_channels_enabled"`
 	SwapServerAddress      string `json:"swap_server_address"`
 	SwapNotificationIssuer string `json:"swap_notification_issuer"`
 	SwapServerTransport    string `json:"swap_server_transport"`
@@ -185,6 +186,7 @@ func (mc mobileConfig) validate() error {
 // build defaults.
 func applyMobileConfig(cfg *wavewalletdk.Config, mc mobileConfig) {
 	cfg.HostDrivenIngress = mc.HostDrivenIngress
+	cfg.ArkChannelsEnabled = mc.ArkChannelsEnabled
 	cfg.DurableRoundRuntime = mc.DurableRoundRuntime
 	if mc.DataDir != "" {
 		cfg.DataDir = mc.DataDir
