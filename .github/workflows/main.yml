@@ -332,9 +332,11 @@ jobs:
       - name: Clean up runner space
         uses: ./.github/actions/cleanup-space
 
-      - name: Fetch and rebase on ${{ github.base_ref }}
+      - name: Rebase onto the PR event base
         if: github.event_name == 'pull_request'
         uses: ./.github/actions/rebase
+        with:
+          base-sha: ${{ github.event.pull_request.base.sha }}
 
       - name: Setup go ${{ env.GO_VERSION }}
         uses: ./.github/actions/setup-go
@@ -418,9 +420,11 @@ jobs:
       - name: Clean up runner space
         uses: ./.github/actions/cleanup-space
 
-      - name: Fetch and rebase on ${{ github.base_ref }}
+      - name: Rebase onto the PR event base
         if: github.event_name == 'pull_request'
         uses: ./.github/actions/rebase
+        with:
+          base-sha: ${{ github.event.pull_request.base.sha }}
 
       - name: Setup go ${{ env.GO_VERSION }}
         uses: ./.github/actions/setup-go
