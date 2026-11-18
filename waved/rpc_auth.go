@@ -197,6 +197,9 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 	grant(wavewalletdk, entityAddress, "write",
 		"Recv",
 	)
+	grant(wavewalletdk, entityAddress, "read",
+		"LookupRecv",
+	)
 	grant(
 		wavewalletdk, entityOnChain, "read", "GetExitPlan",
 		"ExitStatus", "ExitSummary",
