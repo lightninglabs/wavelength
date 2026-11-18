@@ -472,6 +472,51 @@ func TestRegistryReceiveReturnsInvoice(t *testing.T) {
 	require.Equal(t, 1, server.createCalls["recv:abc"])
 }
 
+// TestRegistryLookupCreditReceive asserts a receive is found by its op key with
+// the invoice and memo it was admitted with, and that the lookup creates
+// nothing for an unknown key.
+func TestRegistryLookupCreditReceive(t *testing.T) {
+	t.Parallel()
+
+	store, delivery := newFakeStore(), newTestDelivery(t)
+	server, daemon := newFakeServer(), newFakeDaemon()
+
+	registry, err := NewRegistry(RegistryConfig{
+		Store:         store,
+		DeliveryStore: delivery,
+		Server:        server,
+		Daemon:        daemon,
+		PollInterval:  50 * time.Millisecond,
+	})
+	require.NoError(t, err)
+	t.Cleanup(registry.Stop)
+
+	ctx := context.Background()
+	resp, err := registry.Ref().Ask(ctx, &StartCreditReceiveRequest{
+		OpKey: "recv:req-1", AmountSat: 400, Memo: "tip",
+	}).Await(ctx).Unpack()
+	require.NoError(t, err)
+	start, ok := resp.(*StartCreditResponse)
+	require.True(t, ok)
+
+	resp, err = registry.Ref().Ask(ctx, &LookupCreditReceiveRequest{
+		OpKey: "recv:req-1",
+	}).Await(ctx).Unpack()
+	require.NoError(t, err)
+	found, ok := resp.(*CreditReceiveLookupResponse)
+	require.True(t, ok)
+	require.Equal(t, start.OpID, found.OpID)
+	require.Equal(t, start.Invoice, found.Invoice)
+	require.Equal(t, uint64(400), found.AmountSat)
+	require.Equal(t, "tip", found.Memo)
+
+	_, err = registry.Ref().Ask(ctx, &LookupCreditReceiveRequest{
+		OpKey: "recv:unknown",
+	}).Await(ctx).Unpack()
+	require.ErrorIs(t, err, db.ErrCreditOperationNotFound)
+	require.Zero(t, server.createCalls["recv:unknown"])
+}
+
 // TestRegistryStopWaitsForResidentChildren asserts Registry.Stop does not
 // return until the per-operation durable actors it owns have exited. The
 // registry tests share a sqlite-backed delivery store with those children, so
