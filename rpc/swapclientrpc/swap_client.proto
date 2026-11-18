@@ -264,8 +264,10 @@ message StartReceiveRequest {
     // amount_sat is the Lightning amount to receive into Ark.
     int64 amount_sat = 1;
 
-    // idempotency_key is reserved for a future daemon-level duplicate-start
-    // guard.
+    // idempotency_key optionally names this receive. The daemon stores it
+    // with the receive it creates and refuses a second receive under the
+    // same key. Read the existing receive with GetSwap's
+    // receive_idempotency_key.
     string idempotency_key = 2;
 
     // memo is an optional human-readable label to embed as the BOLT-11
@@ -331,6 +333,11 @@ message ListSwapsResponse {
 message GetSwapRequest {
     // payment_hash identifies the persisted swap to fetch.
     string payment_hash = 1;
+
+    // receive_idempotency_key fetches the receive created with this
+    // StartReceive idempotency_key instead. Set exactly one of
+    // payment_hash and receive_idempotency_key.
+    string receive_idempotency_key = 2;
 }
 
 message GetSwapResponse {
@@ -440,4 +447,8 @@ message SwapSummary {
     // available_credit_sat is the balance considered when the receive route was
     // planned.
     uint64 available_credit_sat = 26;
+
+    // memo is the invoice memo a receive was created with. It is empty for
+    // pays and for receives stored before memos were recorded.
+    string memo = 27;
 }

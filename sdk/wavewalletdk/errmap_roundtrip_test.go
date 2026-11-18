@@ -69,6 +69,16 @@ var reasonContract = []struct {
 		swapwallet.ErrCreditReceiveUnavailable, ErrCreditReceiveUnavailable,
 		codes.Unavailable,
 	},
+	{
+		wavewalletrpc.ReasonReceiveNotFound,
+		swapwallet.ErrReceiveNotFound, ErrReceiveNotFound,
+		codes.NotFound,
+	},
+	{
+		wavewalletrpc.ReasonReceiveRequestMismatch,
+		swapwallet.ErrReceiveRequestMismatch, ErrReceiveRequestMismatch,
+		codes.AlreadyExists,
+	},
 }
 
 // TestSentinelMessageParity guards against drift between the daemon's

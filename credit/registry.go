@@ -270,6 +270,9 @@ func (b *registryBehavior) Receive(ctx context.Context,
 	case *ListCreditOpsRequest:
 		return b.handleList(ctx, m)
 
+	case *LookupCreditReceiveRequest:
+		return b.lookupReceive(ctx, m.OpKey)
+
 	default:
 		return fn.Err[CreditResp](
 			fmt.Errorf("unexpected credit registry message %T",
@@ -799,6 +802,37 @@ func repairLegacyReceiveRecord(rec db.CreditOperationRecord,
 func supersededReceiveReason(serverState ServerCreditState) string {
 	return fmt.Sprintf("legacy receive superseded while server state is %s",
 		serverState)
+}
+
+// lookupReceive reads the active receive row admitted under opKey. It returns
+// db.ErrCreditOperationNotFound when none exists, including when the key
+// belongs to another operation kind.
+func (b *registryBehavior) lookupReceive(ctx context.Context,
+	opKey string) fn.Result[CreditResp] {
+
+	rec, err := b.cfg.Store.LookupActiveOperationByKey(ctx, opKey)
+	if err != nil {
+		return fn.Err[CreditResp](err)
+	}
+	if rec.Kind != KindReceive {
+		return fn.Err[CreditResp](db.ErrCreditOperationNotFound)
+	}
+
+	snap, err := decodeOpSnapshot(rec.SnapshotData)
+	if err != nil {
+		return fn.Err[CreditResp](
+			fmt.Errorf("decode credit receive snapshot: %w", err),
+		)
+	}
+
+	return fn.Ok[CreditResp](&CreditReceiveLookupResponse{
+		OpID:        rec.OpID,
+		Invoice:     rec.Invoice,
+		PaymentHash: rec.PaymentHash,
+		AmountSat:   uint64(rec.AmountSat),
+		Memo:        snap.Memo,
+		CreatedAt:   rec.CreatedAt,
+	})
 }
 
 // handleList projects the stored operations into compact summaries. A

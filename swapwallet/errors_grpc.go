@@ -81,6 +81,14 @@ var sentinelMappings = []sentinelMapping{
 		ErrCreditReceiveUnavailable, codes.Unavailable,
 		wavewalletrpc.ReasonCreditReceiveUnavailable,
 	},
+	{
+		ErrReceiveNotFound, codes.NotFound,
+		wavewalletrpc.ReasonReceiveNotFound,
+	},
+	{
+		ErrReceiveRequestMismatch, codes.AlreadyExists,
+		wavewalletrpc.ReasonReceiveRequestMismatch,
+	},
 }
 
 // statusSwapBackendUnavailable returns the canonical gRPC status for a missing

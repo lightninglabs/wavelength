@@ -32,4 +32,13 @@ const (
 	// is down" apart from "this operator does not (currently) serve
 	// sub-dust credit receives, try an amount at or above the dust limit".
 	ReasonCreditReceiveUnavailable = "CREDIT_RECEIVE_UNAVAILABLE"
+
+	// ReasonReceiveNotFound tags a LookupRecv for a request ID that owns
+	// no pending or completed receive and has none being created. Start a
+	// new receive under a fresh request ID.
+	ReasonReceiveNotFound = "RECEIVE_NOT_FOUND"
+
+	// ReasonReceiveRequestMismatch tags a Recv that reuses a request ID
+	// with a different amount or memo.
+	ReasonReceiveRequestMismatch = "RECEIVE_REQUEST_MISMATCH"
 )

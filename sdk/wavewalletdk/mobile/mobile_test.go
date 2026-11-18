@@ -18,12 +18,14 @@ import (
 // TimeoutSeconds still receive a finite deadline without changing the SDK DTO.
 func TestDecodeReceiveRequestUsesBoundedDefault(t *testing.T) {
 	req, timeout, err := decodeReceiveRequest([]byte(
-		`{"AmountSat":21000,"Memo":"coffee"}`,
+		`{"AmountSat":21000,"Memo":"coffee","RequestID":"req-1"}`,
 	))
 	if err != nil {
 		t.Fatalf("decode receive request: %v", err)
 	}
-	if req.AmountSat != 21_000 || req.Memo != "coffee" {
+	if req.AmountSat != 21_000 || req.Memo != "coffee" ||
+		req.RequestID != "req-1" {
+
 		t.Fatalf("unexpected receive request: %+v", req)
 	}
 	if timeout != defaultReceiveTimeout {

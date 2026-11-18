@@ -24,6 +24,7 @@ const (
 	WalletService_PrepareSend_FullMethodName     = "/wavewalletrpc.WalletService/PrepareSend"
 	WalletService_Send_FullMethodName            = "/wavewalletrpc.WalletService/Send"
 	WalletService_Recv_FullMethodName            = "/wavewalletrpc.WalletService/Recv"
+	WalletService_LookupRecv_FullMethodName      = "/wavewalletrpc.WalletService/LookupRecv"
 	WalletService_List_FullMethodName            = "/wavewalletrpc.WalletService/List"
 	WalletService_Deposit_FullMethodName         = "/wavewalletrpc.WalletService/Deposit"
 	WalletService_Balance_FullMethodName         = "/wavewalletrpc.WalletService/Balance"
@@ -78,6 +79,16 @@ type WalletServiceClient interface {
 	// owned swap subsystem; the invoice is signed with a daemon-managed
 	// key, not an ephemeral process-local key.
 	Recv(ctx context.Context, in *RecvRequest, opts ...grpc.CallOption) (*RecvResponse, error)
+	// LookupRecv returns the result of an earlier Recv made with the same
+	// request_id: the same invoice, entry, and credit_receive fields. The
+	// entry identifies the receive; read List or SubscribeWallet for its
+	// current status. LookupRecv only reads and never creates a receive. It
+	// waits for a Recv still in flight under the same request_id, so
+	// NotFound means no pending or completed receive exists, and none is
+	// being created, under the ID. A sub-floor (credit) receive that failed
+	// also reads as NotFound, and a Recv retried under its ID may fail, so
+	// start any new receive under a fresh request_id.
+	LookupRecv(ctx context.Context, in *LookupRecvRequest, opts ...grpc.CallOption) (*RecvResponse, error)
 	// List returns the unified wallet view selected by ListRequest.view:
 	// ACTIVITY (default) is the merged WalletEntry stream; VTXOS is the
 	// live VTXO inventory; ONCHAIN is the boarding-plus-sweep on-chain
@@ -197,6 +208,16 @@ func (c *walletServiceClient) Recv(ctx context.Context, in *RecvRequest, opts ..
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RecvResponse)
 	err := c.cc.Invoke(ctx, WalletService_Recv_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletServiceClient) LookupRecv(ctx context.Context, in *LookupRecvRequest, opts ...grpc.CallOption) (*RecvResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RecvResponse)
+	err := c.cc.Invoke(ctx, WalletService_LookupRecv_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -390,6 +411,16 @@ type WalletServiceServer interface {
 	// owned swap subsystem; the invoice is signed with a daemon-managed
 	// key, not an ephemeral process-local key.
 	Recv(context.Context, *RecvRequest) (*RecvResponse, error)
+	// LookupRecv returns the result of an earlier Recv made with the same
+	// request_id: the same invoice, entry, and credit_receive fields. The
+	// entry identifies the receive; read List or SubscribeWallet for its
+	// current status. LookupRecv only reads and never creates a receive. It
+	// waits for a Recv still in flight under the same request_id, so
+	// NotFound means no pending or completed receive exists, and none is
+	// being created, under the ID. A sub-floor (credit) receive that failed
+	// also reads as NotFound, and a Recv retried under its ID may fail, so
+	// start any new receive under a fresh request_id.
+	LookupRecv(context.Context, *LookupRecvRequest) (*RecvResponse, error)
 	// List returns the unified wallet view selected by ListRequest.view:
 	// ACTIVITY (default) is the merged WalletEntry stream; VTXOS is the
 	// live VTXO inventory; ONCHAIN is the boarding-plus-sweep on-chain
@@ -479,6 +510,9 @@ func (UnimplementedWalletServiceServer) Send(context.Context, *SendRequest) (*Se
 }
 func (UnimplementedWalletServiceServer) Recv(context.Context, *RecvRequest) (*RecvResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Recv not implemented")
+}
+func (UnimplementedWalletServiceServer) LookupRecv(context.Context, *LookupRecvRequest) (*RecvResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method LookupRecv not implemented")
 }
 func (UnimplementedWalletServiceServer) List(context.Context, *ListRequest) (*ListResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method List not implemented")
@@ -629,6 +663,24 @@ func _WalletService_Recv_Handler(srv interface{}, ctx context.Context, dec func(
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(WalletServiceServer).Recv(ctx, req.(*RecvRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletService_LookupRecv_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LookupRecvRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).LookupRecv(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_LookupRecv_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).LookupRecv(ctx, req.(*LookupRecvRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -904,6 +956,10 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Recv",
 			Handler:    _WalletService_Recv_Handler,
+		},
+		{
+			MethodName: "LookupRecv",
+			Handler:    _WalletService_LookupRecv_Handler,
 		},
 		{
 			MethodName: "List",

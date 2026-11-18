@@ -8,13 +8,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/credit"
+	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // receiver drives wallet-layer Recv flows. It is a thin composition over
@@ -25,6 +29,10 @@ import (
 type receiver struct {
 	deps    *Deps
 	runtime *Runtime
+
+	// requests serializes keyed receives and lookups per request ID. See
+	// Recv for why a lookup must wait for an in-flight create.
+	requests requestLocks
 }
 
 // newReceiver constructs a receiver bound to the shared wallet runtime.
@@ -54,6 +62,35 @@ func (r *receiver) Recv(ctx context.Context, req *wavewalletrpc.RecvRequest) (
 	if amt > (1<<63)-1 {
 		return nil, fmt.Errorf("%w: amt_sat exceeds int64 range",
 			ErrAmountInvalid)
+	}
+
+	// A keyed receive first reads what the key already owns. Routing
+	// depends on live credit balance and operator terms, so a retry could
+	// otherwise land on the other backend and create a second invoice.
+	// The per-ID lock is held until the backend has answered, so an
+	// overlapping retry or LookupRecv waits for this create to finish
+	// instead of reading "not found" while it is still in flight.
+	requestID := req.GetRequestId()
+	if requestID != "" {
+		unlock, err := r.requests.lock(ctx, requestID)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+
+		existing, err := r.lookup(ctx, requestID)
+		switch {
+		case err == nil:
+			if existing.amt != amt ||
+				existing.memo != req.GetMemo() {
+				return nil, ErrReceiveRequestMismatch
+			}
+
+			return existing.resp, nil
+
+		case !errors.Is(err, ErrReceiveNotFound):
+			return nil, err
+		}
 	}
 
 	plannedVHTLCSat := amt
@@ -112,8 +149,9 @@ func (r *receiver) Recv(ctx context.Context, req *wavewalletrpc.RecvRequest) (
 
 	startResp, err := r.deps.SwapService.StartReceive(
 		ctx, &swapclientrpc.StartReceiveRequest{
-			AmountSat: int64(amt),
-			Memo:      req.GetMemo(),
+			AmountSat:      int64(amt),
+			Memo:           req.GetMemo(),
+			IdempotencyKey: requestID,
 		},
 	)
 	if err != nil {
@@ -185,9 +223,9 @@ func (r *receiver) availableCreditSat(ctx context.Context) (uint64, error) {
 // recvCredit hands a sub-floor receive to the durable credit subsystem. The
 // registry creates the server-owned receive invoice synchronously and returns
 // it, while durably tracking the operation so the pending row survives a
-// restart. Each Recv is a distinct receive, so the op key is freshly random
-// (inbound receives carry no double-spend risk that would need cross-call
-// dedup).
+// restart. A keyed receive uses recv:<request_id> as its op key, so the
+// registry's op-key dedup binds the key to this one operation. An unkeyed
+// receive gets a fresh random key.
 func (r *receiver) recvCredit(ctx context.Context,
 	req *wavewalletrpc.RecvRequest, amt, vtxoFloor uint64) (
 	*wavewalletrpc.RecvResponse, error) {
@@ -197,18 +235,27 @@ func (r *receiver) recvCredit(ctx context.Context,
 			ErrSwapBackendUnavailable)
 	}
 
-	keyID, err := newSendIntentID()
-	if err != nil {
-		return nil, fmt.Errorf("create credit receive id: %w", err)
+	keyID := req.GetRequestId()
+	if keyID == "" {
+		var err error
+		keyID, err = newSendIntentID()
+		if err != nil {
+			return nil, fmt.Errorf("create credit receive id: %w",
+				err)
+		}
 	}
 
+	// Wait for the registry's answer even if the caller gives up: once the
+	// request is queued the registry admits it regardless, and the per-ID
+	// lock in Recv must cover that admission. The registry bounds the
+	// admission with its own timeout.
 	resp, err := r.deps.CreditRegistry.Ask(
 		ctx, &credit.StartCreditReceiveRequest{
 			OpKey:     "recv:" + keyID,
 			AmountSat: amt,
 			Memo:      req.GetMemo(),
 		},
-	).Await(ctx).Unpack()
+	).Await(context.WithoutCancel(ctx)).Unpack()
 	if err != nil {
 		// Preserve caller-owned cancellation and local shutdown. A
 		// canceled RPC, or a credit registry actor that is itself
@@ -262,7 +309,8 @@ func (r *receiver) recvCredit(ctx context.Context,
 
 	paymentHashHex := hex.EncodeToString(start.PaymentHash)
 	entry := creditReceiveEntry(
-		req, start.OpID, start.Invoice, paymentHashHex, amt,
+		req.GetMemo(), start.OpID, start.Invoice, paymentHashHex, amt,
+		nowUnix(),
 	)
 	r.runtime.trackPendingEntryWithoutTimeout(entry)
 	r.runtime.projectAndEmit(context.WithoutCancel(ctx), entry)
@@ -315,10 +363,8 @@ func (r *receiver) projectFailedCreditReceive(ctx context.Context,
 	r.runtime.projectAndEmit(context.WithoutCancel(ctx), entry)
 }
 
-func creditReceiveEntry(req *wavewalletrpc.RecvRequest, opID, invoice,
-	paymentHashHex string, amt uint64) *wavewalletrpc.WalletEntry {
-
-	now := nowUnix()
+func creditReceiveEntry(memo, opID, invoice, paymentHashHex string, amt uint64,
+	now int64) *wavewalletrpc.WalletEntry {
 
 	return &wavewalletrpc.WalletEntry{
 		Id:            opID,
@@ -328,7 +374,7 @@ func creditReceiveEntry(req *wavewalletrpc.RecvRequest, opID, invoice,
 		Counterparty:  "credit",
 		CreatedAtUnix: now,
 		UpdatedAtUnix: now,
-		Note:          req.GetMemo(),
+		Note:          memo,
 		Request: &wavewalletrpc.WalletEntryRequest{
 			Request: &wavewalletrpc.WalletEntryRequest_LightningInvoice{
 				LightningInvoice: &wavewalletrpc.
@@ -345,4 +391,166 @@ func creditReceiveEntry(req *wavewalletrpc.RecvRequest, opID, invoice,
 			PaymentHash: paymentHashHex,
 		},
 	}
+}
+
+// maxReceiveRequestIDLen bounds caller-chosen receive keys. A UUID fits with
+// room to spare.
+const maxReceiveRequestIDLen = 64
+
+// keyedReceive is a receive found by its request ID, with the parameters it
+// was created with so a repeated Recv can be checked against them.
+type keyedReceive struct {
+	resp *wavewalletrpc.RecvResponse
+	amt  uint64
+	memo string
+}
+
+// LookupRecv returns the receive admitted under req.request_id, built the way
+// Recv built it. It only reads: neither backend is asked to create, resume,
+// or route anything.
+func (r *receiver) LookupRecv(ctx context.Context,
+	req *wavewalletrpc.LookupRecvRequest) (*wavewalletrpc.RecvResponse,
+	error) {
+
+	if r == nil || r.deps == nil || r.deps.SwapService == nil {
+		return nil, ErrSwapBackendUnavailable
+	}
+	if req.GetRequestId() == "" {
+		return nil, status.Error(
+			codes.InvalidArgument, "request_id is required",
+		)
+	}
+
+	// Wait out any keyed Recv still creating under this ID, so NotFound
+	// means no receive exists and none is being created.
+	unlock, err := r.requests.lock(ctx, req.GetRequestId())
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	found, err := r.lookup(ctx, req.GetRequestId())
+	if err != nil {
+		return nil, err
+	}
+
+	return found.resp, nil
+}
+
+// requestLocks is a per-key mutex whose waits honor the caller's context.
+type requestLocks struct {
+	mu   sync.Mutex
+	held map[string]chan struct{}
+}
+
+// lock waits until no other holder owns key, then takes it. The returned
+// function releases it.
+func (l *requestLocks) lock(ctx context.Context, key string) (func(), error) {
+	for {
+		l.mu.Lock()
+		busy, ok := l.held[key]
+		if !ok {
+			if l.held == nil {
+				l.held = make(map[string]chan struct{})
+			}
+			done := make(chan struct{})
+			l.held[key] = done
+			l.mu.Unlock()
+
+			return func() {
+				l.mu.Lock()
+				delete(l.held, key)
+				l.mu.Unlock()
+				close(done)
+			}, nil
+		}
+		l.mu.Unlock()
+
+		select {
+		case <-busy:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// lookup reads the receive owned by requestID from whichever backend admitted
+// it: the swap store, then the credit registry. It returns ErrReceiveNotFound
+// only when both report no receive; any other failure is returned as is so a
+// caller never mistakes an outage for "safe to create".
+func (r *receiver) lookup(ctx context.Context, requestID string) (*keyedReceive,
+	error) {
+
+	if len(requestID) > maxReceiveRequestIDLen {
+		return nil, status.Errorf(codes.InvalidArgument, "request_id "+
+			"exceeds %d bytes", maxReceiveRequestIDLen)
+	}
+
+	swapResp, err := r.deps.SwapService.GetSwap(
+		ctx, &swapclientrpc.GetSwapRequest{
+			ReceiveIdempotencyKey: requestID,
+		},
+	)
+	switch {
+	case err == nil:
+		summary := swapResp.GetSwap()
+		entry := swapEntryFromSummary(
+			summary, summary.GetMemo(), "",
+			wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+		)
+
+		return &keyedReceive{
+			resp: &wavewalletrpc.RecvResponse{
+				Invoice: summary.GetInvoice(),
+				Entry:   entry,
+			},
+			amt:  uint64(summary.GetAmountSat()),
+			memo: summary.GetMemo(),
+		}, nil
+
+	case status.Code(err) != codes.NotFound:
+		return nil, fmt.Errorf("look up receive: %w", err)
+	}
+
+	if r.deps.CreditRegistry == nil {
+		return nil, ErrReceiveNotFound
+	}
+
+	resp, err := r.deps.CreditRegistry.Ask(
+		ctx, &credit.LookupCreditReceiveRequest{
+			OpKey: "recv:" + requestID,
+		},
+	).Await(ctx).Unpack()
+	if errors.Is(err, db.ErrCreditOperationNotFound) {
+		return nil, ErrReceiveNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("look up credit receive: %w", err)
+	}
+
+	found, ok := resp.(*credit.CreditReceiveLookupResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected credit lookup response %T",
+			resp)
+	}
+
+	paymentHashHex := hex.EncodeToString(found.PaymentHash)
+	entry := creditReceiveEntry(
+		found.Memo, found.OpID, found.Invoice, paymentHashHex,
+		found.AmountSat, found.CreatedAt.Unix(),
+	)
+
+	return &keyedReceive{
+		resp: &wavewalletrpc.RecvResponse{
+			Invoice: found.Invoice,
+			Entry:   entry,
+			CreditReceive: &wavewalletrpc.CreditReceive{
+				OperationId: found.OpID,
+				AmountSat:   found.AmountSat,
+				PaymentHash: paymentHashHex,
+			},
+		},
+		amt:  found.AmountSat,
+		memo: found.Memo,
+	}, nil
 }

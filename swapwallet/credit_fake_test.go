@@ -7,6 +7,7 @@ import (
 
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/credit"
+	"github.com/lightninglabs/wavelength/db"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -26,6 +27,9 @@ type fakeCreditRegistry struct {
 	resp        credit.CreditResp
 	receiveResp *credit.StartCreditResponse
 	err         error
+
+	// lookupResp answers LookupCreditReceiveRequest. Nil means not found.
+	lookupResp *credit.CreditReceiveLookupResponse
 }
 
 // Compile-time check that the fake satisfies the credit registry ref shape.
@@ -65,6 +69,19 @@ func (f *fakeCreditRegistry) Ask(_ context.Context,
 	}
 
 	promise := actor.NewPromise[credit.CreditResp]()
+	if _, ok := msg.(*credit.LookupCreditReceiveRequest); ok {
+		if f.lookupResp == nil {
+			promise.Complete(
+				fn.Err[credit.CreditResp](
+					db.ErrCreditOperationNotFound,
+				),
+			)
+		} else {
+			promise.Complete(fn.Ok[credit.CreditResp](f.lookupResp))
+		}
+
+		return promise.Future()
+	}
 	if f.err != nil {
 		promise.Complete(fn.Err[credit.CreditResp](f.err))
 

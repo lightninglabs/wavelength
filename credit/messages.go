@@ -3,6 +3,7 @@ package credit
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -270,6 +271,23 @@ func (m *ListCreditOpsRequest) MessageType() string {
 
 func (m *ListCreditOpsRequest) creditMsgSealed() {}
 
+// LookupCreditReceiveRequest asks the supervisor for the receive admitted
+// under OpKey. It only reads the control-plane row and never admits, resumes,
+// or creates anything.
+type LookupCreditReceiveRequest struct {
+	actor.BaseMessage
+
+	// OpKey is the key the receive was admitted with.
+	OpKey string
+}
+
+// MessageType returns the human-readable message type.
+func (m *LookupCreditReceiveRequest) MessageType() string {
+	return "LookupCreditReceiveRequest"
+}
+
+func (m *LookupCreditReceiveRequest) creditMsgSealed() {}
+
 // RestoreNonTerminalRequest asks the supervisor to respawn and resume every
 // non-terminal operation from the control-plane store. Routing it through the
 // supervisor mailbox serializes the restore with concurrent admissions.
@@ -364,6 +382,36 @@ func (m *ListCreditOpsResponse) MessageType() string {
 }
 
 func (m *ListCreditOpsResponse) creditRespSealed() {}
+
+// CreditReceiveLookupResponse describes a receive found by its op key.
+type CreditReceiveLookupResponse struct {
+	actor.BaseMessage
+
+	// OpID is the admitted operation id.
+	OpID string
+
+	// Invoice is the server-owned Lightning receive invoice.
+	Invoice string
+
+	// PaymentHash is the receive invoice payment hash.
+	PaymentHash []byte
+
+	// AmountSat is the requested receive amount.
+	AmountSat uint64
+
+	// Memo is the memo the receive was admitted with.
+	Memo string
+
+	// CreatedAt is when the receive was admitted.
+	CreatedAt time.Time
+}
+
+// MessageType returns the human-readable message type.
+func (m *CreditReceiveLookupResponse) MessageType() string {
+	return "CreditReceiveLookupResponse"
+}
+
+func (m *CreditReceiveLookupResponse) creditRespSealed() {}
 
 // AckResponse acknowledges a fire-and-forget control message (resume, terminal
 // notification) that has no richer reply.

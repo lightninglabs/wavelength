@@ -11,6 +11,9 @@ import (
 	"github.com/lightninglabs/wavelength/wallet"
 	"github.com/lightninglabs/wavelength/waved"
 	"github.com/lightninglabs/wavelength/waverpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // fakeRPCServer is a hand-written implementation of swapwallet.RPCServer
@@ -440,6 +443,14 @@ type fakeSwapService struct {
 	listCreditsErr   error
 	listCreditsCalls int
 	listCreditsLast  *swapclientrpc.ListCreditsRequest
+
+	// receivesByKey is the fake swap store's request-ID index.
+	receivesByKey map[string]*swapclientrpc.SwapSummary
+
+	// startReceiveEntered and startReceiveRelease, when set, hold
+	// StartReceive in flight until the test releases it.
+	startReceiveEntered chan struct{}
+	startReceiveRelease chan struct{}
 }
 
 func (f *fakeSwapService) QuotePay(_ context.Context,
@@ -468,15 +479,47 @@ func (f *fakeSwapService) StartReceive(_ context.Context,
 
 	f.startReceiveCalls++
 	f.startReceiveLast = req
+	if f.startReceiveRelease != nil {
+		close(f.startReceiveEntered)
+		<-f.startReceiveRelease
+	}
+
+	// Model the swap store: a keyed receive is recorded with its memo so
+	// GetSwap can find it again by key.
+	if key := req.GetIdempotencyKey(); key != "" &&
+		f.startReceiveErr == nil {
+
+		if f.receivesByKey == nil {
+			f.receivesByKey = make(
+				map[string]*swapclientrpc.SwapSummary,
+			)
+		}
+		summary := proto.Clone(
+			f.startReceiveResp.GetSwap(),
+		).(*swapclientrpc.SwapSummary)
+		summary.Invoice = f.startReceiveResp.GetInvoice()
+		summary.AmountSat = req.GetAmountSat()
+		summary.Memo = req.GetMemo()
+		f.receivesByKey[key] = summary
+	}
 
 	return f.startReceiveResp, f.startReceiveErr
 }
 
 func (f *fakeSwapService) GetSwap(_ context.Context,
-	_ *swapclientrpc.GetSwapRequest) (*swapclientrpc.GetSwapResponse,
+	req *swapclientrpc.GetSwapRequest) (*swapclientrpc.GetSwapResponse,
 	error) {
 
 	f.getSwapCalls++
+
+	if key := req.GetReceiveIdempotencyKey(); key != "" {
+		summary, ok := f.receivesByKey[key]
+		if !ok {
+			return nil, status.Error(codes.NotFound, "not found")
+		}
+
+		return &swapclientrpc.GetSwapResponse{Swap: summary}, nil
+	}
 
 	return f.getSwapResp, f.getSwapErr
 }

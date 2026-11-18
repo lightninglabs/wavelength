@@ -43,6 +43,17 @@ service WalletService {
     // key, not an ephemeral process-local key.
     rpc Recv (RecvRequest) returns (RecvResponse);
 
+    // LookupRecv returns the result of an earlier Recv made with the same
+    // request_id: the same invoice, entry, and credit_receive fields. The
+    // entry identifies the receive; read List or SubscribeWallet for its
+    // current status. LookupRecv only reads and never creates a receive. It
+    // waits for a Recv still in flight under the same request_id, so
+    // NotFound means no pending or completed receive exists, and none is
+    // being created, under the ID. A sub-floor (credit) receive that failed
+    // also reads as NotFound, and a Recv retried under its ID may fail, so
+    // start any new receive under a fresh request_id.
+    rpc LookupRecv (LookupRecvRequest) returns (RecvResponse);
+
     // List returns the unified wallet view selected by ListRequest.view:
     // ACTIVITY (default) is the merged WalletEntry stream; VTXOS is the
     // live VTXO inventory; ONCHAIN is the boarding-plus-sweep on-chain
@@ -500,6 +511,20 @@ message RecvRequest {
 
     // memo is the optional human-readable memo to embed in the invoice.
     string memo = 2;
+
+    // request_id is an optional caller-chosen key for this receive, such as
+    // a UUID. The daemon stores it with the invoice it creates. Repeating
+    // Recv with the same request_id and the same amt_sat and memo returns
+    // the original result instead of a new invoice; different parameters
+    // are rejected with AlreadyExists. Use LookupRecv to read the result
+    // without creating anything.
+    string request_id = 3;
+}
+
+// LookupRecvRequest names the request_id of an earlier Recv.
+message LookupRecvRequest {
+    // request_id is the key the caller passed to Recv.
+    string request_id = 1;
 }
 
 // RecvResponse returns the BOLT-11 invoice to hand out and the initial

@@ -251,6 +251,13 @@ type DepositResult struct {
 type ReceiveRequest struct {
 	AmountSat uint64
 	Memo      string
+
+	// RequestID optionally names this receive, for example with a UUID
+	// made before the call. Repeating Receive with the same ID and
+	// parameters returns the original result, and LookupReceive reads it
+	// without creating anything. Use it so a lost reply never forces a
+	// second invoice.
+	RequestID string
 }
 
 // ReceiveResult contains the invoice and initial wallet entry.

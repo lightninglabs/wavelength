@@ -67,4 +67,13 @@ var (
 	// dust limit, and the guidance to receive at least the dust amount.
 	ErrCreditReceiveUnavailable = errors.New("sub-dust receive via the " +
 		"operator credit subsystem is unavailable")
+
+	// ErrReceiveNotFound is returned by LookupRecv when the request ID owns
+	// no pending or completed receive and none is being created.
+	ErrReceiveNotFound = errors.New("no receive for request id")
+
+	// ErrReceiveRequestMismatch is returned when Recv repeats a request ID
+	// with a different amount or memo than the receive it already owns.
+	ErrReceiveRequestMismatch = errors.New("request id already used with " +
+		"different receive parameters")
 )

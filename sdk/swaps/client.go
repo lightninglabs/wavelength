@@ -232,6 +232,10 @@ type SwapSummary struct {
 	// can differ from the funded vHTLC amount.
 	RequestedAmountSat uint64
 
+	// Memo is the invoice memo a receive was created with. Receives
+	// created before memos were stored report an empty memo.
+	Memo string
+
 	// AttachedCreditSat is the credit amount attached to a credit-assisted
 	// receive.
 	AttachedCreditSat uint64

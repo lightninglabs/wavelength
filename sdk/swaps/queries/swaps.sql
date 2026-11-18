@@ -10,11 +10,11 @@ INSERT INTO receive_swaps (
     pending_htlc_ack_cursor, claim_receive_pubkey, claim_receive_pkscript,
     claim_session_id, claim_recovery_id, intervention_reason,
     requested_amount_sat, available_credit_sat, attached_credit_sat,
-    dust_limit_sat, created_at_unix, updated_at_unix
+    dust_limit_sat, created_at_unix, updated_at_unix, request_id, memo
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
     $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-    $29, $30, $31, $32
+    $29, $30, $31, $32, $33, $34
 )
 ON CONFLICT (payment_hash) DO NOTHING;
 
@@ -51,11 +51,13 @@ INSERT INTO receive_swaps (
 	attached_credit_sat,
 	dust_limit_sat,
 	created_at_unix,
-	updated_at_unix
+	updated_at_unix,
+	request_id,
+	memo
 ) VALUES (
 	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
 	$16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-	$29, $30, $31, $32
+	$29, $30, $31, $32, $33, $34
 )
 ON CONFLICT (payment_hash) DO UPDATE SET
     amount_sat = EXCLUDED.amount_sat,
@@ -93,6 +95,13 @@ ON CONFLICT (payment_hash) DO UPDATE SET
 -- name: GetReceiveSwap :one
 SELECT * FROM receive_swaps
 WHERE payment_hash = $1
+LIMIT 1;
+
+-- request_id and memo are fixed at admission, so the upsert above never
+-- rewrites them.
+-- name: GetReceiveSwapByRequestID :one
+SELECT * FROM receive_swaps
+WHERE request_id = $1
 LIMIT 1;
 
 -- name: ListReceiveSwaps :many

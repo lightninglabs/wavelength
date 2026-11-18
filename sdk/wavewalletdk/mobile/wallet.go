@@ -5,6 +5,7 @@ package mobile
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"runtime/debug"
@@ -59,6 +60,7 @@ func receiveError(callCtx context.Context, err error) error {
 type mobileReceiveRequest struct {
 	AmountSat      uint64
 	Memo           string
+	RequestID      string
 	TimeoutSeconds int64
 }
 
@@ -92,6 +94,7 @@ func decodeReceiveRequest(reqJSON []byte) (wavewalletdk.ReceiveRequest,
 	return wavewalletdk.ReceiveRequest{
 		AmountSat: mobileReq.AmountSat,
 		Memo:      mobileReq.Memo,
+		RequestID: mobileReq.RequestID,
 	}, timeout, nil
 }
 
@@ -243,6 +246,46 @@ func Receive(reqJSON []byte) ([]byte, error) {
 	}
 
 	return marshal(res)
+}
+
+// receiveLookupRequest names the RequestID passed to an earlier Receive.
+type receiveLookupRequest struct {
+	RequestID string
+}
+
+// ReceiveLookupResult reports a LookupReceive outcome. Found is false only
+// when no receive exists under the ID; any other failure is an error, so a
+// host never reads an outage as "safe to create".
+type ReceiveLookupResult struct {
+	Found   bool
+	Receive *wavewalletdk.ReceiveResult
+}
+
+// LookupReceive reads the result of an earlier Receive by its RequestID. It
+// never creates a receive. reqJSON decodes to {"RequestID": "..."}; the
+// response is ReceiveLookupResult.
+func LookupReceive(reqJSON []byte) ([]byte, error) {
+	client, parentCtx, err := activeClient()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := readContext(parentCtx)
+	defer cancel()
+
+	var req receiveLookupRequest
+	if err := decode(reqJSON, &req); err != nil {
+		return nil, err
+	}
+
+	res, err := client.LookupReceive(ctx, req.RequestID)
+	if errors.Is(err, wavewalletdk.ErrReceiveNotFound) {
+		return marshal(ReceiveLookupResult{})
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return marshal(ReceiveLookupResult{Found: true, Receive: res})
 }
 
 // PrepareSend validates and quotes an outbound payment, returning a single-use

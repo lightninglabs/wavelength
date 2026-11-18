@@ -9,7 +9,10 @@ import (
 
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // receiptWalletStub returns a real wallet RPC response through Receive's
@@ -22,6 +25,19 @@ type receiptWalletStub struct {
 // Recv returns the admitted invoice and its typed source response.
 func (s *receiptWalletStub) Recv(context.Context, *wavewalletrpc.RecvRequest,
 	...grpc.CallOption) (*wavewalletrpc.RecvResponse, error) {
+
+	return s.response, nil
+}
+
+// LookupRecv returns the stored response, or the daemon's not-found status
+// with its ErrorInfo when none is configured.
+func (s *receiptWalletStub) LookupRecv(context.Context,
+	*wavewalletrpc.LookupRecvRequest, ...grpc.CallOption) (
+	*wavewalletrpc.RecvResponse, error) {
+
+	if s.response == nil {
+		return nil, notFoundStatus()
+	}
 
 	return s.response, nil
 }
@@ -107,4 +123,46 @@ func TestLightningReceiptFacadeJSON(t *testing.T) {
 		t.Context(), LightningReceiptRequest{},
 	)
 	require.ErrorIs(t, err, ErrLightningReceiptsUnavailable)
+}
+
+// notFoundStatus builds the wire status the daemon returns for an unknown
+// receive request ID.
+func notFoundStatus() error {
+	st, _ := status.New(codes.NotFound, "no receive").WithDetails(
+		&errdetails.ErrorInfo{
+			Domain: wavewalletrpc.FailureDomain,
+			Reason: wavewalletrpc.ReasonReceiveNotFound,
+		},
+	)
+
+	return reconstructSentinel(st.Err())
+}
+
+// TestLookupReceiveReturnsReceiptReference proves a receive recovered by its
+// request ID carries the same typed receipt reference as the original call,
+// and that an unknown ID surfaces as ErrReceiveNotFound.
+func TestLookupReceiveReturnsReceiptReference(t *testing.T) {
+	t.Parallel()
+
+	stub := &receiptWalletStub{response: &wavewalletrpc.RecvResponse{
+		Invoice: "invoice",
+		Entry: &wavewalletrpc.WalletEntry{
+			Id: "entry-id",
+		},
+		CreditReceive: &wavewalletrpc.CreditReceive{
+			OperationId: "op-id",
+		},
+	}}
+	client := &Client{canWallet: true, wallet: stub}
+
+	result, err := client.LookupReceive(t.Context(), "req-1")
+	require.NoError(t, err)
+	require.Equal(t, "invoice", result.Invoice)
+	require.Equal(t, &LightningReceiptReference{
+		Source: LightningReceiptCredit, ID: "op-id",
+	}, result.ReceiptReference)
+
+	stub.response = nil
+	_, err = client.LookupReceive(t.Context(), "unknown")
+	require.ErrorIs(t, err, ErrReceiveNotFound)
 }

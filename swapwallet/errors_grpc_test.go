@@ -58,6 +58,8 @@ func TestSentinelMappingsCoverage(t *testing.T) {
 		ErrAmountExceedsVTXOLimit,
 		ErrBalanceLimitExceeded,
 		ErrCreditReceiveUnavailable,
+		ErrReceiveNotFound,
+		ErrReceiveRequestMismatch,
 		ErrWalletNotReady,
 	}
 

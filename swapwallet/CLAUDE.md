@@ -127,6 +127,14 @@ or terminal activity state clears them.
   `0`, so the receive proceeds down the normal vHTLC path. That is safe
   because the swap server re-checks its own live floor before funding — a
   stale local snapshot can misroute a receive, never mint a sub-floor VTXO.
+- **A keyed receive is bound where it is admitted.** `Recv.request_id` is
+  stored on the swap receive row or used as the credit op key
+  (`recv:<request_id>`). `Recv` first reads both through the same lookup as
+  `LookupRecv`, so a retry that would route to the other backend still
+  returns the original, and a changed amount or memo is rejected.
+  `LookupRecv` only reads. Keyed `Recv` and `LookupRecv` share a per-ID
+  lock held until the backend answers (the credit await ignores caller
+  cancellation), so NotFound never races an in-flight create.
 - Credit-backed routing is nil-safe: `Deps.CreditRegistry == nil` disables
   credit-only sends (falls back with `ErrSwapBackendUnavailable`) and the
   credit projector loop is a no-op, so builds without the credit subsystem

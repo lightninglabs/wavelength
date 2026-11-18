@@ -97,4 +97,14 @@ var (
 	// (TestSentinelMessageParity enforces this).
 	ErrCreditReceiveUnavailable = errors.New("sub-dust receive via the " +
 		"operator credit subsystem is unavailable")
+
+	// ErrReceiveNotFound reports that LookupReceive found no pending or
+	// completed receive for the request ID, and none being created. Start a
+	// new receive under a fresh request ID.
+	ErrReceiveNotFound = errors.New("no receive for request id")
+
+	// ErrReceiveRequestMismatch reports that Receive reused a request ID
+	// with a different amount or memo.
+	ErrReceiveRequestMismatch = errors.New("request id already used with " +
+		"different receive parameters")
 )

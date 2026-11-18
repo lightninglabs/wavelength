@@ -130,6 +130,35 @@ func (c *SwapClient) GetSwapSummary(ctx context.Context,
 	return SwapSummary{}, fmt.Errorf("load receive summary: %w", err)
 }
 
+// ReceiveSummaryByRequestID reads the receive admitted under requestID. It
+// only reads, and returns ErrSwapSummaryNotFound when no receive owns the ID.
+func (c *SwapClient) ReceiveSummaryByRequestID(ctx context.Context,
+	requestID string) (SwapSummary, error) {
+
+	if c == nil || c.store == nil || c.store.queries == nil {
+		return SwapSummary{}, fmt.Errorf("swap store is not configured")
+	}
+	if requestID == "" {
+		return SwapSummary{}, ErrSwapSummaryNotFound
+	}
+
+	row, err := c.store.queries.GetReceiveSwapByRequestID(
+		ctx, sql.NullString{
+			String: requestID,
+			Valid:  true,
+		},
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SwapSummary{}, ErrSwapSummaryNotFound
+	}
+	if err != nil {
+		return SwapSummary{}, fmt.Errorf("load receive by "+
+			"request id: %w", err)
+	}
+
+	return receiveSummaryFromRow(row)
+}
+
 // ListSwapSummaries returns persisted pay and receive sessions in creation
 // order. When pendingOnly is true, terminal sessions are omitted.
 func (c *SwapClient) ListSwapSummaries(ctx context.Context, pendingOnly bool) (
@@ -429,6 +458,7 @@ func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
 		ClaimSessionID:     row.ClaimSessionID,
 		SettlementType:     SettlementType(row.SettlementType),
 		RequestedAmountSat: requestedAmountSat,
+		Memo:               row.Memo,
 		AvailableCreditSat: uint64(row.AvailableCreditSat),
 		AttachedCreditSat:  uint64(row.AttachedCreditSat),
 		DustLimitSat:       uint64(row.DustLimitSat),
@@ -599,6 +629,11 @@ func (s *ReceiveSession) persistSnapshot(ctx context.Context,
 		DustLimitSat:         int64(s.dustLimitSat),
 		CreatedAtUnix:        s.createdAt.Unix(),
 		UpdatedAtUnix:        now,
+		RequestID: sql.NullString{
+			String: s.requestID,
+			Valid:  s.requestID != "",
+		},
+		Memo: s.memo,
 	}
 
 	if s.createdAt.IsZero() {
@@ -924,6 +959,8 @@ func receiveSessionFromRow(c *SwapClient,
 		PaymentHash: paymentHash,
 		client:      c,
 		amountSat:   btcutil.Amount(row.AmountSat),
+		memo:        row.Memo,
+		requestID:   row.RequestID.String,
 		payerFeeMsat: uint64(
 			row.PayerFeeMsat,
 		),

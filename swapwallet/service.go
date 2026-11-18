@@ -189,6 +189,19 @@ func (s *Service) Recv(ctx context.Context, req *wavewalletrpc.RecvRequest) (
 	return s.recv.Recv(ctx, req)
 }
 
+// LookupRecv returns the result of an earlier Recv made with the same
+// request_id. It only reads.
+func (s *Service) LookupRecv(ctx context.Context,
+	req *wavewalletrpc.LookupRecvRequest) (*wavewalletrpc.RecvResponse,
+	error) {
+
+	if err := s.requireWalletReady(ctx); err != nil {
+		return nil, err
+	}
+
+	return s.recv.LookupRecv(ctx, req)
+}
+
 // List returns the unified, normalized wallet history merged across the
 // swap subserver and the daemon's ledger/sweep stores.
 func (s *Service) List(ctx context.Context, req *wavewalletrpc.ListRequest) (
