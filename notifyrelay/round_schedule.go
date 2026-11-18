@@ -153,7 +153,8 @@ func (s *SQLStore) scheduleRoundBindings(ctx context.Context, sourceID string,
 			}
 			if err := enqueueSQLJobTx(
 				ctx, q, sub, ScopeSchedule,
-				sourceID+"/"+strconv.FormatInt(cutoff, 10), now,
+				sourceID+"/"+strconv.FormatInt(cutoff, 10),
+				cutoff, now,
 			); err != nil {
 				return err
 			}

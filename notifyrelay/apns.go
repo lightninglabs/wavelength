@@ -213,7 +213,26 @@ func notificationPayload(delivery Delivery) ([]byte, error) {
 		}
 
 	case ScopeWake:
-		// Ordinary transport traffic is never payment authority.
+		// Use the frozen job before transport normalized the scope.
+		job := delivery.job
+		switch job.Scope {
+		case ScopeSchedule:
+			data["wake_reason"] = "scheduled_round"
+
+		case ScopeRound:
+			data["wake_reason"] = "round_signing"
+
+		case ScopeWake:
+			data["wake_reason"] = "mailbox_update"
+
+		case ScopeAlert:
+			// Alert jobs use the alert template above.
+		}
+		if (job.Scope == ScopeSchedule || job.Scope == ScopeRound) &&
+			job.WakeDeadlineUnix > 0 {
+
+			data["wake_deadline_unix"] = job.WakeDeadlineUnix
+		}
 
 	default:
 		return nil, errors.New("unknown notification scope")

@@ -332,7 +332,7 @@ func (f *feedIngress) admitEvent(ctx context.Context, q *sqlc.Queries,
 		if err := enqueueSQLJobTx(
 			ctx, q, urgent, ScopeRound,
 			fmt.Sprintf("%x/%d", event.FeedToken, event.Generation),
-			now,
+			event.RoundDeadlineUnix, now,
 		); err != nil {
 			return err
 		}
@@ -341,14 +341,14 @@ func (f *feedIngress) admitEvent(ctx context.Context, q *sqlc.Queries,
 		classes&event.EventClasses&notification.FeedClassWake != 0 {
 
 		if err := enqueueSQLJobTx(
-			ctx, q, sub, ScopeWake, "", now,
+			ctx, q, sub, ScopeWake, "", 0, now,
 		); err != nil {
 			return err
 		}
 	}
 	if classes&event.EventClasses&notification.FeedClassPayment != 0 {
 		if err := enqueueSQLJobTx(
-			ctx, q, sub, ScopeAlert, event.PaymentEventId, now,
+			ctx, q, sub, ScopeAlert, event.PaymentEventId, 0, now,
 		); err != nil {
 			return err
 		}

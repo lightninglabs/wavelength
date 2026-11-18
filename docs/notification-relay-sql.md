@@ -224,10 +224,22 @@ prevent a source pull or pending ACK. A bounded SQL page commits each route's
 cutoff marker with its future-dated job. A revoked local subscription removes
 its binding and job through the existing foreign-key ownership.
 
-Internal `round` and `schedule` lanes become the existing silent `wake` payload
-at provider construction. Neither lane can create an alert or choose a device.
+Internal `round` and `schedule` lanes use the silent `wake` transport. The
+original lane determines the diagnostic push reason. Schema 4 stores a separate
+wake deadline on the job generation, with zero for existing jobs. A claimed
+delivery keeps its metadata even when a new generation arrives. Neither lane
+can create an alert or choose a device.
 The claim-fenced provider result advances only that lane's installation clock.
 Urgent retry delay is capped at five seconds and job expiry remains authoritative.
+
+Stop older relay writers before applying schema 4. An older writer can update
+the job generation while leaving a previous generation's deadline on the row.
+
+To return to schema 3, stop the relay. Use this revision's migrations with
+golang-migrate and the existing relay database URL. Add the URL parameter
+`x-migrations-table=wavenotifyd_migrations`. From clean version 4, run `down 1`
+and confirm version 3 before starting the older relay. This drops the diagnostic
+deadline and records the downgrade in the relay's migration table.
 
 Future schedule jobs and urgent signing jobs each have their own bounded
 4,096-job pool. Ordinary wakes and payment alerts retain their existing shared

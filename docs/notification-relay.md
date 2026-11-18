@@ -263,6 +263,20 @@ controlled; these tests do not prove physical APNs delivery or iOS execution.
 Source publication, image publication, configuration activation and device
 acceptance are separate gates. Preparing this code activates no service.
 
+## Silent wake diagnostics
+
+Silent v1 pushes may carry `wake_reason` beside the existing route and event
+fields. `scheduled_round` identifies a published registration opportunity.
+`round_signing` identifies an interactive round wake. `mailbox_update`
+identifies ordinary wallet mailbox work and carries no finer producer reason.
+
+`wake_deadline_unix` is an optional UTC second. For a scheduled round it is the
+published registration cutoff. For round signing it is the source's wake
+deadline. The APNs expiration header still controls provider delivery expiry.
+The payload fields supply diagnostic context after the app validates its local
+route. They grant no signing, receipt, or execution authority. Legacy clients
+can ignore these fields and legacy jobs can lack a deadline.
+
 ## Verified receipt presentation
 
 A device may sign `enable_alerts: true` and
