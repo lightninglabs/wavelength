@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
@@ -19,9 +18,11 @@ import (
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/lndbackend"
 	"github.com/lightninglabs/wavelength/round"
 	"github.com/lightninglabs/wavelength/tapassets"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
@@ -62,10 +63,12 @@ func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 		return nil, err
 	}
 
+	keys := &assetKeyRing{server: s}
 	client, err := embedded.NewClient(&embedded.Config{
 		Network:   tapsdk.Network(s.cfg.Network),
 		Store:     db.NewAssetEngineStore(store),
-		KeyRing:   &assetKeyRing{server: s},
+		KeyRing:   keys,
+		Signer:    keys,
 		Chain:     &assetChain{server: s},
 		GroupKeys: groupKeys,
 		Logger:    &assetEngineLogger{log: s.log},
@@ -156,13 +159,15 @@ func trustAssetGroup(engine *embedded.Client, assetRef string) error {
 	return nil
 }
 
-// assetKeyRing derives the embedded engine's keys from the daemon wallet's
-// seed.
+// assetKeyRing derives and signs with the embedded engine's keys through
+// the daemon wallet. An lnd wallet derives and signs through lnd, so its
+// keys never leave lnd. A wallet holding the seed signs with its key ring.
 type assetKeyRing struct {
 	server *Server
 }
 
-// ring returns the unlocked daemon wallet's key ring.
+// ring returns the key ring of the unlocked daemon wallet that holds the
+// seed.
 func (k *assetKeyRing) ring() (keychain.SecretKeyRing, error) {
 	s := k.server
 	if !s.isWalletReady() {
@@ -184,28 +189,77 @@ func (k *assetKeyRing) ring() (keychain.SecretKeyRing, error) {
 	return nil, errAssetWalletNotReady
 }
 
+// lndWallet returns the wallet of the connected lnd, or None when the
+// daemon wallet is not lnd.
+func (k *assetKeyRing) lndWallet() (fn.Option[*lndbackend.ClientWallet],
+	error) {
+
+	s := k.server
+	if s.cfg.Wallet.Type != WalletTypeLnd {
+		return fn.None[*lndbackend.ClientWallet](), nil
+	}
+	if !s.isWalletReady() || s.lnd.IsNone() {
+		return fn.None[*lndbackend.ClientWallet](),
+			errAssetWalletNotReady
+	}
+
+	lndSvc := s.lnd.UnsafeFromSome()
+	wallet := lndbackend.NewClientWallet(lndSvc.Signer, lndSvc.WalletKit)
+	wallet.Log = fn.Some(s.subLogger(lndbackend.Subsystem))
+
+	return fn.Some(wallet), nil
+}
+
 // DeriveNextKey derives the next unused key of the family.
-func (k *assetKeyRing) DeriveNextKey(family keychain.KeyFamily) (
-	keychain.KeyDescriptor, error) {
+func (k *assetKeyRing) DeriveNextKey(ctx context.Context,
+	family keychain.KeyFamily) (keychain.KeyDescriptor, error) {
+
+	lndWallet, err := k.lndWallet()
+	if err != nil {
+		return keychain.KeyDescriptor{}, err
+	}
+	if lndWallet.IsSome() {
+		keyDesc, err := lndWallet.UnsafeFromSome().DeriveNextKey(
+			ctx, family,
+		)
+		if err != nil {
+			return keychain.KeyDescriptor{}, err
+		}
+
+		return *keyDesc, nil
+	}
 
 	ring, err := k.ring()
 	if err != nil {
 		return keychain.KeyDescriptor{}, err
 	}
 
-	return ring.DeriveNextKey(family)
+	return embedded.NewLocalKeyRing(ring).DeriveNextKey(ctx, family)
 }
 
-// DerivePrivKey derives the private key of a key descriptor.
-func (k *assetKeyRing) DerivePrivKey(desc keychain.KeyDescriptor) (
-	*btcec.PrivateKey, error) {
+// SignOutputRaw signs the input of tx that signDesc describes with a key
+// DeriveNextKey derived.
+func (k *assetKeyRing) SignOutputRaw(ctx context.Context, tx *wire.MsgTx,
+	signDesc *input.SignDescriptor) (input.Signature, error) {
+
+	lndWallet, err := k.lndWallet()
+	if err != nil {
+		return nil, err
+	}
+	if lndWallet.IsSome() {
+		return lndWallet.UnsafeFromSome().SignOutputRawContext(
+			ctx, tx, signDesc,
+		)
+	}
 
 	ring, err := k.ring()
 	if err != nil {
 		return nil, err
 	}
 
-	return ring.DerivePrivKey(desc)
+	return embedded.NewKeyRingSigner(ring).SignOutputRaw(
+		ctx, tx, signDesc,
+	)
 }
 
 // assetChain is the embedded engine's view of the chain through the

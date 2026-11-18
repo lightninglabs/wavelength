@@ -136,8 +136,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `embedded` runs tap-sdk's in-process engine and needs no tapd.
 - The embedded backend (`asset_engine.go`) is the engine on three daemon
   resources: `db.AssetEngineStore` for its keys, proofs and transfers,
-  the wallet's `keychain.SecretKeyRing` for its keys, and the chain backend
-  for headers and broadcast. It follows a transfer's confirmation through
+  the daemon wallet for its keys and signatures, and the chain backend
+  for headers and broadcast. `assetKeyRing` is both the engine's `KeyRing`
+  and its `Signer`: an lnd wallet derives and signs through lnd's wallet
+  kit and signer, and a wallet holding the seed signs with its key ring. It follows a transfer's confirmation through
   the chain source actor, which orders the events of every backend and
   reports the confirmation final once it is buried; `assetConfWatch` hands
   those events to the engine one at a time, and ends them on a confirmation

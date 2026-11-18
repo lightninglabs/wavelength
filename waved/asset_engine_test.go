@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/tapassets"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
@@ -117,11 +118,27 @@ func TestAssetChainNotReady(t *testing.T) {
 	_, err = chain.BlockHeader(t.Context(), 1)
 	require.ErrorIs(t, err, errAssetWalletNotReady)
 
-	keys := &assetKeyRing{server: server}
-	_, err = keys.DeriveNextKey(keychain.KeyFamily(212))
-	require.ErrorIs(t, err, errAssetWalletNotReady)
-	_, err = keys.DerivePrivKey(keychain.KeyDescriptor{})
-	require.ErrorIs(t, err, errAssetWalletNotReady)
+	// Neither a wallet holding the seed nor an lnd wallet derives or
+	// signs before the wallet is ready.
+	for _, walletType := range []string{
+		WalletTypeLwwallet, WalletTypeLnd,
+	} {
+		cfg := DefaultConfig()
+		cfg.Wallet.Type = walletType
+		keys := &assetKeyRing{server: &Server{
+			cfg:         cfg,
+			walletReady: make(chan struct{}),
+		}}
+
+		_, err = keys.DeriveNextKey(
+			t.Context(), keychain.KeyFamily(212),
+		)
+		require.ErrorIs(t, err, errAssetWalletNotReady)
+		_, err = keys.SignOutputRaw(
+			t.Context(), wire.NewMsgTx(2), &input.SignDescriptor{},
+		)
+		require.ErrorIs(t, err, errAssetWalletNotReady)
+	}
 }
 
 // TestAssetChainHeadersAndBroadcast reads the tip and headers through the
@@ -381,14 +398,16 @@ func TestAssetChainConfirmationNotReady(t *testing.T) {
 func TestTrustAssetGroup(t *testing.T) {
 	t.Parallel()
 
+	keys := &assetKeyRing{server: &Server{
+		cfg:         DefaultConfig(),
+		walletReady: make(chan struct{}),
+	}}
 	engine, err := embedded.NewClient(&embedded.Config{
 		Network: tapsdk.NetworkRegtest,
 		Store:   embedded.NewMemoryStore(),
-		KeyRing: &assetKeyRing{server: &Server{
-			cfg:         DefaultConfig(),
-			walletReady: make(chan struct{}),
-		}},
-		Chain: &assetChain{},
+		KeyRing: keys,
+		Signer:  keys,
+		Chain:   &assetChain{},
 	})
 	require.NoError(t, err)
 
