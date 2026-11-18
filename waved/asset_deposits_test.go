@@ -817,6 +817,93 @@ func TestAssetDepositClaimCurrentProof(t *testing.T) {
 	require.Equal(t, []uint32{213, 214}, heightHints)
 }
 
+// TestAssetDepositClaimFinalOnBestChain checks that a claim is final only
+// while the block the backend recorded for it is on the best chain.
+func TestAssetDepositClaimFinalOnBestChain(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newDepositFixture(t)
+
+	claimTx := wire.NewMsgTx(3)
+	claimTx.AddTxIn(&wire.TxIn{PreviousOutPoint: f.output})
+	claimTx.AddTxOut(wire.NewTxOut(10_000, []byte{0x51}))
+	f.service.claimer = &fakeAssetClaimer{tx: claimTx}
+	var broadcasts int
+	f.service.broadcastClaim = func(context.Context, *wire.MsgTx,
+		uint32) error {
+
+		broadcasts++
+
+		return nil
+	}
+	f.service.reserveClaim = func(context.Context, wire.OutPoint) error {
+		return nil
+	}
+	bestBlocks := make(map[uint32]chainhash.Hash)
+	f.service.bestBlockHash = func(_ context.Context, height uint32) (
+		chainhash.Hash, error) {
+
+		hash, ok := bestBlocks[height]
+		if !ok {
+			return chainhash.Hash{}, errors.New("no header")
+		}
+
+		return hash, nil
+	}
+
+	_, err := f.service.Deposit(ctx, f.request("alice-1"))
+	require.NoError(t, err)
+	f.tapd.transfers[0].AnchorTxBlockHash = [32]byte{1}
+	f.tapd.transfers[0].AnchorTxBlockHeight = 210
+	f.tapd.height = 210
+	f.service.confirmPublished(ctx)
+	f.tapd.height = 210 + 143
+	_, err = f.service.Claim(ctx, "alice-1")
+	require.NoError(t, err)
+	require.Equal(t, 1, broadcasts)
+
+	// The backend recorded the claim in a block that left the chain
+	// while the daemon was down. However deep that height is, the claim
+	// stays pending and goes to txconfirm again.
+	claimHeight := f.tapd.height + 1
+	f.tapd.transfers = append(f.tapd.transfers, &tapsdk.AssetTransfer{
+		TransferTxid:        claimTx.TxHash(),
+		AnchorTxBlockHash:   [32]byte{2},
+		AnchorTxBlockHeight: claimHeight,
+	})
+	f.tapd.height = claimHeight + claimFinalityDepth
+	bestBlocks[claimHeight] = chainhash.Hash{9}
+	f.service.trackedClaims = make(map[chainhash.Hash]struct{})
+	f.service.confirmClaims(ctx)
+	claim, err := f.service.ClaimOf(ctx, "alice-1")
+	require.NoError(t, err)
+	require.Equal(t, db.AssetDepositClaiming, claim.Status)
+	require.Equal(t, 2, broadcasts)
+
+	// A height the chain backend has no header for decides nothing.
+	delete(bestBlocks, claimHeight)
+	f.service.confirmClaims(ctx)
+	claim, err = f.service.ClaimOf(ctx, "alice-1")
+	require.NoError(t, err)
+	require.Equal(t, db.AssetDepositClaiming, claim.Status)
+
+	// The claim confirms again, and the backend records its new block.
+	f.tapd.transfers[1].AnchorTxBlockHash = [32]byte{4}
+	f.tapd.transfers[1].AnchorTxBlockHeight = claimHeight + 2
+	bestBlocks[claimHeight+2] = chainhash.Hash{4}
+	f.service.confirmClaims(ctx)
+	claim, err = f.service.ClaimOf(ctx, "alice-1")
+	require.NoError(t, err)
+	require.Equal(t, db.AssetDepositClaiming, claim.Status)
+
+	f.tapd.height = claimHeight + 2 + claimFinalityDepth - 1
+	f.service.confirmClaims(ctx)
+	claim, err = f.service.ClaimOf(ctx, "alice-1")
+	require.NoError(t, err)
+	require.Equal(t, db.AssetDepositClaimed, claim.Status)
+}
+
 // TestAssetDepositClaimCreditingBackend checks that a backend that confirms
 // a transfer spending an asset it does not hold claims a deposit whatever
 // version it reports.

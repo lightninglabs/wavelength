@@ -72,6 +72,9 @@ type claimNotifications = actor.TellOnlyRef[txconfirm.Notification]
 // claimBroadcaster confirms a zero-fee claim with a CPFP child.
 type claimBroadcaster func(context.Context, *wire.MsgTx, uint32) error
 
+// blockHashReader returns the hash of the best chain's block at a height.
+type blockHashReader func(context.Context, uint32) (chainhash.Hash, error)
+
 // Claim spends a confirmed deposit that no round holds through its owner's
 // exit leaf, once the exit delay has passed, and returns the asset to the
 // asset wallet. A retry resumes the journaled claim.
@@ -437,7 +440,10 @@ func (d *assetDepositService) retrackClaim(ctx context.Context,
 }
 
 // claimFinal reports whether the asset backend recorded the claim
-// transaction in a block at least claimFinalityDepth deep below tip.
+// transaction in a block at least claimFinalityDepth deep below tip. With a
+// block hash reader, that block must also be the best chain's block at its
+// height: a backend that was down while the block left the chain still
+// reports it, and the claim is not confirmed until it is mined again.
 func (d *assetDepositService) claimFinal(ctx context.Context,
 	txid chainhash.Hash, tip uint32) (bool, error) {
 
@@ -452,6 +458,7 @@ func (d *assetDepositService) claimFinal(ctx context.Context,
 
 	var (
 		height    uint32
+		blockHash chainhash.Hash
 		confirmed bool
 	)
 	for _, transfer := range transfers {
@@ -460,14 +467,26 @@ func (d *assetDepositService) claimFinal(ctx context.Context,
 			transfer.AnchorTxBlockHash != [32]byte{} {
 
 			height = transfer.AnchorTxBlockHeight
+			blockHash = chainhash.Hash(transfer.AnchorTxBlockHash)
 			confirmed = true
 
 			break
 		}
 	}
+	if !confirmed || tip < height ||
+		tip-height+1 < claimFinalityDepth {
+		return false, nil
+	}
+	if d.bestBlockHash == nil {
+		return true, nil
+	}
 
-	return confirmed && tip >= height &&
-		tip-height+1 >= claimFinalityDepth, nil
+	best, err := d.bestBlockHash(ctx, height)
+	if err != nil {
+		return false, err
+	}
+
+	return best == blockHash, nil
 }
 
 // depositClaimRequest spends a deposit output through its owner's exit leaf.

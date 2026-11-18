@@ -389,6 +389,18 @@ func (c *assetChain) BlockHeader(ctx context.Context, height uint32) (
 		backend)
 }
 
+// BlockHash returns the hash of the best-chain block at height.
+func (c *assetChain) BlockHash(ctx context.Context, height uint32) (
+	chainhash.Hash, error) {
+
+	header, err := c.BlockHeader(ctx, height)
+	if err != nil {
+		return chainhash.Hash{}, err
+	}
+
+	return header.BlockHash(), nil
+}
+
 // PublishTransaction broadcasts a transaction. A transaction the network
 // already has is published.
 func (c *assetChain) PublishTransaction(ctx context.Context, tx *wire.MsgTx,

@@ -144,6 +144,11 @@ type assetDepositService struct {
 	broadcastClaim claimBroadcaster
 	reserveClaim   claimReserver
 
+	// bestBlockHash checks the block a claim confirmed in against the
+	// best chain. It is nil for tapd, which follows the reorganizations
+	// of its own transfers.
+	bestBlockHash blockHashReader
+
 	// claimsMu guards trackedClaims, the claims txconfirm tracks in this
 	// process. txconfirm keeps no state across restarts.
 	claimsMu      sync.Mutex
@@ -173,6 +178,7 @@ type assetDepositConfig struct {
 	claimer          assetClaimer
 	broadcastClaim   claimBroadcaster
 	reserveClaim     claimReserver
+	bestBlockHash    blockHashReader
 }
 
 // newAssetDepositService returns a deposit service over its dependencies.
@@ -192,6 +198,7 @@ func newAssetDepositService(cfg *assetDepositConfig) *assetDepositService {
 		claimer:          cfg.claimer,
 		broadcastClaim:   cfg.broadcastClaim,
 		reserveClaim:     cfg.reserveClaim,
+		bestBlockHash:    cfg.bestBlockHash,
 		trackedClaims:    make(map[chainhash.Hash]struct{}),
 		poll:             make(chan struct{}, 1),
 	}

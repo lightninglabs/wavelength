@@ -287,6 +287,13 @@ func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 		return nil, err
 	}
 
+	// The engine's record of a claim's block is checked against the
+	// daemon's chain backend, which serves the engine its headers.
+	var bestBlockHash blockHashReader
+	if s.embeddedAssets != nil {
+		bestBlockHash = (&assetChain{server: s}).BlockHash
+	}
+
 	depositStore := db.NewAssetDepositStore(store)
 	s.assetDeposits = newAssetDepositService(&assetDepositConfig{
 		log:              s.log,
@@ -303,6 +310,7 @@ func (s *Server) startAssetDeposits(ctx context.Context, store *db.Store) (
 		claimer:          s.assetClaimer,
 		broadcastClaim:   s.broadcastAssetClaim,
 		reserveClaim:     s.reserveAssetDepositClaim,
+		bestBlockHash:    bestBlockHash,
 	})
 
 	// The subscriber lives as long as the actor system, not this call.

@@ -233,7 +233,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   deposit watcher hands every pending claim to it again, and marks a claim
   `claimed` only once the backend's transfer for it is
   `chainsource.DefaultFinalityDepth` blocks deep, the depth at which
-  txconfirm stops following it through reorgs.
+  txconfirm stops following it through reorgs. On the embedded backend that
+  block must also be the best chain's block at its height: the engine still
+  reports a block that left the chain while the daemon was down, until the
+  claim is mined again.
 - One `tapassets.Claimer` (`Server.assetClaimer`) claims both deposits
   (`deposit/` journal keys) and asset VTXOs (`vtxo/`). The tapd backend
   creates it when tapd connects, and the embedded backend creates it with
