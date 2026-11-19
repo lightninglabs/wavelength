@@ -338,6 +338,40 @@ func verifyTaprootScriptSpendSig(tx *wire.MsgTx, inputIndex int,
 	return nil
 }
 
+// VerifySingleInputAuthorization verifies a full-payout Schnorr signature on
+// a locally reconstructed single-input packet, not peer-supplied prevouts.
+func VerifySingleInputAuthorization(pkt *psbt.Packet, owner *btcec.PublicKey,
+	script []byte, sig ExternalTaprootScriptSignature) error {
+
+	if pkt == nil || pkt.UnsignedTx == nil ||
+		len(pkt.UnsignedTx.TxIn) != 1 || len(pkt.Inputs) != 1 ||
+		pkt.Inputs[0].WitnessUtxo == nil {
+		return fmt.Errorf("expected one funded input")
+	}
+	if owner == nil || sig.PubKey == nil ||
+		!bytes.Equal(
+			schnorr.SerializePubKey(owner),
+			schnorr.SerializePubKey(sig.PubKey),
+		) ||
+		!bytes.Equal(script, sig.WitnessScript) ||
+		sig.SigHash != txscript.SigHashDefault ||
+		len(sig.Signature) != schnorr.SignatureSize {
+		return fmt.Errorf("signature does not bind expected owner " +
+			"and leaf")
+	}
+	prev := pkt.Inputs[0].WitnessUtxo
+
+	return verifyTaprootScriptSpendSig(
+		pkt.UnsignedTx, 0, txscript.NewCannedPrevOutputFetcher(
+			prev.PkScript, prev.Value,
+		),
+		script, &psbt.TaprootScriptSpendSig{
+			XOnlyPubKey: schnorr.SerializePubKey(owner),
+			Signature:   sig.Signature, SigHash: sig.SigHash,
+		},
+	)
+}
+
 // signCheckpointPSBT signs checkpoint input 0 with the client key for the
 // collaborative VTXO leaf path.
 func signCheckpointPSBT(signer input.Signer, in *TransferInput,

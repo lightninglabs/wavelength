@@ -27,6 +27,8 @@ import (
 )
 
 type customOORRPCFixture struct {
+	policy     *arkscript.VHTLCPolicy
+	senderPriv *btcec.PrivateKey
 	rpcServer  *RPCServer
 	customIn   *waverpc.CustomOORInput
 	recipient  *waverpc.Output
@@ -40,7 +42,7 @@ type customOORRPCFixture struct {
 func newCustomOORRPCFixture(t *testing.T) *customOORRPCFixture {
 	t.Helper()
 
-	policy, preimage, _, receiverPriv, serverPriv :=
+	policy, preimage, senderPriv, receiverPriv, serverPriv :=
 		testVHTLCPolicyFixture(t)
 	policyTemplate, err := policy.Template.Encode()
 	require.NoError(t, err)
@@ -92,6 +94,7 @@ func newCustomOORRPCFixture(t *testing.T) *customOORRPCFixture {
 	outpoint := testWalletOpsOutpoint(6)
 
 	return &customOORRPCFixture{
+		policy: policy, senderPriv: senderPriv,
 		rpcServer: &RPCServer{
 			server:           server,
 			customInputLocks: make(map[wire.OutPoint]struct{}),

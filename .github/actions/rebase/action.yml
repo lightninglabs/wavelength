@@ -1,15 +1,27 @@
-name: "Rebase on to the PR target base branch"
-description: "A reusable workflow that's used to rebase the PR code on to the target base branch."
+name: "Rebase onto the PR event base"
+description: "Test the head against the base revision captured by the same PR event."
+
+inputs:
+  base-sha:
+    description: "Full base commit SHA from the pull request event"
+    required: true
 
 runs:
   using: "composite"
 
   steps:
-    - name: fetch and rebase on ${{ github.base_ref }}
+    - name: Rebase onto the recorded base SHA
       shell: bash
+      env:
+        PR_BASE_SHA: ${{ inputs.base-sha }}
+        GIT_COMMITTER_EMAIL: wavelength-ci@example.com
+        GIT_COMMITTER_NAME: Wavelength CI
       run: |
-        git remote add upstream https://github.com/${{ github.repository }}
-        git fetch upstream ${{ github.base_ref }}:refs/remotes/upstream/${{ github.base_ref }}
-        export GIT_COMMITTER_EMAIL="wavelength-ci@example.com"
-        export GIT_COMMITTER_NAME="Wavelength CI"
-        git rebase upstream/${{ github.base_ref }}
+        if ! [[ "$PR_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "Missing or invalid pull request base SHA" >&2
+          exit 1
+        fi
+        if ! git cat-file -e "$PR_BASE_SHA^{commit}" 2>/dev/null; then
+          git fetch --no-tags origin "$PR_BASE_SHA"
+        fi
+        git rebase "$PR_BASE_SHA"

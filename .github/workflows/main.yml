@@ -159,7 +159,10 @@ jobs:
       - name: lint
         # The linter container writes to the shared Go module cache as root,
         # so the analyzer tests that follow need the same access.
-        run: sudo env "PATH=$PATH" "GOPATH=$GOPATH" "HOME=$HOME" GOGC=50 make lint
+        # Retain CI cache mounts and bound cold-cache analysis in Docker.
+        run: |
+          sudo env "PATH=$PATH" "GOPATH=$GOPATH" "HOME=$HOME" \
+            "CI=$CI" GOGC=50 GOMEMLIMIT=4GiB make lint workers=4
 
   ########################
   # P formal model check
@@ -329,9 +332,11 @@ jobs:
       - name: Clean up runner space
         uses: ./.github/actions/cleanup-space
 
-      - name: Fetch and rebase on ${{ github.base_ref }}
+      - name: Rebase onto the PR event base
         if: github.event_name == 'pull_request'
         uses: ./.github/actions/rebase
+        with:
+          base-sha: ${{ github.event.pull_request.base.sha }}
 
       - name: Setup go ${{ env.GO_VERSION }}
         uses: ./.github/actions/setup-go
@@ -345,7 +350,12 @@ jobs:
         # Bump the per-package test timeout from Go's 10m default because the
         # ARC runners boot the test harness slower than Depot/local; 30m is
         # generous headroom while still failing on a real hang.
-        run: sudo env "PATH=$PATH" "GOPATH=$GOPATH" make ${{ matrix.unit_type }} timeout=30m
+        # Coverage instrumentation and the runtime dependency graph make
+        # concurrent compiler heaps exceed the runner's memory budget.
+        run: |
+          sudo env "PATH=$PATH" "GOPATH=$GOPATH" \
+            GOGC=50 GOMEMLIMIT=4GiB GOFLAGS=-p=2 \
+            make ${{ matrix.unit_type }} timeout=30m
 
       - name: Clean coverage
         run: grep -Ev '(\.pb\.go|\.pb\.json\.go|\.pb\.gw\.go|db/sqlc/)' coverage.txt > coverage-norpc.txt
@@ -410,9 +420,11 @@ jobs:
       - name: Clean up runner space
         uses: ./.github/actions/cleanup-space
 
-      - name: Fetch and rebase on ${{ github.base_ref }}
+      - name: Rebase onto the PR event base
         if: github.event_name == 'pull_request'
         uses: ./.github/actions/rebase
+        with:
+          base-sha: ${{ github.event.pull_request.base.sha }}
 
       - name: Setup go ${{ env.GO_VERSION }}
         uses: ./.github/actions/setup-go
