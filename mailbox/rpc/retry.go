@@ -143,14 +143,11 @@ func Retry(ctx context.Context, policy RetryPolicy,
 // idempotency key, for example because the key is derived from a durable
 // record so it survives a restart. Passing an empty key mints one.
 //
-// The key must not already be in flight elsewhere when this is called. Both
-// the operator's deduplication and the transport's habit of defaulting the
-// correlation ID to the key assume one live request per key, so two callers
-// retrying concurrently under the same key would land two waiters on one
-// correlation ID and let either one collect the other's answer. Nothing here
-// enforces that, because every caller today re-issues sequentially from a
-// single goroutine; a caller that wants concurrent attempts of the same
-// logical request needs its own key per attempt-set.
+// The key must not already be in flight elsewhere when this is called. The
+// operator's deduplication assumes one active attempt per logical operation;
+// concurrent requests under one key can observe an in-doubt execution rather
+// than its eventual result. Nothing here enforces serialization, because every
+// caller today re-issues sequentially from a single goroutine.
 func RetryWithKey(ctx context.Context, policy RetryPolicy, key string,
 	call func(context.Context, RPCOptions) error) error {
 

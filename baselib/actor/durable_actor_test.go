@@ -550,10 +550,15 @@ func TestDurableActorDeduplication(t *testing.T) {
 	err := actor.Ref().Tell(ctx, msg1)
 	require.NoError(t, err)
 
-	// Wait for processing.
+	// A handler call precedes the durable completion marker. Redelivery
+	// must wait for that marker rather than racing the in-flight ack.
 	require.Eventually(t, func() bool {
-		return behavior.callCount() == 1
+		store.mu.Lock()
+		defer store.mu.Unlock()
+
+		return len(store.processed) == 1
 	}, 500*time.Millisecond, 10*time.Millisecond)
+	require.Equal(t, 1, behavior.callCount())
 
 	// Get the message ID that was processed.
 	store.mu.Lock()

@@ -444,7 +444,7 @@ func TestDurableCounter_ForwardWritesToOutbox(t *testing.T) {
 	h := newTestHarness(t)
 
 	actorID := uniqueID("counter")
-	counterActor, _ := h.newDurableCounter(actorID)
+	counterActor, behavior := h.newDurableCounter(actorID)
 	counterActor.Start()
 	defer counterActor.Stop()
 
@@ -473,8 +473,9 @@ func TestDurableCounter_ForwardWritesToOutbox(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		return len(batch) > 0
+		return len(batch) == 1
 	})
+	require.Equal(t, int64(1), behavior.ForwardCount())
 	require.Len(t, batch, 1)
 	require.Equal(t, actorID, batch[0].SourceActorID)
 	require.Equal(t, "target-counter", batch[0].TargetActorID)
