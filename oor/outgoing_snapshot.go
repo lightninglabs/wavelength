@@ -1,14 +1,18 @@
 package oor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
 
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 )
+
+const outgoingSnapshotVersion uint8 = 8
 
 // OutgoingPhase identifies the coarse stage of an outgoing client transfer.
 //
@@ -17,6 +21,10 @@ import (
 type OutgoingPhase string
 
 const (
+	// OutgoingPhasePrepared indicates the deterministic package and input
+	// reservations are durable, but no signature has been released.
+	OutgoingPhasePrepared OutgoingPhase = "prepared"
+
 	// OutgoingPhaseArkSignRequested indicates the submit package has been
 	// built and the client must attach Ark signatures before submit can be
 	// sent.
@@ -110,6 +118,52 @@ type OutgoingSnapshot struct {
 	// (which lacks the record) restores to, preserving a fresh retry
 	// window.
 	FirstRejectUnixNanos int64
+
+	// RecipientOutputs preserves semantic policy metadata needed when a
+	// prepared or pre-submit transfer resumes after restart.
+	RecipientOutputs []oortx.RecipientOutput
+}
+
+// OutgoingSnapshotRecipients extracts the canonical Ark recipients from one
+// durable outgoing snapshot. Callers use this to recover response metadata for
+// an idempotent replay without rebuilding the transfer or selecting new wallet
+// inputs.
+func OutgoingSnapshotRecipients(raw []byte) ([]ArkRecipientOutput, error) {
+	snapshot, err := decodeOutgoingSnapshot(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode outgoing snapshot: %w", err)
+	}
+
+	ark, err := psbtutil.Parse(snapshot.ArkPSBT)
+	if err != nil {
+		return nil, fmt.Errorf("parse outgoing Ark PSBT: %w", err)
+	}
+
+	recipients, err := ExtractArkRecipients(ark)
+	if err != nil {
+		return nil, fmt.Errorf("extract outgoing recipients: %w", err)
+	}
+
+	for i := range recipients {
+		for j := range snapshot.RecipientOutputs {
+			output := snapshot.RecipientOutputs[j]
+			if output.Value != recipients[i].Value ||
+				!bytes.Equal(
+					output.PkScript, recipients[i].PkScript,
+				) {
+
+				continue
+			}
+
+			recipients[i].VTXOPolicyTemplate = append(
+				[]byte(nil), output.VTXOPolicyTemplate...,
+			)
+
+			break
+		}
+	}
+
+	return recipients, nil
 }
 
 // NewOutgoingSnapshot exports an outgoing transfer FSM state into a snapshot.
@@ -125,17 +179,30 @@ func NewOutgoingSnapshot(sessionID SessionID,
 	}
 
 	snap := &OutgoingSnapshot{
-		// Version 5 adds the FirstRejectUnixNanos record (bounded
-		// transient submit-reject retry window). Restore stays
-		// backward-compatible: a pre-v5 snapshot lacks the record and
-		// decodes FirstRejectUnixNanos to 0 (a fresh window). Version 6
-		// adds the FailedPrePONR record, which a pre-v6 snapshot lacks
-		// and decodes to false (not proven pre-PONR).
-		Version:   6,
+		// Version 8 keeps upstream's failure marker at record 27 and
+		// moves prepared recipients to record 31. Version 7 used record
+		// 27 for recipients and record 29 for the failure marker.
+		Version:   outgoingSnapshotVersion,
 		SessionID: sessionID,
 	}
 
 	switch s := state.(type) {
+	case *Prepared:
+		snap.Phase = OutgoingPhasePrepared
+		snap.IdempotencyKey = s.IdempotencyKey
+		snap.RecipientOutputs = cloneRecipientOutputs(
+			s.RecipientOutputs,
+		)
+		snap.DispatchRequestData = append(
+			[]byte(nil), s.DispatchRequestData...,
+		)
+
+		if err := assignPSBTArtifacts(
+			snap, s.ArkPSBT, s.CheckpointPSBTs, s.TransferInputs,
+		); err != nil {
+			return nil, err
+		}
+
 	case *AwaitingArkSignatures:
 		// Snapshot deterministic submit artifacts before submit.
 		// This lets resume re-drive Ark signing without rebuilding.
@@ -143,6 +210,9 @@ func NewOutgoingSnapshot(sessionID SessionID,
 		snap.IdempotencyKey = s.IdempotencyKey
 		snap.DispatchRequestData = append(
 			[]byte(nil), s.DispatchRequestData...,
+		)
+		snap.RecipientOutputs = cloneRecipientOutputs(
+			s.RecipientOutputs,
 		)
 
 		ark, err := psbtutil.Serialize(s.ArkPSBT)
@@ -179,6 +249,9 @@ func NewOutgoingSnapshot(sessionID SessionID,
 		snap.RetryAfter = s.RetryAfter
 		snap.FailReason = s.RetryReason
 		snap.FirstRejectUnixNanos = s.FirstRejectUnixNanos
+		snap.RecipientOutputs = cloneRecipientOutputs(
+			s.RecipientOutputs,
+		)
 
 		if err := assignPSBTArtifacts(
 			snap, s.ArkPSBT, s.CheckpointPSBTs, s.TransferInputs,
@@ -295,8 +368,42 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 	if snapshot.Version == 0 {
 		return nil, fmt.Errorf("snapshot version must be provided")
 	}
+	if snapshot.Version > outgoingSnapshotVersion {
+		return nil, fmt.Errorf("unknown outgoing snapshot version %d",
+			snapshot.Version)
+	}
 
 	switch snapshot.Phase {
+	case OutgoingPhasePrepared:
+		ark, cps, err := parseOutgoingPSBTs(
+			snapshot.ArkPSBT, snapshot.CheckpointPSBTs,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if err := requireSessionIDMatchesArk(
+			snapshot.SessionID, ark,
+		); err != nil {
+			return nil, err
+		}
+		inputs, err := restoreTransferInputs(snapshot)
+		if err != nil {
+			return nil, err
+		}
+
+		return &Prepared{
+			ArkPSBT:         ark,
+			CheckpointPSBTs: cps,
+			TransferInputs:  inputs,
+			RecipientOutputs: cloneRecipientOutputs(
+				snapshot.RecipientOutputs,
+			),
+			IdempotencyKey: snapshot.IdempotencyKey,
+			DispatchRequestData: append(
+				[]byte(nil), snapshot.DispatchRequestData...,
+			),
+		}, nil
+
 	case OutgoingPhaseArkSignRequested:
 		ark, cps, err := parseOutgoingPSBTs(
 			snapshot.ArkPSBT, snapshot.CheckpointPSBTs,
@@ -322,6 +429,9 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			IdempotencyKey:  snapshot.IdempotencyKey,
 			DispatchRequestData: append(
 				[]byte(nil), snapshot.DispatchRequestData...,
+			),
+			RecipientOutputs: cloneRecipientOutputs(
+				snapshot.RecipientOutputs,
 			),
 		}, nil
 
@@ -351,8 +461,11 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			DispatchRequestData: append(
 				[]byte(nil), snapshot.DispatchRequestData...,
 			),
-			RetryAfter:           snapshot.RetryAfter,
-			RetryReason:          snapshot.FailReason,
+			RetryAfter:  snapshot.RetryAfter,
+			RetryReason: snapshot.FailReason,
+			RecipientOutputs: cloneRecipientOutputs(
+				snapshot.RecipientOutputs,
+			),
 			FirstRejectUnixNanos: snapshot.FirstRejectUnixNanos,
 		}, nil
 
@@ -436,6 +549,28 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		return nil, fmt.Errorf("unknown outgoing phase: %s",
 			snapshot.Phase)
 	}
+}
+
+// cloneRecipientOutputs returns an isolated copy of OOR recipient metadata.
+func cloneRecipientOutputs(
+	outputs []oortx.RecipientOutput) []oortx.RecipientOutput {
+
+	if len(outputs) == 0 {
+		return nil
+	}
+
+	cloned := make([]oortx.RecipientOutput, len(outputs))
+	for i := range outputs {
+		cloned[i] = oortx.RecipientOutput{
+			PkScript: append([]byte(nil), outputs[i].PkScript...),
+			Value:    outputs[i].Value,
+			VTXOPolicyTemplate: append(
+				[]byte(nil), outputs[i].VTXOPolicyTemplate...,
+			),
+		}
+	}
+
+	return cloned
 }
 
 // snapshotTransferInputs converts transfer inputs into portable snapshots.

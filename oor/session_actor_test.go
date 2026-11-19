@@ -105,6 +105,26 @@ func (s *fakeRegistryStore) GetSession(_ context.Context,
 	return &record, nil
 }
 
+func (s *fakeRegistryStore) GetUnfailedSessionByIdempotencyKey(
+	_ context.Context, key string) (*clientdb.OORSessionRegistryRecord,
+	error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, record := range s.rows {
+		if record.IdempotencyKey == key &&
+			record.Status != clientdb.OORSessionStatusFailed {
+
+			recordCopy := record
+
+			return &recordCopy, nil
+		}
+	}
+
+	return nil, clientdb.ErrOORSessionNotFound
+}
+
 func (s *fakeRegistryStore) GetDispatchAttemptByIdempotencyKey(
 	_ context.Context, key string) (*clientdb.OORDispatchAttemptRecord,
 	error) {
