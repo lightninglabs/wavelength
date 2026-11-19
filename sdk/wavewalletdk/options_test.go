@@ -3,11 +3,55 @@
 package wavewalletdk
 
 import (
+	"context"
+	"io"
 	"testing"
+	"time"
 
 	"github.com/lightninglabs/wavelength/waved"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 )
+
+// TestEmbeddedArkChannelRegistrarLifecycle boots the real swap and wallet
+// registrars on the same directory across opt-out, opt-in and restart.
+func TestEmbeddedArkChannelRegistrarLifecycle(t *testing.T) {
+	base := waved.DefaultConfig()
+	base.LogWriter = io.Discard
+	registered := make(chan *waved.Config, 1)
+	base.RPCServiceRegistrars = []waved.RPCServiceRegistrar{
+		func(_ context.Context, _ *grpc.Server, _ *waved.RPCServer,
+			cfg *waved.Config) (func(), error) {
+
+			registered <- cfg
+
+			return nil, nil
+		},
+	}
+	cfg := Config{
+		DaemonConfig:        base,
+		DataDir:             t.TempDir(),
+		Network:             "regtest",
+		ServerTransport:     TransportREST,
+		SwapServerTransport: TransportREST,
+		WalletEsploraURL:    "http://127.0.0.1",
+	}
+	for _, enabled := range []bool{false, true, true} {
+		cfg.ArkChannelsEnabled = enabled
+		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+		client, err := Start(ctx, cfg)
+		cancel()
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = client.Stop() })
+		running := <-registered
+		require.NotNil(t, running.Swap.Backend)
+		require.Equal(t, enabled, running.Swap.ArkChannelMailbox != nil)
+		require.Equal(t, enabled, running.Swap.ArkChannelReceiveEnabled)
+		require.NoError(t, client.Stop())
+		require.Nil(t, running.Swap.ArkChannelMailbox)
+		require.Nil(t, base.Swap.ArkChannelMailbox)
+	}
+}
 
 // TestResolveDaemonConfigEagerRoundJoin is a table-driven test that pins the
 // wavewalletdk-side override contract for waved.Config.EagerRoundJoin under the

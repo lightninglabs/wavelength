@@ -21,6 +21,7 @@ type testSwapServiceClient struct {
 	swaprpc.SwapServiceClient
 
 	authorizeErr     error
+	authorizeReply   *swaprpc.AuthorizeInSwapRefundResponse
 	ackErr           error
 	signForfeitResp  *swaprpc.SignInSwapForfeitResponse
 	signForfeitErr   error
@@ -35,7 +36,7 @@ func (c *testSwapServiceClient) AuthorizeInSwapRefund(context.Context,
 	*swaprpc.AuthorizeInSwapRefundRequest, ...grpc.CallOption) (
 	*swaprpc.AuthorizeInSwapRefundResponse, error) {
 
-	return nil, c.authorizeErr
+	return c.authorizeReply, c.authorizeErr
 }
 
 func (c *testSwapServiceClient) AcknowledgeOutSwapHtlc(_ context.Context,
@@ -287,6 +288,36 @@ func TestAuthorizeInSwapRefundPreservesStatusCode(t *testing.T) {
 	)
 	require.Error(t, err)
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+}
+
+// TestRefundPackageSeparatesSignatures pins the wire distinction between the
+// receiver's checkpoint signature and its optional final-payout signature.
+func TestRefundPackageSeparatesSignatures(t *testing.T) {
+	t.Parallel()
+	reply := &swaprpc.AuthorizeInSwapRefundResponse{
+		Signature: &swaprpc.TaprootScriptSignature{
+			Signature: []byte{
+				1,
+			},
+		},
+	}
+	conn := GRPCSwapServerConn{client: &testSwapServiceClient{
+		authorizeReply: reply,
+	}}
+	req := &swaprpc.AuthorizeInSwapRefundRequest{ArkPsbt: []byte{3}}
+	legacy, err := conn.AuthorizeInSwapRefundPackage(t.Context(), req)
+	require.NoError(t, err)
+	require.Nil(t, legacy.PayoutSignature)
+	reply.PayoutSignature = &swaprpc.TaprootScriptSignature{
+		Signature: []byte{
+			2,
+		},
+	}
+	both, err := conn.AuthorizeInSwapRefundPackage(t.Context(), req)
+	require.NoError(t, err)
+	require.Equal(t, []byte{1}, both.Signature.Signature)
+	require.NotNil(t, both.PayoutSignature)
+	require.Equal(t, []byte{2}, both.PayoutSignature.Signature)
 }
 
 // TestAcknowledgeOutSwapHTLCPreservesStatusCode verifies the receive session

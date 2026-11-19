@@ -227,6 +227,17 @@ func Deposit(reqJSON []byte) ([]byte, error) {
 // wavewalletdk.ReceiveResult. When the deadline expires, the outcome may be
 // uncertain, so the host must reconcile Activity before retrying deliberately.
 func Receive(reqJSON []byte) ([]byte, error) {
+	return receive(reqJSON, false)
+}
+
+// ReceiveOnActiveChannel creates an invoice only on existing inbound channel
+// liquidity. Request, timeout and result use the same contract as Receive.
+func ReceiveOnActiveChannel(reqJSON []byte) ([]byte, error) {
+	return receive(reqJSON, true)
+}
+
+// receive shares deadline and uncertainty handling across both receive verbs.
+func receive(reqJSON []byte, activeChannelOnly bool) ([]byte, error) {
 	client, parentCtx, err := activeClient()
 	if err != nil {
 		return nil, err
@@ -240,7 +251,11 @@ func Receive(reqJSON []byte) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 
-	res, err := client.Receive(ctx, req)
+	recv := client.Receive
+	if activeChannelOnly {
+		recv = client.ReceiveOnActiveChannel
+	}
+	res, err := recv(ctx, req)
 	if err != nil {
 		return nil, receiveError(ctx, err)
 	}

@@ -1240,6 +1240,18 @@ func (c *WalletServiceClient) LookupRecv(ctx context.Context,
 	return out, err
 }
 
+// RecvOnActiveChannel requires the dedicated endpoint; an older daemon
+// must reject this call rather than minting an ordinary receive invoice.
+func (c *WalletServiceClient) RecvOnActiveChannel(ctx context.Context,
+	in *wavewalletrpc.RecvRequest, _ ...grpc.CallOption) (
+	*wavewalletrpc.RecvResponse, error) {
+
+	out := new(wavewalletrpc.RecvResponse)
+	err := c.client.Post(ctx, "/v1/wallet/recv-on-active-channel", in, out)
+
+	return out, err
+}
+
 // List returns a wallet list view.
 func (c *WalletServiceClient) List(ctx context.Context,
 	in *wavewalletrpc.ListRequest, _ ...grpc.CallOption) (

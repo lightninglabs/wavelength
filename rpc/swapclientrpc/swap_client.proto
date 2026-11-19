@@ -57,6 +57,7 @@ enum SwapSettlementType {
     SWAP_SETTLEMENT_TYPE_IN_ARK = 2;
     SWAP_SETTLEMENT_TYPE_CREDIT = 3;
     SWAP_SETTLEMENT_TYPE_MIXED = 4;
+    SWAP_SETTLEMENT_TYPE_ARK_CHANNEL = 5;
 }
 
 enum CreditFundingSource {
@@ -273,6 +274,9 @@ message StartReceiveRequest {
     // memo is an optional human-readable label to embed as the BOLT-11
     // invoice description.
     string memo = 3;
+
+    // Only issue an invoice bound to an existing active channel.
+    bool active_channel_only = 4;
 }
 
 message StartReceiveResponse {
@@ -451,4 +455,12 @@ message SwapSummary {
     // memo is the invoice memo a receive was created with. It is empty for
     // pays and for receives stored before memos were recorded.
     string memo = 27;
+    // Virtual short channel ID advertised in the receive invoice.
+    uint64 reserved_scid = 28;
+
+    reserved 29;
+    reserved "channel_backing_fee_sat";
+
+    // Active channel selected for this receive; empty for vHTLC swaps.
+    bytes channel_id = 30;
 }

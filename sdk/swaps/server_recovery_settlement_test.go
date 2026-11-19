@@ -25,10 +25,10 @@ type restoredRefundServer struct {
 	bounded       bool
 }
 
-// AuthorizeInSwapRefund simulates a safely failed payment or unavailable peer.
-func (s *restoredRefundServer) AuthorizeInSwapRefund(ctx context.Context,
-	_ lntypes.Hash, _ string, _ int64, _ []byte, _ []byte, _ []byte) (
-	*InSwapRefundAuthorization, error) {
+// AuthorizeInSwapRefundPackage simulates a failed payment or unavailable peer.
+func (s *restoredRefundServer) AuthorizeInSwapRefundPackage(ctx context.Context,
+	_ *swaprpc.AuthorizeInSwapRefundRequest) (*InSwapRefundAuthorization,
+	error) {
 
 	s.calls++
 	deadline, ok := ctx.Deadline()
@@ -64,6 +64,40 @@ func TestRestoredRefundBoundsCooperation(t *testing.T) {
 	require.NoError(t, session.completeRefund(t.Context()))
 	require.True(t, remote.bounded)
 	require.Equal(t, 1, daemon.sendCustomCalls)
+}
+
+// TestCheckpointOnlyReplyKeepsTimeoutRefund rejects a legacy peer's partial
+// authorization without creating an OOR or blocking the mature timeout path.
+func TestCheckpointOnlyReplyKeepsTimeoutRefund(t *testing.T) {
+	t.Parallel()
+	client, daemon, server, row := newRefundRecoveryFixture(t)
+	client.server = &restoredRefundServer{
+		testSwapServerConn: server,
+		authorization: &InSwapRefundAuthorization{
+			Signature: TaprootScriptSignature{
+				Signature: []byte("only-the-checkpoint"),
+			},
+		},
+	}
+	client.waitPollInterval = time.Millisecond
+	daemon.blockHeight = row.GetRefundLocktime() - 1
+	daemon.sendSessionID = "timeout-refund"
+	_, err := client.RecoverSwapserverVHTLCs(t.Context())
+	require.NoError(t, err)
+	hash, err := lntypes.MakeHash(row.GetPaymentHash())
+	require.NoError(t, err)
+	session, err := client.ResumePayViaLightning(t.Context(), hash)
+	require.NoError(t, err)
+	accepted, err := session.tryCooperativeRefund(t.Context())
+	require.NoError(t, err)
+	require.False(t, accepted)
+	require.Zero(t, daemon.sendCustomCalls)
+	require.Empty(t, session.refundSessionID)
+
+	daemon.blockHeight = row.GetRefundLocktime()
+	require.NoError(t, session.completeRefund(t.Context()))
+	require.Equal(t, 1, daemon.sendCustomCalls)
+	require.Empty(t, daemon.lastClaimInput[0].ExternalSignatures)
 }
 
 // TestRestoredLateReceiveStaysPending prevents both cooperative disclosure and
@@ -193,8 +227,11 @@ func TestRestoredRefundSessionSettles(t *testing.T) {
 			if cooperative {
 				daemon.blockHeight = 50
 				daemon.spendOnCustom = true
+				payout := signature
+				payout.Signature = []byte("payout-sig")
 				authorization := &InSwapRefundAuthorization{
-					Signature: signature,
+					Signature:       signature,
+					PayoutSignature: &payout,
 				}
 				refundServer.authorization = authorization
 			} else {

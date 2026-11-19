@@ -49,6 +49,13 @@ func newReceiver(deps *Deps, runtime *Runtime) *receiver {
 func (r *receiver) Recv(ctx context.Context, req *wavewalletrpc.RecvRequest) (
 	*wavewalletrpc.RecvResponse, error) {
 
+	return r.receive(ctx, req, false)
+}
+
+// receive applies wallet amount validation before selecting the requested rail.
+func (r *receiver) receive(ctx context.Context, req *wavewalletrpc.RecvRequest,
+	activeChannelOnly bool) (*wavewalletrpc.RecvResponse, error) {
+
 	if r == nil || r.deps == nil || r.deps.SwapService == nil {
 		return nil, ErrSwapBackendUnavailable
 	}
@@ -62,6 +69,20 @@ func (r *receiver) Recv(ctx context.Context, req *wavewalletrpc.RecvRequest) (
 	if amt > (1<<63)-1 {
 		return nil, fmt.Errorf("%w: amt_sat exceeds int64 range",
 			ErrAmountInvalid)
+	}
+
+	// A channel receive credits existing liquidity, not a new wallet VTXO.
+	// The channel backend enforces inbound capacity; never fall back to
+	// credit, even when the invoice is below the operator's VTXO floor.
+	if activeChannelOnly {
+		if req.GetRequestId() != "" {
+			return nil, status.Error(
+				codes.Unimplemented,
+				"keyed active-channel receives are unsupported",
+			)
+		}
+
+		return r.startReceive(ctx, req, true)
 	}
 
 	// A keyed receive first reads what the key already owns. Routing
@@ -147,11 +168,20 @@ func (r *receiver) Recv(ctx context.Context, req *wavewalletrpc.RecvRequest) (
 		}
 	}
 
+	return r.startReceive(ctx, req, false)
+}
+
+// startReceive projects the invoice returned by the requested backend.
+func (r *receiver) startReceive(ctx context.Context,
+	req *wavewalletrpc.RecvRequest, activeChannelOnly bool) (
+	*wavewalletrpc.RecvResponse, error) {
+
 	startResp, err := r.deps.SwapService.StartReceive(
 		ctx, &swapclientrpc.StartReceiveRequest{
-			AmountSat:      int64(amt),
-			Memo:           req.GetMemo(),
-			IdempotencyKey: requestID,
+			AmountSat:         int64(req.GetAmtSat()),
+			Memo:              req.GetMemo(),
+			ActiveChannelOnly: activeChannelOnly,
+			IdempotencyKey:    req.GetRequestId(),
 		},
 	)
 	if err != nil {

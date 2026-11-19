@@ -100,6 +100,14 @@ type Config struct {
 	// transport. Empty selects the daemon network+transport default.
 	SwapServerAddress string
 
+	// ArkChannelsEnabled starts the native channel peer and permits
+	// explicit channel receives. Ordinary Lightning receives still use
+	// vHTLCs. Requires lwwallet, continuous ingress, and REST transports on
+	// WASM. Keep enabled with the same DataDir while channels are
+	// outstanding so a restarted wallet can resume its channel state and
+	// peer mailbox.
+	ArkChannelsEnabled bool
+
 	// SwapNotificationIssuer pins the configured swap source's compressed
 	// public identity. Empty leaves swap notifications unsupported.
 	SwapNotificationIssuer string

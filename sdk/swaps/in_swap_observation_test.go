@@ -26,7 +26,7 @@ func TestPayWaitKeepsPollingInconclusiveFunding(t *testing.T) {
 			return nil, errors.New("pending funding observation")
 		},
 	}
-	client := NewSwapClient(nil, daemon, nil, nil)
+	client := NewSwapClient(&testInSwapServerConn{}, daemon, nil, nil)
 	client.waitPollInterval = time.Millisecond
 	session := &paySession{
 		client: client,

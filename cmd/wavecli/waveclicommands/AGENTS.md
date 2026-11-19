@@ -87,6 +87,7 @@ Every command prints the raw protobuf JSON response.
 | `channel create <amount-sat>` | `PromoteVTXO` | Promote wallet value into a channel; the daemon derives the protocol terms from capacity |
 | `channel get <channel-id>` | `GetChannel` | Show one durable channel snapshot and live balances when available |
 | `channel list` | `ListChannels` | List channels that still need recovery, observation, or operator action |
+| `channel receive <amount-sat>` | `StartReceive` | Issue an invoice on an existing active channel; requires `--swap.arkchannelreceiveenabled` |
 | `channel pay <bolt11>` | `PayLightningInvoice` | Hold the private channel leg while the hub pays a public Lightning invoice; `--max-fee-sat` defaults to 1,000 |
 | `channel close <channel-id>` | `RequestCooperativeClose` | Start or resume the client-owned cooperative close |
 | `channel force-close <channel-id>` | `MaterializeAndForceClose` | Publish the Ark ancestry, signed backing, and latest commitment |
