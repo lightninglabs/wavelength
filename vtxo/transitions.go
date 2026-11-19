@@ -1572,6 +1572,13 @@ func (s *UnilateralExitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	_ *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	switch evt := event.(type) {
+	case *ForfeitRequestEvent:
+		// Critical expiry can take this input into exit after its
+		// round joined. Refuse explicitly so the round can stop waiting
+		// for a signature this actor cannot send.
+		return nil, fmt.Errorf("%w: outpoint %s", ErrExitInFlight,
+			s.VTXO.Outpoint)
+
 	case *ForfeitConfirmedEvent:
 		return recoveredForfeitConfirmation(ctx, s.VTXO, evt)
 

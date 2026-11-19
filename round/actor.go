@@ -2095,6 +2095,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	case *ForfeitSignatureResponse:
 		return a.handleForfeitSignatureResponse(ctx, m)
 
+	case *ForfeitSignatureRejected:
+		return a.handleForfeitSignatureRejected(ctx, m)
+
 	case *actormsg.TriggerBoardMsg:
 		return a.handleTriggerBoard(ctx, m)
 

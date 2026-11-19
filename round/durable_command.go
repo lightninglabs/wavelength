@@ -19,20 +19,21 @@ const durableClientCommandType tlv.Type = 0x5301
 
 // Command kinds are persisted identifiers and must not be renumbered.
 const (
-	clientCommandIntent       uint64 = 1
-	clientCommandBoarding     uint64 = 2
-	clientCommandVTXOs        uint64 = 3
-	clientCommandTimeout      uint64 = 4
-	clientCommandConfirmation uint64 = 5
-	clientCommandCancel       uint64 = 6
-	clientCommandForfeit      uint64 = 7
-	clientCommandGetState     uint64 = 8
-	clientCommandOutputs      uint64 = 9
-	clientCommandRefresh      uint64 = 10
-	clientCommandCohort       uint64 = 11
-	clientCommandTrigger      uint64 = 12
-	clientCommandBoardReply   uint64 = 13
-	clientCommandRegistration uint64 = 14
+	clientCommandIntent        uint64 = 1
+	clientCommandBoarding      uint64 = 2
+	clientCommandVTXOs         uint64 = 3
+	clientCommandTimeout       uint64 = 4
+	clientCommandConfirmation  uint64 = 5
+	clientCommandCancel        uint64 = 6
+	clientCommandForfeit       uint64 = 7
+	clientCommandGetState      uint64 = 8
+	clientCommandOutputs       uint64 = 9
+	clientCommandRefresh       uint64 = 10
+	clientCommandCohort        uint64 = 11
+	clientCommandTrigger       uint64 = 12
+	clientCommandBoardReply    uint64 = 13
+	clientCommandRegistration  uint64 = 14
+	clientCommandForfeitReject uint64 = 15
 )
 
 // durableClientCommand owns the data required to redeliver one local command.
@@ -79,7 +80,7 @@ func (m *durableClientCommand) stream() (*tlv.Stream, error) {
 
 // validate rejects unsupported command tags and unknown presence flags.
 func (m *durableClientCommand) validate() error {
-	if m.Kind < clientCommandIntent || m.Kind > clientCommandRegistration {
+	if m.Kind < clientCommandIntent || m.Kind > clientCommandForfeitReject {
 		return fmt.Errorf("unknown durable client command: %d", m.Kind)
 	}
 	if m.Flags > 1 {
@@ -192,6 +193,10 @@ func newDurableClientCommand(msg actormsg.RoundReceivable) (
 		m.Kind = clientCommandForfeit
 		m.Payload, err = encodeDurableForfeitResponse(req)
 
+	case *ForfeitSignatureRejected:
+		m.Kind = clientCommandForfeitReject
+		m.Payload, err = encodeDurableForfeitRejection(req)
+
 	case *CancelRoundRequest:
 		m.Kind = clientCommandCancel
 		if req.RoundKey.IsSome() {
@@ -293,6 +298,9 @@ func (m *durableClientCommand) message(params *chaincfg.Params) (
 		}
 
 		return response, nil
+
+	case clientCommandForfeitReject:
+		return decodeDurableForfeitRejection(m.Payload)
 
 	case clientCommandCancel:
 		request := &CancelRoundRequest{}
