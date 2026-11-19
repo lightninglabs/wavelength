@@ -107,12 +107,27 @@ func (s *Server) startMetricsServer(ctx context.Context) error {
 
 	s.metricsSrv = metrics.NewServer(s.cfg.Metrics, log, reg)
 
-	return s.metricsSrv.Start(ctx)
+	if err := s.metricsSrv.Start(ctx); err != nil {
+		return err
+	}
+
+	// Publish the bound address, not the configured port-zero placeholder.
+	// Readers must not race the metrics server's private listener
+	// lifecycle.
+	s.rpcAddrMu.Lock()
+	s.metricsAddr = s.metricsSrv.Addr()
+	s.rpcAddrMu.Unlock()
+
+	return nil
 }
 
 // stopMetricsServer gracefully shuts down the metrics HTTP server. It is
 // a no-op when the server was never started.
 func (s *Server) stopMetricsServer(ctx context.Context) error {
+	s.rpcAddrMu.Lock()
+	s.metricsAddr = nil
+	s.rpcAddrMu.Unlock()
+
 	if s.metricsSrv == nil {
 		return nil
 	}

@@ -1,13 +1,116 @@
 package waved
 
 import (
+	"context"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/metrics"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
 )
+
+// TestMetricsAddrLifecycle verifies that callers can observe an ephemeral
+// listener safely during startup and shutdown without a stale bound address.
+func TestMetricsAddrLifecycle(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []string{"enabled", "disabled", "listen failure"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := DefaultConfig()
+			cfg.Metrics.ListenAddr = "127.0.0.1:0"
+			switch mode {
+			case "disabled":
+				cfg.Metrics.ListenAddr = ""
+
+			case "listen failure":
+				listener, err := net.Listen(
+					"tcp", "127.0.0.1:0",
+				)
+				require.NoError(t, err)
+				t.Cleanup(func() {
+					require.NoError(t, listener.Close())
+				})
+				cfg.Metrics.ListenAddr = listener.
+					Addr().
+					String()
+			}
+
+			server := &Server{
+				cfg:         cfg,
+				actorSystem: actor.NewActorSystem(),
+			}
+			t.Cleanup(func() {
+				// Cleanup owns shutdown after the test context
+				// ends.
+				ctx, cancel := context.WithTimeout(
+					context.Background(), 5*time.Second,
+				)
+				defer cancel()
+				require.NoError(
+					t, server.stopMetricsServer(ctx),
+				)
+				require.NoError(
+					t, server.actorSystem.Shutdown(ctx),
+				)
+			})
+			require.Nil(t, server.MetricsAddr())
+
+			// Only the run loop mutates listener state. External
+			// address readers must remain safe while that loop
+			// starts and stops.
+			stopReader := make(chan struct{})
+			readerDone := make(chan struct{})
+			go func() {
+				defer close(readerDone)
+				for {
+					select {
+					case <-stopReader:
+						return
+
+					default:
+						_ = server.MetricsAddr()
+					}
+				}
+			}()
+			t.Cleanup(func() {
+				close(stopReader)
+				<-readerDone
+			})
+
+			err := server.startMetricsServer(t.Context())
+			if mode == "listen failure" {
+				require.ErrorContains(t, err, "metrics listen")
+				require.Nil(t, server.MetricsAddr())
+
+				return
+			}
+			require.NoError(t, err)
+			if mode == "disabled" {
+				require.Nil(t, server.MetricsAddr())
+			} else {
+				addr := server.MetricsAddr()
+				require.Equal(t, server.metricsSrv.Addr(), addr)
+				tcpAddr, ok := addr.(*net.TCPAddr)
+				require.True(t, ok)
+				require.NotZero(t, tcpAddr.Port)
+			}
+
+			require.NoError(
+				t,
+				server.stopMetricsServer(
+					t.Context(),
+				),
+			)
+			require.Nil(t, server.MetricsAddr())
+		})
+	}
+}
 
 // TestSystemStatsAdapterVTXOStats covers the scrape-time VTXO inventory rows:
 // they follow the explicit status list order, omit empty statuses, and drop

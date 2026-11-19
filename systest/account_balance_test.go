@@ -21,11 +21,12 @@ import (
 // to reproduce the reporting bug; this test makes no claim about spending it.
 func TestAccountBalanceReporting(t *testing.T) {
 	ParallelN(t)
-	metricsAddr := newLoopbackAddr(t)
 	fixture := newDirectedSendFixture(t, func(cfg *waved.Config) {
-		cfg.Metrics.ListenAddr = metricsAddr
+		cfg.Metrics.ListenAddr = "127.0.0.1:0"
 		cfg.Lnd.Account = ""
 	})
+	metricsAddr := fixture.metricsAddr
+	require.NotEmpty(t, metricsAddr)
 	h := fixture.harness.Harness
 	tenant := h.StartAdditionalLND("balance-tenant")
 	accounts, err := tenant.Client.WalletKit.ListAccounts(

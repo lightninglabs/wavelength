@@ -525,6 +525,7 @@ type Server struct {
 	rpcAddrMu   sync.RWMutex
 	rpcAddr     net.Addr
 	gatewayAddr net.Addr
+	metricsAddr net.Addr
 
 	grpcServer *grpc.Server
 	gateway    *gatewayServer
@@ -842,6 +843,15 @@ func (s *Server) RPCGatewayAddr() net.Addr {
 	defer s.rpcAddrMu.RUnlock()
 
 	return s.gatewayAddr
+}
+
+// MetricsAddr returns the bound metrics listener address, or nil when metrics
+// are disabled, not yet started, or stopped.
+func (s *Server) MetricsAddr() net.Addr {
+	s.rpcAddrMu.RLock()
+	defer s.rpcAddrMu.RUnlock()
+
+	return s.metricsAddr
 }
 
 // loadOperatorTerms returns the latest cached operator terms snapshot, if one
