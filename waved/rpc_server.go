@@ -2490,6 +2490,14 @@ func decodeBoundCustomRefreshSpend(index int, field string, raw,
 func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	req *waverpc.LeaveVTXOsRequest) (*waverpc.LeaveVTXOsResponse, error) {
 
+	return r.leaveVTXOs(ctx, req, nil)
+}
+
+// leaveVTXOs applies the same validation and selection to both admission modes.
+func (r *RPCServer) leaveVTXOs(ctx context.Context,
+	req *waverpc.LeaveVTXOsRequest, admit wallet.LeaveAdmission) (
+	*waverpc.LeaveVTXOsResponse, error) {
+
 	// Pure-argument validation (selection / destinations / dry_run)
 	// runs before the wallet-ready gate so a malformed request
 	// surfaces InvalidArgument regardless of wallet state. This
@@ -2696,6 +2704,7 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	}
 
 	leaveReq := &wallet.LeaveVTXOsRequest{
+		Admit:           admit,
 		TargetOutpoints: targets,
 		DestOutput:      defaultOutput,
 		DestOutputs:     destOutputs,

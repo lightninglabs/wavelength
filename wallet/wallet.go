@@ -2261,72 +2261,69 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 		})
 	}
 
+	resp := &LeaveVTXOsResponse{LeavingCount: len(forfeits), Errors: errors}
+
 	// Reserve the forfeit inputs through the VTXO manager before
 	// sending the intent to the round actor. This ensures the VTXO
 	// actors are in PendingForfeitState before round registration.
-	if len(forfeits) > 0 {
-		reserveOutpoints := make(
-			[]wire.OutPoint, 0, len(forfeits),
+	if len(forfeits) == 0 {
+		return fn.Ok[WalletResp](resp)
+	}
+
+	reserveOutpoints := make(
+		[]wire.OutPoint, 0, len(forfeits),
+	)
+	for _, f := range forfeits {
+		if f.VTXOOutpoint != nil {
+			reserveOutpoints = append(
+				reserveOutpoints, *f.VTXOOutpoint,
+			)
+		}
+	}
+
+	_, err := a.askManager(
+		ctx, &actormsg.ReserveForfeitRequest{
+			Outpoints: reserveOutpoints,
+		},
+	)
+	if err != nil {
+		a.logger(ctx).WarnS(ctx, "Manager rejected leave reservation",
+			err,
 		)
-		for _, f := range forfeits {
-			if f.VTXOOutpoint != nil {
-				reserveOutpoints = append(
-					reserveOutpoints, *f.VTXOOutpoint,
+
+		return fn.Err[WalletResp](
+			fmt.Errorf("reserve leave inputs: %w", err),
+		)
+	}
+
+	intent := &actormsg.RegisterIntentMsg{
+		Forfeits: forfeits, Leaves: leaves,
+		TriggerRegistration: a.eagerRoundJoin,
+	}
+	release := true
+	if req.Admit == nil {
+		ref := actormsg.RoundActorServiceKey().Ref(a.actorSystem)
+		err = ref.Ask(ctx, intent).Await(ctx).Err()
+	} else {
+		release, err = req.Admit(ctx, intent, resp)
+	}
+	if err != nil {
+		a.logger(ctx).WarnS(ctx, "Round rejected leave intent", err)
+		if release {
+			if req.Admit != nil {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(
+					context.WithoutCancel(ctx),
+					10*time.Second,
 				)
+				defer cancel()
 			}
+			a.releaseManagerForfeit(ctx, reserveOutpoints)
 		}
 
-		_, err := a.askManager(
-			ctx, &actormsg.ReserveForfeitRequest{
-				Outpoints: reserveOutpoints,
-			},
+		return fn.Err[WalletResp](
+			fmt.Errorf("round rejected leave intent: %w", err),
 		)
-		if err != nil {
-			a.logger(ctx).WarnS(
-				ctx,
-				"Manager rejected leave reservation",
-				err,
-			)
-
-			return fn.Err[WalletResp](
-				fmt.Errorf("reserve leave inputs: %w", err),
-			)
-		}
-
-		// Send the intent to the round actor. If registration
-		// fails, release the forfeit reservation so VTXOs
-		// return to LiveState.
-		serviceKey := actormsg.RoundActorServiceKey()
-		roundRef := serviceKey.Ref(a.actorSystem)
-
-		// Under eager round-join the leave is treated as an
-		// interactive operation: trigger registration immediately
-		// so the round FSM leaves PendingRoundAssembly without
-		// waiting for an external nudge. The default
-		// (TriggerRegistration=false) preserves the batched-leave
-		// semantics that operator-driven hosts rely on.
-		future := roundRef.Ask(ctx, &actormsg.RegisterIntentMsg{
-			Forfeits:            forfeits,
-			Leaves:              leaves,
-			TriggerRegistration: a.eagerRoundJoin,
-		})
-		result := future.Await(ctx)
-		if result.IsErr() {
-			a.logger(ctx).WarnS(ctx, "Round rejected leave intent",
-				result.Err(),
-			)
-
-			a.releaseManagerForfeit(
-				ctx, reserveOutpoints,
-			)
-
-			return fn.Err[WalletResp](
-				fmt.Errorf(
-					"round rejected leave intent: %w",
-					result.Err(),
-				),
-			)
-		}
 	}
 
 	a.logger(ctx).InfoS(ctx, "Registered leave intent package",
@@ -2334,11 +2331,6 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 		slog.Int("leaves", len(leaves)),
 		slog.Int("errors", len(errors)),
 	)
-
-	resp := &LeaveVTXOsResponse{
-		LeavingCount: len(forfeits),
-		Errors:       errors,
-	}
 
 	return fn.Ok[WalletResp](resp)
 }

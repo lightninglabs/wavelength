@@ -357,3 +357,84 @@ func TestExitBatchInventoryFailureNeverDispatches(t *testing.T) {
 	require.Zero(t, rpc.leaveCalls)
 	require.Empty(t, svc.runtime.pendingSnapshot())
 }
+
+// lostExitReply commits a subset receipt and loses the outer RPC response.
+type lostExitReply struct {
+	*fakeRPCServer
+	receipt []byte
+}
+
+// BeginExitReceipt accepts the fixture’s fresh request ID.
+func (r *lostExitReply) BeginExitReceipt(context.Context, string) error { return nil }
+
+// LeaveWithReceipt captures the real receipt encoding before reporting timeout.
+func (r *lostExitReply) LeaveWithReceipt(_ context.Context,
+	req *waverpc.LeaveVTXOsRequest, _ string,
+	encode func(map[string]string) ([]byte, error)) (
+	*waverpc.LeaveVTXOsResponse, error) {
+
+	r.leaveCalls++
+	var err error
+	r.receipt, err = encode(
+		map[string]string{
+			req.GetOutpoints().Outpoints[1]: "unavailable",
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return nil, context.DeadlineExceeded
+}
+
+// ResolveExitReceipt returns the previously recorded bytes without dispatch.
+func (r *lostExitReply) ResolveExitReceipt(context.Context, string) ([]byte,
+	error) {
+
+	return r.receipt, nil
+}
+
+// TestExitBatchLostReplyRestoresActivity verifies that exact partial admission,
+// allocated destination, and activity identity survive an interrupted submit.
+func TestExitBatchLostReplyRestoresActivity(t *testing.T) {
+	t.Parallel()
+	h, store := newStoreListFixture(t)
+	_, rpc := newBatchExitFixture(t)
+	backend := &lostExitReply{fakeRPCServer: rpc}
+	rpc.newWalletAddressResp = "allocated"
+	h.deps.RPCServer = backend
+	svc := newService(h.deps, h.runtime)
+	id := "00000000-0000-4000-8000-000000000001"
+	_, err := svc.SubmitExitBatch(
+		t.Context(), &wavewalletrpc.SubmitExitBatchRequest{
+			RequestId: id,
+			Selection: &wavewalletrpc.ExitBatchRequest{
+				Outpoints: batchExitTargets(),
+			},
+		},
+	)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	req := &wavewalletrpc.ResolveExitBatchRequest{RequestId: id}
+	reply, err := svc.ResolveExitBatch(t.Context(), req)
+	require.NoError(t, err)
+	admission := reply.GetAdmission()
+	require.Equal(t, "allocated", admission.GetOnchainAddress())
+	require.EqualValues(t, 5000, admission.GetAcceptedAmountSat())
+	require.Equal(
+		t, wavewalletrpc.ExitBatchOutcome_EXIT_BATCH_ACCEPTED,
+		admission.Results[0].Outcome,
+	)
+	require.Equal(
+		t, wavewalletrpc.ExitBatchOutcome_EXIT_BATCH_FAILED,
+		admission.Results[1].Outcome,
+	)
+	row, err := store.GetEntry(t.Context(), admission.ActivityId)
+	require.NoError(t, err)
+	entry, err := rowToWalletEntry(row)
+	require.NoError(t, err)
+	require.EqualValues(t, -5000, entry.AmountSat)
+	repeat, err := svc.ResolveExitBatch(t.Context(), req)
+	require.NoError(t, err)
+	require.Equal(t, admission.ActivityId, repeat.Admission.ActivityId)
+	require.Equal(t, 1, rpc.leaveCalls)
+}

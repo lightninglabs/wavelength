@@ -1,6 +1,8 @@
 package wallet
 
 import (
+	"context"
+
 	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -8,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -708,6 +711,11 @@ func (m *CompleteSpendVTXOsResponse) MessageType() string {
 // walletRespSealed implements the sealed WalletResp interface.
 func (m *CompleteSpendVTXOsResponse) walletRespSealed() {}
 
+// LeaveAdmission registers a composed leave and records the accepted subset.
+// On error, release is true only when admission was ruled out.
+type LeaveAdmission func(context.Context, *actormsg.RegisterIntentMsg,
+	*LeaveVTXOsResponse) (release bool, err error)
+
 // LeaveVTXOsRequest triggers leave (offboard) of specified VTXOs. The
 // VTXOs will be forfeited and their on-chain value lands at the
 // destination script; the server decides the binding per-leave amount
@@ -716,6 +724,9 @@ func (m *CompleteSpendVTXOsResponse) walletRespSealed() {}
 // the residual there.
 type LeaveVTXOsRequest struct {
 	actor.BaseMessage
+
+	// Admit optionally commits a keyed receipt with round registration.
+	Admit LeaveAdmission
 
 	// TargetOutpoints specifies which VTXOs to leave (offboard).
 	TargetOutpoints []wire.OutPoint
