@@ -1347,6 +1347,28 @@ func (c *WalletServiceClient) ExitBatch(ctx context.Context,
 	return out, err
 }
 
+// SubmitExitBatch submits one keyed cooperative exit.
+func (c *WalletServiceClient) SubmitExitBatch(ctx context.Context,
+	in *wavewalletrpc.SubmitExitBatchRequest, _ ...grpc.CallOption) (
+	*wavewalletrpc.ExitBatchResponse, error) {
+
+	out := new(wavewalletrpc.ExitBatchResponse)
+	err := c.client.Post(ctx, "/v1/wallet/exit-batch/submit", in, out)
+
+	return out, err
+}
+
+// ResolveExitBatch recovers or closes one keyed exit.
+func (c *WalletServiceClient) ResolveExitBatch(ctx context.Context,
+	in *wavewalletrpc.ResolveExitBatchRequest, _ ...grpc.CallOption) (
+	*wavewalletrpc.ResolveExitBatchResponse, error) {
+
+	out := new(wavewalletrpc.ResolveExitBatchResponse)
+	err := c.client.Post(ctx, "/v1/wallet/exit-batch/resolve", in, out)
+
+	return out, err
+}
+
 // ExitStatus returns one wallet unilateral exit status.
 func (c *WalletServiceClient) ExitStatus(ctx context.Context,
 	in *wavewalletrpc.ExitStatusRequest, _ ...grpc.CallOption) (

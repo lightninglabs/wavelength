@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightningnetwork/lnd/tlv"
 )
 
 // clientDurableTx carries the runtime's transaction-bound delivery store.
@@ -27,6 +28,32 @@ type durableClientTurn struct {
 func (t *durableClientTurn) stage(ctx context.Context, message actor.TLVMessage,
 	ax actor.Exec[clientDurableTx]) error {
 
+	// Registration can still reject a queued intent. Publish its receipt
+	// only in commit, after the FSM has accepted it. If recovery closed
+	// the ID first, the failed write rolls back the state and all effects.
+	if cmd, ok := message.(*durableClientCommand); ok &&
+		cmd.Kind == clientCommandKeyedExit {
+
+		record := t.owner.cfg.CommitExitReceipt
+		if record == nil {
+			return fmt.Errorf("keyed exit receipt store " +
+				"unavailable")
+		}
+		var id, receipt []byte
+		err := decodeDurableFields(
+			cmd.Key, tlv.MakePrimitiveRecord(1, &id),
+			tlv.MakePrimitiveRecord(3, &receipt),
+		)
+		if err != nil {
+			return err
+		}
+		t.writes.writes = append(
+			t.writes.writes,
+			func(txCtx context.Context) error {
+				return record(txCtx, string(id), receipt)
+			},
+		)
+	}
 	snapshot, err := t.owner.encodeActorSnapshot(ctx)
 	if err != nil {
 		return err

@@ -71,6 +71,18 @@ type ListRoundsQuery struct {
 //
 //nolint:interfacebloat
 type RoundStore interface {
+	// BeginExitBatchRequest reserves a single-use ID before touching coins.
+	BeginExitBatchRequest(context.Context, string) (int64, error)
+
+	// AdmitExitBatchRequest fills the receipt if recovery has not closed
+	// it.
+	AdmitExitBatchRequest(context.Context,
+		sqlc.AdmitExitBatchRequestParams) (int64, error)
+
+	// ResolveExitBatchRequest returns a durable admission or closes the ID.
+	ResolveExitBatchRequest(context.Context,
+		sqlc.ResolveExitBatchRequestParams) ([]byte, error)
+
 	// VTXOMaintenanceCeiling captures a bounded primary-key sweep.
 	VTXOMaintenanceCeiling(context.Context) (
 		sqlc.VTXOMaintenanceCeilingRow,

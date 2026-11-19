@@ -236,6 +236,11 @@ type CreditOperation struct {
 	UpdatedAt         int64
 }
 
+type ExitBatchReceipt struct {
+	RequestID string
+	Receipt   []byte
+}
+
 type ExitFundingAddress struct {
 	TargetOutpointHash  []byte
 	TargetOutpointIndex int32

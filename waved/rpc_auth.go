@@ -206,7 +206,8 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 	)
 	grant(
 		wavewalletdk, entityOnChain, "write", "PrepareSend", "Send",
-		"Deposit", "SweepWallet", "Exit", "ExitBatch", "ExportExit",
+		"Deposit", "SweepWallet", "Exit", "ExitBatch",
+		"SubmitExitBatch", "ResolveExitBatch", "ExportExit",
 		"ExportExits",
 	)
 

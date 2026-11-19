@@ -54,6 +54,12 @@ http:
     - selector: wavewalletrpc.WalletService.ExitBatch
       post: /v1/wallet/exit-batch
       body: "*"
+    - selector: wavewalletrpc.WalletService.SubmitExitBatch
+      post: /v1/wallet/exit-batch/submit
+      body: "*"
+    - selector: wavewalletrpc.WalletService.ResolveExitBatch
+      post: /v1/wallet/exit-batch/resolve
+      body: "*"
     - selector: wavewalletrpc.WalletService.ExitStatus
       post: /v1/wallet/exit-status
       body: "*"

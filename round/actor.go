@@ -452,6 +452,10 @@ type RoundClientActor struct {
 
 // RoundClientConfig houses the configuration for a RoundClientActor.
 type RoundClientConfig struct {
+	// CommitExitReceipt joins the wallet admission record to the same
+	// transaction as the accepted round state and its outgoing effects.
+	CommitExitReceipt func(context.Context, string, []byte) error
+
 	// MaxTreeNodes limits trees decoded from a durable server envelope.
 	MaxTreeNodes int
 

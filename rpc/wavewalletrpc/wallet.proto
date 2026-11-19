@@ -118,6 +118,15 @@ service WalletService {
     // confirmation. Unknown outcomes must be reconciled, never blindly retried.
     rpc ExitBatch (ExitBatchRequest) returns (ExitBatchResponse);
 
+    // SubmitExitBatch queues one cooperative exit under a single-use ID.
+    // An older daemon rejects this method before performing any action.
+    rpc SubmitExitBatch (SubmitExitBatchRequest) returns (ExitBatchResponse);
+
+    // ResolveExitBatch returns the original admission or permanently closes
+    // an unused ID. A late submission under a closed ID cannot move funds.
+    rpc ResolveExitBatch (ResolveExitBatchRequest)
+        returns (ResolveExitBatchResponse);
+
     // ExitStatus reports the current phase of an unroll job for the
     // specified VTXO outpoint, including recovery chain progress and
     // sweep state. Proxies waverpc.GetUnrollStatus.
@@ -1521,6 +1530,23 @@ message ExitBatchRequest {
     string onchain_address = 2;
 }
 
+// SubmitExitBatchRequest binds one reviewed selection to a fresh UUID.
+message SubmitExitBatchRequest {
+    string request_id = 1;
+    ExitBatchRequest selection = 2;
+}
+
+// ResolveExitBatchRequest names the single-use ID to recover or close.
+message ResolveExitBatchRequest {
+    string request_id = 1;
+}
+
+// ResolveExitBatchResponse omits admission only after permanently closing the
+// ID.
+message ResolveExitBatchResponse {
+    ExitBatchResponse admission = 1;
+}
+
 // ExitBatchOutcome describes admission of one input, not its eventual payout.
 enum ExitBatchOutcome {
     // EXIT_BATCH_UNKNOWN means admission could not be established.
@@ -1555,6 +1581,8 @@ message ExitBatchResponse {
     // admitted subset. All accepted inputs belong to this one composed intent.
     // Empty when no input is positively admitted. Unknown inputs are excluded.
     string activity_id = 3;
+    // accepted_amount_sat is the gross value of the admitted subset.
+    int64 accepted_amount_sat = 4;
 }
 
 // ExitStatusRequest identifies the VTXO whose exit job to query via
