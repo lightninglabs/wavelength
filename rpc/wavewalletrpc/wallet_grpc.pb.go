@@ -19,26 +19,28 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WalletService_Create_FullMethodName          = "/wavewalletrpc.WalletService/Create"
-	WalletService_Unlock_FullMethodName          = "/wavewalletrpc.WalletService/Unlock"
-	WalletService_PrepareSend_FullMethodName     = "/wavewalletrpc.WalletService/PrepareSend"
-	WalletService_Send_FullMethodName            = "/wavewalletrpc.WalletService/Send"
-	WalletService_Recv_FullMethodName            = "/wavewalletrpc.WalletService/Recv"
-	WalletService_LookupRecv_FullMethodName      = "/wavewalletrpc.WalletService/LookupRecv"
-	WalletService_List_FullMethodName            = "/wavewalletrpc.WalletService/List"
-	WalletService_Deposit_FullMethodName         = "/wavewalletrpc.WalletService/Deposit"
-	WalletService_Balance_FullMethodName         = "/wavewalletrpc.WalletService/Balance"
-	WalletService_Status_FullMethodName          = "/wavewalletrpc.WalletService/Status"
-	WalletService_Refresh_FullMethodName         = "/wavewalletrpc.WalletService/Refresh"
-	WalletService_GetExitPlan_FullMethodName     = "/wavewalletrpc.WalletService/GetExitPlan"
-	WalletService_ExportExit_FullMethodName      = "/wavewalletrpc.WalletService/ExportExit"
-	WalletService_ExportExits_FullMethodName     = "/wavewalletrpc.WalletService/ExportExits"
-	WalletService_SweepWallet_FullMethodName     = "/wavewalletrpc.WalletService/SweepWallet"
-	WalletService_Exit_FullMethodName            = "/wavewalletrpc.WalletService/Exit"
-	WalletService_ExitBatch_FullMethodName       = "/wavewalletrpc.WalletService/ExitBatch"
-	WalletService_ExitStatus_FullMethodName      = "/wavewalletrpc.WalletService/ExitStatus"
-	WalletService_ExitSummary_FullMethodName     = "/wavewalletrpc.WalletService/ExitSummary"
-	WalletService_SubscribeWallet_FullMethodName = "/wavewalletrpc.WalletService/SubscribeWallet"
+	WalletService_Create_FullMethodName           = "/wavewalletrpc.WalletService/Create"
+	WalletService_Unlock_FullMethodName           = "/wavewalletrpc.WalletService/Unlock"
+	WalletService_PrepareSend_FullMethodName      = "/wavewalletrpc.WalletService/PrepareSend"
+	WalletService_Send_FullMethodName             = "/wavewalletrpc.WalletService/Send"
+	WalletService_Recv_FullMethodName             = "/wavewalletrpc.WalletService/Recv"
+	WalletService_LookupRecv_FullMethodName       = "/wavewalletrpc.WalletService/LookupRecv"
+	WalletService_List_FullMethodName             = "/wavewalletrpc.WalletService/List"
+	WalletService_Deposit_FullMethodName          = "/wavewalletrpc.WalletService/Deposit"
+	WalletService_Balance_FullMethodName          = "/wavewalletrpc.WalletService/Balance"
+	WalletService_Status_FullMethodName           = "/wavewalletrpc.WalletService/Status"
+	WalletService_Refresh_FullMethodName          = "/wavewalletrpc.WalletService/Refresh"
+	WalletService_GetExitPlan_FullMethodName      = "/wavewalletrpc.WalletService/GetExitPlan"
+	WalletService_ExportExit_FullMethodName       = "/wavewalletrpc.WalletService/ExportExit"
+	WalletService_ExportExits_FullMethodName      = "/wavewalletrpc.WalletService/ExportExits"
+	WalletService_SweepWallet_FullMethodName      = "/wavewalletrpc.WalletService/SweepWallet"
+	WalletService_Exit_FullMethodName             = "/wavewalletrpc.WalletService/Exit"
+	WalletService_ExitBatch_FullMethodName        = "/wavewalletrpc.WalletService/ExitBatch"
+	WalletService_SubmitExitBatch_FullMethodName  = "/wavewalletrpc.WalletService/SubmitExitBatch"
+	WalletService_ResolveExitBatch_FullMethodName = "/wavewalletrpc.WalletService/ResolveExitBatch"
+	WalletService_ExitStatus_FullMethodName       = "/wavewalletrpc.WalletService/ExitStatus"
+	WalletService_ExitSummary_FullMethodName      = "/wavewalletrpc.WalletService/ExitSummary"
+	WalletService_SubscribeWallet_FullMethodName  = "/wavewalletrpc.WalletService/SubscribeWallet"
 )
 
 // WalletServiceClient is the client API for WalletService service.
@@ -142,6 +144,12 @@ type WalletServiceClient interface {
 	// It never starts unilateral exit. Results describe local admission, not
 	// confirmation. Unknown outcomes must be reconciled, never blindly retried.
 	ExitBatch(ctx context.Context, in *ExitBatchRequest, opts ...grpc.CallOption) (*ExitBatchResponse, error)
+	// SubmitExitBatch queues one cooperative exit under a single-use ID.
+	// An older daemon rejects this method before performing any action.
+	SubmitExitBatch(ctx context.Context, in *SubmitExitBatchRequest, opts ...grpc.CallOption) (*ExitBatchResponse, error)
+	// ResolveExitBatch returns the original admission or permanently closes
+	// an unused ID. A late submission under a closed ID cannot move funds.
+	ResolveExitBatch(ctx context.Context, in *ResolveExitBatchRequest, opts ...grpc.CallOption) (*ResolveExitBatchResponse, error)
 	// ExitStatus reports the current phase of an unroll job for the
 	// specified VTXO outpoint, including recovery chain progress and
 	// sweep state. Proxies waverpc.GetUnrollStatus.
@@ -334,6 +342,26 @@ func (c *walletServiceClient) ExitBatch(ctx context.Context, in *ExitBatchReques
 	return out, nil
 }
 
+func (c *walletServiceClient) SubmitExitBatch(ctx context.Context, in *SubmitExitBatchRequest, opts ...grpc.CallOption) (*ExitBatchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExitBatchResponse)
+	err := c.cc.Invoke(ctx, WalletService_SubmitExitBatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletServiceClient) ResolveExitBatch(ctx context.Context, in *ResolveExitBatchRequest, opts ...grpc.CallOption) (*ResolveExitBatchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResolveExitBatchResponse)
+	err := c.cc.Invoke(ctx, WalletService_ResolveExitBatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *walletServiceClient) ExitStatus(ctx context.Context, in *ExitStatusRequest, opts ...grpc.CallOption) (*ExitStatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ExitStatusResponse)
@@ -474,6 +502,12 @@ type WalletServiceServer interface {
 	// It never starts unilateral exit. Results describe local admission, not
 	// confirmation. Unknown outcomes must be reconciled, never blindly retried.
 	ExitBatch(context.Context, *ExitBatchRequest) (*ExitBatchResponse, error)
+	// SubmitExitBatch queues one cooperative exit under a single-use ID.
+	// An older daemon rejects this method before performing any action.
+	SubmitExitBatch(context.Context, *SubmitExitBatchRequest) (*ExitBatchResponse, error)
+	// ResolveExitBatch returns the original admission or permanently closes
+	// an unused ID. A late submission under a closed ID cannot move funds.
+	ResolveExitBatch(context.Context, *ResolveExitBatchRequest) (*ResolveExitBatchResponse, error)
 	// ExitStatus reports the current phase of an unroll job for the
 	// specified VTXO outpoint, including recovery chain progress and
 	// sweep state. Proxies waverpc.GetUnrollStatus.
@@ -546,6 +580,12 @@ func (UnimplementedWalletServiceServer) Exit(context.Context, *ExitRequest) (*Ex
 }
 func (UnimplementedWalletServiceServer) ExitBatch(context.Context, *ExitBatchRequest) (*ExitBatchResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ExitBatch not implemented")
+}
+func (UnimplementedWalletServiceServer) SubmitExitBatch(context.Context, *SubmitExitBatchRequest) (*ExitBatchResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SubmitExitBatch not implemented")
+}
+func (UnimplementedWalletServiceServer) ResolveExitBatch(context.Context, *ResolveExitBatchRequest) (*ResolveExitBatchResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ResolveExitBatch not implemented")
 }
 func (UnimplementedWalletServiceServer) ExitStatus(context.Context, *ExitStatusRequest) (*ExitStatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ExitStatus not implemented")
@@ -883,6 +923,42 @@ func _WalletService_ExitBatch_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WalletService_SubmitExitBatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubmitExitBatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).SubmitExitBatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_SubmitExitBatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).SubmitExitBatch(ctx, req.(*SubmitExitBatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletService_ResolveExitBatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveExitBatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).ResolveExitBatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_ResolveExitBatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).ResolveExitBatch(ctx, req.(*ResolveExitBatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WalletService_ExitStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ExitStatusRequest)
 	if err := dec(in); err != nil {
@@ -1004,6 +1080,14 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ExitBatch",
 			Handler:    _WalletService_ExitBatch_Handler,
+		},
+		{
+			MethodName: "SubmitExitBatch",
+			Handler:    _WalletService_SubmitExitBatch_Handler,
+		},
+		{
+			MethodName: "ResolveExitBatch",
+			Handler:    _WalletService_ResolveExitBatch_Handler,
 		},
 		{
 			MethodName: "ExitStatus",
