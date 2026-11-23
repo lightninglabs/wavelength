@@ -189,8 +189,8 @@ type Querier interface {
 	// The ledger actor uses it to recognise a boarding deposit's funding input as
 	// a UTXO whose value it already credited to wallet_balance.
 	GetWalletUTXOLogCreatedByOutpoint(ctx context.Context, arg GetWalletUTXOLogCreatedByOutpointParams) (WalletUtxoLog, error)
-	// InsertAssetDeposit records a deposit request before tapd funds it. A
-	// request ID already recorded inserts nothing.
+	// InsertAssetDeposit records a deposit request before the asset backend
+	// funds it. A request ID already recorded inserts nothing.
 	InsertAssetDeposit(ctx context.Context, arg InsertAssetDepositParams) (int64, error)
 	// InsertAssetDepositClaim records a signed claim. A deposit that already has
 	// a claim inserts nothing.
@@ -527,7 +527,8 @@ type Querier interface {
 	// CreditOpStatus). Failed operations never dedup a keyed retry, so the lookup
 	// skips them: only a pending or completed operation answers for an op_key.
 	LookupActiveCreditOperationByKey(ctx context.Context, opKey string) (CreditOperation, error)
-	// MarkAssetDepositClaimed records that tapd confirmed the claim.
+	// MarkAssetDepositClaimed records that the asset backend confirmed the
+	// claim.
 	MarkAssetDepositClaimed(ctx context.Context, arg MarkAssetDepositClaimedParams) (int64, error)
 	// MarkAssetDepositConfirmed stores the output's confirmed proof. Only a
 	// published deposit moves.
