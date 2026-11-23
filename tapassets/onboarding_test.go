@@ -29,8 +29,7 @@ func TestOnboarderResumesWithoutRebuilding(t *testing.T) {
 	request, inventory, owner := testOnboardingRequest(t)
 	driver := newFakeOnboardingDriver()
 	funder := newFakeOnboardingFunder()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 
 	var deriveCalls int
 	newOnboarder := func() *Onboarder {
@@ -326,13 +325,12 @@ func TestOnboarderRejectsInvalidFundingSummary(t *testing.T) {
 			request, inventory, owner := testOnboardingRequest(t)
 			driver := newFakeOnboardingDriver()
 			test.configure(driver, request)
-			store, err := NewFileStore(t.TempDir())
-			require.NoError(t, err)
+			store := newMemoryStore()
 			onboarder := testOnboarder(
 				driver, inventory, store, owner,
 			)
 
-			_, err = onboarder.Onboard(t.Context(), request)
+			_, err := onboarder.Onboard(t.Context(), request)
 			require.ErrorContains(t, err, test.errContains)
 			require.Equal(t, 1, driver.commits)
 			require.Zero(t, driver.verifications)
@@ -348,12 +346,11 @@ func TestOnboarderRejectsIdempotencyRewrite(t *testing.T) {
 
 	request, inventory, owner := testOnboardingRequest(t)
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(
 		driver, inventory, store, owner,
 	)
-	_, err = onboarder.Onboard(t.Context(), request)
+	_, err := onboarder.Onboard(t.Context(), request)
 	require.NoError(t, err)
 
 	request.AssetAmount++
@@ -373,11 +370,10 @@ func TestOnboarderRejectsPassiveAssets(t *testing.T) {
 	passive.Genesis.IssuanceID[0] ^= 1
 	anchor.Assets = append(anchor.Assets, &passive)
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 
-	_, err = onboarder.Onboard(t.Context(), request)
+	_, err := onboarder.Onboard(t.Context(), request)
 	require.ErrorContains(t, err, "proof for every asset")
 	require.Zero(t, driver.commits)
 }
@@ -393,11 +389,10 @@ func TestOnboarderStopsAfterAmbiguousCommit(t *testing.T) {
 		Err:            errors.New("transport lost"),
 		OutcomeUnknown: true,
 	}
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 
-	_, err = onboarder.Onboard(t.Context(), request)
+	_, err := onboarder.Onboard(t.Context(), request)
 	require.ErrorIs(t, err, ErrReconciliationRequired)
 	driver.commitErr = nil
 	_, err = onboarder.Onboard(t.Context(), request)
@@ -413,8 +408,7 @@ func TestOnboarderFundsFromSeveralUtxos(t *testing.T) {
 	const boarded = uint64(40)
 	request, inventory, owner := testMultiUtxoOnboardingRequest(t, boarded)
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 
 	result, err := onboarder.Onboard(t.Context(), request)
@@ -492,8 +486,7 @@ func TestOnboarderExactFundingKeepsOneOutput(t *testing.T) {
 		t, testOnboardingTotalAmount,
 	)
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 
 	result, err := onboarder.Onboard(t.Context(), request)
@@ -521,11 +514,10 @@ func TestOnboarderRejectsInsufficientFunding(t *testing.T) {
 		t, testOnboardingTotalAmount+1,
 	)
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 
-	_, err = onboarder.Onboard(t.Context(), request)
+	_, err := onboarder.Onboard(t.Context(), request)
 	require.ErrorContains(t, err, "carry 55 units, the request boards 56")
 	require.Zero(t, driver.commits)
 }
@@ -540,11 +532,10 @@ func TestOnboarderRejectsDuplicateFundingProof(t *testing.T) {
 		request.ProofFiles[0], request.ProofFiles[0],
 	}
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 
-	_, err = onboarder.Onboard(t.Context(), request)
+	_, err := onboarder.Onboard(t.Context(), request)
 	require.ErrorContains(t, err, "selects asset record")
 	require.Zero(t, driver.commits)
 }
@@ -668,11 +659,10 @@ func onboardingChangeFixture(t *testing.T) (*commitResult, *onboardingChange,
 	t.Helper()
 	request, inventory, owner := testMultiUtxoOnboardingRequest(t, 40)
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 
-	_, err = onboarder.Onboard(t.Context(), request)
+	_, err := onboarder.Onboard(t.Context(), request)
 	require.NoError(t, err)
 
 	committed := cloneCommitResult(driver.result)
@@ -1022,8 +1012,7 @@ func TestOnboarderSharedAnchor(t *testing.T) {
 	secondTip.Outpoint = firstTip.Outpoint
 	first.Assets = append(first.Assets, second.Assets...)
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 	result, err := onboarder.Onboard(t.Context(), req)
 	require.NoError(t, err)
@@ -1051,9 +1040,8 @@ func TestOnboarderRejectsMultipleIssuances(t *testing.T) {
 	second := secondProof.DecodedProof
 	second.IssuanceID[0] ^= 1
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
-	_, err = testOnboarder(driver, inventory, store, owner).Onboard(
+	store := newMemoryStore()
+	_, err := testOnboarder(driver, inventory, store, owner).Onboard(
 		t.Context(), req,
 	)
 	require.ErrorContains(t, err, "one issuance")
@@ -1079,10 +1067,9 @@ func TestOnboarderReconcilesPublication(t *testing.T) {
 		OutcomeUnknown: true,
 	}
 	driver.reconcileErr = ErrReconciliationRequired
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
-	_, err = onboarder.Onboard(t.Context(), request)
+	_, err := onboarder.Onboard(t.Context(), request)
 	require.ErrorIs(t, err, ErrReconciliationRequired)
 	_, err = testOnboarder(driver, inventory, store, owner).Onboard(
 		t.Context(), request,
@@ -1115,9 +1102,7 @@ func TestOnboarderRecordsCancelledResults(t *testing.T) {
 
 			request, inventory, owner := testOnboardingRequest(t)
 			driver := newFakeOnboardingDriver()
-			dir := t.TempDir()
-			store, err := NewFileStore(dir)
-			require.NoError(t, err)
+			store := newMemoryStore()
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			switch stage {
@@ -1139,18 +1124,16 @@ func TestOnboarderRecordsCancelledResults(t *testing.T) {
 			if stage == "sign" {
 				funder.afterSign = cancel
 			}
-			_, err = onboarder.Onboard(ctx, request)
+			_, err := onboarder.Onboard(ctx, request)
 			if stage == "publish" {
 				require.NoError(t, err)
 			} else {
 				require.Error(t, err)
 			}
 
-			// Reopen the actual store: retained in-memory state
-			// cannot satisfy the recovery assertions.
-			reopened, err := NewFileStore(dir)
-			require.NoError(t, err)
-			encoded, err := reopened.Load(
+			// Read the journal itself: the onboarder's retained
+			// state cannot satisfy the recovery assertions.
+			encoded, err := store.Load(
 				t.Context(),
 				onboardingStorePrefix+request.RequestID,
 			)
@@ -1189,7 +1172,7 @@ func TestOnboarderRecordsCancelledResults(t *testing.T) {
 			driver.afterPublish = nil
 			driver.commitErr = nil
 			restarted := testOnboarder(
-				driver, inventory, reopened, owner,
+				driver, inventory, store, owner,
 			)
 			funder.afterSign = nil
 			restarted.funder = funder
@@ -1250,19 +1233,15 @@ func TestOnboarderIncompleteSignatureRetry(t *testing.T) {
 	t.Parallel()
 	request, inventory, owner := testOnboardingRequest(t)
 	driver := newFakeOnboardingDriver()
-	dir := t.TempDir()
-	store, err := NewFileStore(dir)
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 	testFunder(t, onboarder).skipSign = true
-	_, err = onboarder.Onboard(t.Context(), request)
+	_, err := onboarder.Onboard(t.Context(), request)
 	require.ErrorContains(t, err, "funder left input 1 unsigned")
 	require.Equal(t, 1, driver.commits)
 	require.Zero(t, driver.publishes)
 
-	reopened, err := NewFileStore(dir)
-	require.NoError(t, err)
-	encoded, err := reopened.Load(
+	encoded, err := store.Load(
 		t.Context(), onboardingStorePrefix+request.RequestID,
 	)
 	require.NoError(t, err)
@@ -1270,7 +1249,7 @@ func TestOnboarderIncompleteSignatureRetry(t *testing.T) {
 	require.NoError(t, json.Unmarshal(encoded, &state))
 	require.NotEmpty(t, state.TransferPackage)
 	require.Empty(t, state.FinalAnchorPSBT)
-	restarted := testOnboarder(driver, inventory, reopened, owner)
+	restarted := testOnboarder(driver, inventory, store, owner)
 	_, err = restarted.Onboard(t.Context(), request)
 	require.NoError(t, err)
 	require.Equal(t, 1, driver.commits)
@@ -1293,10 +1272,9 @@ func TestOnboarderCommitErrorDetails(t *testing.T) {
 		request, inventory, owner := testOnboardingRequest(t)
 		driver := newFakeOnboardingDriver()
 		driver.commitErr = commitErr
-		store, err := NewFileStore(t.TempDir())
-		require.NoError(t, err)
+		store := newMemoryStore()
 		onboarder := testOnboarder(driver, inventory, store, owner)
-		_, err = onboarder.Onboard(t.Context(), request)
+		_, err := onboarder.Onboard(t.Context(), request)
 		require.ErrorIs(t, err, ErrReconciliationRequired)
 		require.ErrorIs(t, err, cause)
 		require.ErrorIs(t, err, commitErr)
@@ -1309,8 +1287,7 @@ func TestOnboardingComposedScript(t *testing.T) {
 	t.Parallel()
 	request, inventory, owner := testOnboardingRequest(t)
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	result, err := testOnboarder(driver, inventory, store, owner).Onboard(
 		t.Context(), request,
 	)

@@ -11,8 +11,7 @@ Durable journals retain committed packages for restart recovery.
 
 - `Onboarder` — Moves tapd inventory into a composed boarding output that
   an `OnboardingFunder` pays for, returns asset change, and journals the owner
-  keys, funded template, sealed package, and signed transaction. `FileStore`
-  supplies an atomic file-backed journal.
+  keys, funded template, sealed package, and signed transaction.
 - `OnboardingFunder` — The wallet that pays an onboarding's Bitcoin: fee
   estimates, funding an outputs-only template without signing it, leases, and
   signing its own inputs. The asset backend signs the asset anchors at
