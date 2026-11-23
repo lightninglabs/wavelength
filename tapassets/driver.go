@@ -155,7 +155,7 @@ func (d *sdkDriver) Preview(ctx context.Context, request *customanchor.Request,
 }
 
 // buildTransition plans a transition whose proof paths can be encoded, before
-// tapd seals anything.
+// The asset backend seals anything.
 func (d *sdkDriver) buildTransition(ctx context.Context,
 	request *customanchor.Request,
 	verifier customanchor.ConfirmedProofVerifier) (*customanchor.Plan,
@@ -183,9 +183,9 @@ func (d *sdkDriver) Publish(ctx context.Context, packageBytes,
 	return d.PublishWithInputProofs(ctx, packageBytes, finalPSBT, nil)
 }
 
-// PublishWithInputProofs is Publish for a transfer whose input histories tapd
-// may lack, such as a confirmed leaf of an off-chain tree. It supplies the
-// inputs' proof files with the transfer.
+// PublishWithInputProofs is Publish for a transfer whose input histories the
+// asset backend may lack, such as a confirmed leaf of an off-chain tree. It
+// supplies the inputs' proof files with the transfer.
 func (d *sdkDriver) PublishWithInputProofs(ctx context.Context, packageBytes,
 	finalPSBT []byte, inputProofs [][]byte) error {
 
@@ -370,7 +370,8 @@ type commitResponseError struct {
 	err error
 }
 
-// Error describes a local failure after tapd returned a committed response.
+// Error describes a local failure after the asset backend returned a committed
+// response.
 func (e *commitResponseError) Error() string {
 	return fmt.Sprintf("process committed tap-sdk response: %v", e.err)
 }
@@ -429,12 +430,14 @@ func (d *sdkDriver) VerifyFinalOnboarding(packageBytes,
 	return nil
 }
 
-// errTransferNotRecorded reports that tapd holds no transfer for a signed
-// transaction.
-var errTransferNotRecorded = errors.New("tapd has no recorded transfer")
+// errTransferNotRecorded reports that the asset backend holds no transfer for a
+// signed transaction.
+var errTransferNotRecorded = errors.New("asset backend has no recorded " +
+	"transfer")
 
-// ReconcileOnboarding requires tapd to have recorded the exact saved signed
-// transaction. Absence is ambiguous: an earlier RPC may still be in flight.
+// ReconcileOnboarding requires the asset backend to have recorded the exact
+// saved signed transaction. Absence is ambiguous: an earlier RPC may still be
+// in flight.
 func (d *sdkDriver) ReconcileOnboarding(ctx context.Context,
 	finalPSBT []byte) error {
 

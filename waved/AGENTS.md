@@ -153,7 +153,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   transfers only once `WaitForWalletServicesReady` resolves. The chain port
   reads headers from a backend that implements
   `chainsource.BlockHeaderSource`, or from lnd's chain kit.
-- A proof of a grouped asset verifies on the embedded backend only for a
+- A proof of a grouped asset verifies on the asset engine only for a
   trusted group. Trust comes from `assets.groupkeys`, from the asset a
   caller names (`groupTrustingVerifier` for a round's asset VTXO,
   `ImportAssetProof` for a received asset), and from the assets the wallet
@@ -225,8 +225,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   deposit watcher hands every pending claim to it again, and marks a claim
   `claimed` only once the backend's transfer for it is
   `chainsource.DefaultFinalityDepth` blocks deep, the depth at which
-  txconfirm stops following it through reorgs. On the embedded backend that
-  block must also be the best chain's block at its height: the engine still
+  txconfirm stops following it through reorgs. That block must also be
+  the best chain's block at its height: the engine still
   reports a block that left the chain while the daemon was down, until the
   claim is mined again.
 - One `tapassets.Claimer` (`Server.assetClaimer`) claims both deposits

@@ -21,11 +21,12 @@ import (
 type AssetDepositStatus string
 
 const (
-	// AssetDepositFunding is a deposit tapd has not published yet. A
-	// failed attempt stays here, and a retry replays it.
+	// AssetDepositFunding is a deposit the asset backend has not published
+	// yet. A failed attempt stays here, and a retry replays it.
 	AssetDepositFunding AssetDepositStatus = "funding"
 
-	// AssetDepositPublished is a deposit whose output tapd published.
+	// AssetDepositPublished is a deposit whose output the asset backend
+	// published.
 	AssetDepositPublished AssetDepositStatus = "published"
 
 	// AssetDepositConfirmed is a deposit whose output's proof confirmed.

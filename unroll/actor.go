@@ -887,9 +887,9 @@ func (b *behavior) claimAsset(ctx context.Context) (bool, error) {
 }
 
 // sweepTargetConfs is the depth at which txconfirm reports the exit spend
-// confirmed, which completes the job. tapd leaves the relay of an asset claim
-// to this job, so the job keeps tracking the claim, and relays it again after
-// a reorganization or restart, until it is final. Zero asks for one
+// confirmed, which completes the job. The asset backend leaves the relay of an
+// asset claim to this job, so the job keeps tracking the claim, and relays it
+// again after a reorganization or restart, until it is final. Zero asks for one
 // confirmation.
 func (b *behavior) sweepTargetConfs() uint32 {
 	if b.isAssetExit() {

@@ -156,7 +156,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   unknown key, an absent journal entry and a recorded transfer are answers:
   they are returned after the transaction, never from inside it, so the
   executor logs no warning. The same store keeps the asset deposit journal
-  (`LoadJournalEntry` / `StoreJournalEntry`) for the embedded backend.
+  (`LoadJournalEntry` / `StoreJournalEntry`) for the asset engine.
 - `LatestMigrationVersion = 31` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
@@ -538,7 +538,7 @@ when adding one.
 - `000031_asset_engine` — the embedded asset engine's tables:
   `asset_engine_keys`, `asset_engine_script_keys`, `asset_engine_proofs` and
   `asset_engine_transfers`, plus `asset_journal`, the deposit journal of the
-  embedded backend. They live in the daemon's database because a browser has
+  asset engine. They live in the daemon's database because a browser has
   one exclusive connection and no files.
 
 ## Deep Docs

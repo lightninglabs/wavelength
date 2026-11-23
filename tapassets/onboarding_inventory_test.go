@@ -162,7 +162,9 @@ func TestOnboarderInventoryQuery(t *testing.T) {
 	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 	_, err := onboarder.Onboard(t.Context(), request)
-	require.ErrorContains(t, err, "anchor is not managed by tapd")
+	require.ErrorContains(
+		t, err, "anchor is not managed by the asset wallet",
+	)
 	require.Zero(t, driver.commits)
 	require.False(t, inventory.lastQuery.IncludeLeased)
 	require.Equal(

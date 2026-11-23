@@ -13,9 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeOnboardingProofClient serves tapd wallet UTXOs, transfers, and proof
-// exports keyed by anchor outpoint. Like tapd, it omits anchors under an
-// active lease, and lists the records in hidden only to an all-types query.
+// fakeOnboardingProofClient serves asset wallet UTXOs, transfers, and proof
+// exports keyed by anchor outpoint. Like an asset backend, it omits anchors
+// under an active lease, and lists the records in hidden only to an all-types
+// query.
 type fakeOnboardingProofClient struct {
 	utxos     map[string]*tapsdk.ManagedUtxo
 	hidden    map[tapsdk.Outpoint][]*tapsdk.AssetRecord
@@ -82,7 +83,7 @@ func proofTestOutpoint(i byte) tapsdk.Outpoint {
 	return tapsdk.Outpoint{Txid: tapsdk.Hash{i}, Index: uint32(i)}
 }
 
-// ownedUtxo returns a tapd anchor holding amount units of one issuance.
+// ownedUtxo returns an asset anchor holding amount units of one issuance.
 func ownedUtxo(i byte, issuance tapsdk.AssetID, ref tapsdk.AssetRef,
 	amount uint64) *tapsdk.ManagedUtxo {
 
@@ -98,7 +99,7 @@ func ownedUtxo(i byte, issuance tapsdk.AssetID, ref tapsdk.AssetRef,
 	}
 }
 
-// TestSelectOnboardingProofs checks which tapd anchors fund an onboarding.
+// TestSelectOnboardingProofs checks which asset anchors fund an onboarding.
 func TestSelectOnboardingProofs(t *testing.T) {
 	t.Parallel()
 
@@ -110,7 +111,7 @@ func TestSelectOnboardingProofs(t *testing.T) {
 	leased := func(utxo *tapsdk.ManagedUtxo,
 		expiry time.Duration) *tapsdk.ManagedUtxo {
 
-		utxo.LeaseOwner = []byte("tapd")
+		utxo.LeaseOwner = []byte("lease")
 		utxo.LeaseExpiryUnix = time.Now().Add(expiry).Unix()
 
 		return utxo
@@ -190,7 +191,7 @@ func TestSelectOnboardingProofs(t *testing.T) {
 		},
 		ref:     ref,
 		amount:  500,
-		wantErr: "no tapd UTXO holds the asset alone",
+		wantErr: "no asset UTXO holds the asset alone",
 	}, {
 		name: "expired lease selected",
 		utxos: []*tapsdk.ManagedUtxo{
@@ -357,7 +358,7 @@ func TestExportOnboardedProof(t *testing.T) {
 			Hash: chainhash.Hash{8},
 		},
 	)
-	require.ErrorContains(t, err, "no tapd transfer creates")
+	require.ErrorContains(t, err, "no asset transfer creates")
 
 	transfer.Outputs = append(transfer.Outputs, tapsdk.TransferOutput{
 		AnchorOutpoint: sdkOutpoint(outpoint),

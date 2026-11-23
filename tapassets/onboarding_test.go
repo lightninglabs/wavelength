@@ -66,8 +66,8 @@ func TestOnboarderResumesWithoutRebuilding(t *testing.T) {
 	require.NotEmpty(t, result.PolicyTemplate)
 	require.NotEmpty(t, result.PkScript)
 
-	// A fully committed journal must not need tapd to resume.
-	inventory.err = errors.New("tapd unavailable")
+	// A fully committed journal must not need the asset backend to resume.
+	inventory.err = errors.New("backend unavailable")
 	result, err = newOnboarder().Onboard(t.Context(), request)
 	require.NoError(t, err)
 	require.Equal(t, uint64(250), result.ActualFeeSat)
@@ -298,7 +298,7 @@ func TestOnboarderRejectsInvalidFundingSummary(t *testing.T) {
 			errContains: "is not caller-funded exact",
 		},
 		{
-			name: "tapd funded",
+			name: "backend funded",
 			configure: func(driver *fakeOnboardingDriver,
 				_ *OnboardingRequest) {
 
@@ -379,7 +379,8 @@ func TestOnboarderRejectsPassiveAssets(t *testing.T) {
 }
 
 // TestOnboarderStopsAfterAmbiguousCommit ensures a transport failure that may
-// have committed in tapd cannot create a competing transition on retry.
+// have committed in the asset backend cannot create a competing transition on
+// retry.
 func TestOnboarderStopsAfterAmbiguousCommit(t *testing.T) {
 	t.Parallel()
 
@@ -506,7 +507,7 @@ func TestOnboarderExactFundingKeepsOneOutput(t *testing.T) {
 }
 
 // TestOnboarderRejectsInsufficientFunding keeps an onboarding that its
-// funding proofs cannot cover from ever reaching tapd.
+// funding proofs cannot cover from ever reaching the asset backend.
 func TestOnboarderRejectsInsufficientFunding(t *testing.T) {
 	t.Parallel()
 
@@ -571,7 +572,7 @@ func TestOnboardingProofSetDigestIsOrderIndependent(t *testing.T) {
 }
 
 // TestOnboardingChangeFailsClosed proves every divergence between the
-// pinned asset change and what tapd committed is refused.
+// pinned asset change and what the asset backend committed is refused.
 func TestOnboardingChangeFailsClosed(t *testing.T) {
 	t.Parallel()
 
@@ -733,7 +734,7 @@ func (d *fakeOnboardingDriver) CommitOnboarding(_ context.Context,
 	}
 
 	// Each asset input spends one of the anchors, which lead the
-	// template in signing plan order. tapd's anchors carry its key
+	// template in signing plan order. the asset anchors carry its key
 	// derivations, and the funder's inputs keep none of theirs.
 	template, err := psbtutil.Parse(result.anchorPSBT)
 	if err != nil {
@@ -1195,8 +1196,9 @@ func TestOnboarderRecordsCancelledResults(t *testing.T) {
 // stack.
 var testWalletWitness = []byte{1, 1, txscript.OP_2}
 
-// finalizeOnboardingTestPSBT returns a committed transaction as the fake
-// wallet signs it: its own input final, and tapd's anchors left for tapd.
+// finalizeOnboardingTestPSBT returns a committed transaction as the fake wallet
+// signs it: its own input final, and the asset anchors left for the asset
+// backend.
 func finalizeOnboardingTestPSBT(raw []byte) ([]byte, error) {
 	packet, err := psbtutil.Parse(raw)
 	if err != nil {

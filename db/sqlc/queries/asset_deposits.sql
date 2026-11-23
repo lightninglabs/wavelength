@@ -1,6 +1,6 @@
 -- name: InsertAssetDeposit :execrows
--- InsertAssetDeposit records a deposit request before tapd funds it. A
--- request ID already recorded inserts nothing.
+-- InsertAssetDeposit records a deposit request before the asset backend
+-- funds it. A request ID already recorded inserts nothing.
 INSERT INTO asset_deposits (
     request_id, status, asset_ref, asset_amount, carrier_value_sat,
     fee_rate_sat_per_vbyte, target_conf, max_fee_sat, operator_key,
@@ -106,7 +106,8 @@ SELECT * FROM asset_deposit_claims WHERE status = $1
 ORDER BY created_at, request_id;
 
 -- name: MarkAssetDepositClaimed :execrows
--- MarkAssetDepositClaimed records that tapd confirmed the claim.
+-- MarkAssetDepositClaimed records that the asset backend confirmed the
+-- claim.
 UPDATE asset_deposit_claims SET
     status = 'claimed',
     updated_at = $2

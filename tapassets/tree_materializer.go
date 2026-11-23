@@ -49,7 +49,8 @@ type TreeRootAssetInput struct {
 	// AnchorOutpoint is the batch output containing the asset state.
 	AnchorOutpoint wire.OutPoint
 
-	// Witness authorizes the asset spend. An empty stack asks tapd to sign.
+	// Witness authorizes the asset spend. An empty stack asks the asset
+	// backend to sign.
 	Witness [][]byte
 
 	// Verifier verifies this input's proof.

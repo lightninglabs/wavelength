@@ -151,7 +151,7 @@ func testAssetDeposit(t *testing.T, walletType string) {
 }
 
 // TestClaimAssetDeposit claims a confirmed deposit that no round took
-// on the embedded asset backend. The claim spends the deposit through its
+// on the asset engine. The claim spends the deposit through its
 // owner's exit leaf once the exit delay passes, and returns the asset to the
 // daemon's asset wallet. The claim confirms while the daemon is down, and a
 // restart finishes it from the daemon's database.
@@ -243,7 +243,7 @@ func TestClaimAssetDeposit(t *testing.T) {
 	require.True(t, again.Claimed)
 }
 
-// embeddedAssetDaemon is a running waved with the embedded asset backend.
+// embeddedAssetDaemon is a running waved with the asset engine.
 type embeddedAssetDaemon struct {
 	client  waverpc.DaemonServiceClient
 	mailbox *fakeMailboxServer
@@ -280,7 +280,7 @@ func startEmbeddedAssetLnd(t *testing.T,
 	return walletLnd
 }
 
-// startEmbeddedAssetDaemon runs waved with the embedded asset backend, on
+// startEmbeddedAssetDaemon runs waved with the asset engine, on
 // walletLnd if set and on a light wallet otherwise. A fresh light wallet is
 // created with funds; an existing one is unlocked.
 func startEmbeddedAssetDaemon(t *testing.T, h *SysTestHarness, dataDir string,

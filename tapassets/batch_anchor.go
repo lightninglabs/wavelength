@@ -30,7 +30,7 @@ type BatchAnchorSource struct {
 	// Amount is the input's asset amount.
 	Amount uint64
 
-	// Witness is empty when tapd should sign the asset input.
+	// Witness is empty when the asset backend should sign the asset input.
 	Witness [][]byte
 
 	// Verifier verifies ProofFile.
@@ -53,7 +53,7 @@ const (
 var ErrReconciliationRequired = errors.New("asset transition reconciliation " +
 	"required")
 
-// BatchAnchorChange returns surplus assets to the tapd wallet.
+// BatchAnchorChange returns surplus assets to the asset wallet.
 type BatchAnchorChange struct {
 	// Amount is the change output's asset amount.
 	Amount uint64
@@ -65,10 +65,10 @@ type BatchAnchorChange struct {
 	// OutputValueSat is the change anchor output's Bitcoin value.
 	OutputValueSat int64
 
-	// ScriptKey is the tapd wallet script key that owns the change.
+	// ScriptKey is the asset wallet script key that owns the change.
 	ScriptKey tapsdk.ScriptKey
 
-	// AnchorInternalKey is the tapd wallet internal key of the change
+	// AnchorInternalKey is the asset wallet internal key of the change
 	// anchor output.
 	AnchorInternalKey tapsdk.InternalKey
 }
@@ -118,7 +118,7 @@ type BatchAnchorRequest struct {
 	Amount uint64
 
 	// Change optionally returns the funding surplus to the operator's
-	// tapd wallet on its own anchor output.
+	// asset wallet on its own anchor output.
 	Change *BatchAnchorChange
 
 	// Sources are the confirmed asset inputs.
@@ -172,7 +172,8 @@ type BatchAnchorCommit struct {
 	// PackageBytes is the sealed transfer package.
 	PackageBytes []byte
 
-	// AnchorPSBT contains any input signatures produced by tapd.
+	// AnchorPSBT contains any input signatures produced by the asset
+	// backend.
 	AnchorPSBT []byte
 
 	// Script echoes the validated batch output derivation.
@@ -345,7 +346,7 @@ func (c *BatchAnchorCommitter) Commit(ctx context.Context,
 		return nil, fmt.Errorf("funded anchor PSBT is required")
 	}
 
-	// Keep the journal check and tapd mutation in one critical section.
+	// Keep the journal check and backend mutation in one critical section.
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -504,7 +505,7 @@ func (c *BatchAnchorCommitter) Commit(ctx context.Context,
 	}, nil
 }
 
-// Publish verifies a finalized anchor PSBT and records it in tapd.
+// Publish verifies a finalized anchor PSBT and records it in the asset backend.
 func (c *BatchAnchorCommitter) Publish(ctx context.Context, packageBytes,
 	finalPSBT []byte) error {
 
@@ -765,7 +766,8 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 			err)
 	}
 
-	// tapd replaces the placeholder metadata for inputs it signs.
+	// The asset backend replaces the placeholder metadata for inputs it
+	// signs.
 	sanitized, err := psbt.NewFromUnsignedTx(anchor.UnsignedTx.Copy())
 	if err != nil {
 		return nil, nil, fmt.Errorf("clone anchor PSBT: %w", err)
@@ -1022,7 +1024,7 @@ func validateBatchSources(sources []BatchAnchorSource,
 	return sourceTotal, nil
 }
 
-// batchSigningPlans assigns tapd-owned inputs and caller-owned inputs.
+// batchSigningPlans assigns backend-owned inputs and caller-owned inputs.
 func batchSigningPlans(tx *wire.MsgTx,
 	sources []BatchAnchorSource) ([]customanchor.InputSigningPlan, error) {
 

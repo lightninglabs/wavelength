@@ -18,7 +18,7 @@ type onboardingPublicationClient struct {
 	err       error
 }
 
-// ListTransfers models tapd's durable publication log.
+// ListTransfers models the asset backend's durable publication log.
 func (c *onboardingPublicationClient) ListTransfers(context.Context,
 	*tapsdk.ListTransfersRequest) ([]*tapsdk.AssetTransfer, error) {
 
@@ -66,7 +66,7 @@ func TestOnboardingPublicationEvidence(t *testing.T) {
 		),
 		ErrReconciliationRequired,
 	)
-	client.err = errors.New("tapd unavailable")
+	client.err = errors.New("backend unavailable")
 	require.ErrorIs(
 		t,
 		driver.ReconcileOnboarding(

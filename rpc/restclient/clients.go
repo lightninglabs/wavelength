@@ -729,7 +729,7 @@ func (c *DaemonServiceClient) BoardAssetDeposit(ctx context.Context,
 	return out, err
 }
 
-// ClaimAssetDeposit claims a confirmed asset deposit back to the tapd wallet.
+// ClaimAssetDeposit claims a confirmed asset deposit back to the asset wallet.
 func (c *DaemonServiceClient) ClaimAssetDeposit(ctx context.Context,
 	in *waverpc.ClaimAssetDepositRequest, _ ...grpc.CallOption) (
 	*waverpc.AssetDeposit, error) {

@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeClaimDriver seals whatever template it is given and counts tapd calls.
+// fakeClaimDriver seals whatever template it is given and counts backend calls.
 type fakeClaimDriver struct {
 	commits    int
 	publishes  int
@@ -29,8 +29,8 @@ type fakeClaimDriver struct {
 	inputProofs  [][]byte
 	request      *customanchor.Request
 
-	// outputs are the asset outputs tapd seals: one per input, in the
-	// claim's first output, unless a test sets them.
+	// outputs are the asset outputs the asset backend seals: one per input,
+	// in the claim's first output, unless a test sets them.
 	outputs []commitOutput
 }
 
@@ -157,7 +157,7 @@ func newClaimTest(t *testing.T) (*Claimer, *fakeClaimDriver, *fakeInventory,
 
 // TestClaimerClaimsOnce checks that a claim spends the exit leaf into a
 // zero-fee transaction with a P2A anchor, and that a retry returns the same
-// transaction without calling tapd again.
+// transaction without calling the asset backend again.
 func TestClaimerClaimsOnce(t *testing.T) {
 	t.Parallel()
 
@@ -184,8 +184,8 @@ func TestClaimerClaimsOnce(t *testing.T) {
 	require.Equal(t, arkscript.AnchorOutput(), tx.TxOut[1])
 	require.Equal(t, wire.OutPoint{Hash: tx.TxHash()}, result.AssetOutpoint)
 
-	// The asset moves under the caller's OP_TRUE witness to keys tapd
-	// derived, and waved signs the exit leaf itself.
+	// The asset moves under the caller's OP_TRUE witness to keys the asset
+	// wallet derived, and waved signs the exit leaf itself.
 	committed := driver.request
 	require.Equal(
 		t, customanchor.FundingCallerFundedExact,
@@ -203,8 +203,8 @@ func TestClaimerClaimsOnce(t *testing.T) {
 	)
 	require.Equal(t, scriptExternal, committed.Outputs[0].Script.Mode)
 
-	// tapd gets the claimed output's proof file with the claim, since it
-	// may never have seen its history.
+	// The asset backend gets the claimed output's proof file with the
+	// claim, since it may never have seen its history.
 	require.Equal(
 		t, [][]byte{request.Inputs[0].ProofFile}, driver.inputProofs,
 	)
@@ -240,8 +240,8 @@ func TestClaimerReconcilesAmbiguousPublish(t *testing.T) {
 }
 
 // TestClaimerRepublishesUnrecordedClaim checks that a claim whose publish
-// attempt left no record in tapd, such as one interrupted before its RPC, is
-// published again.
+// attempt left no record in the asset backend, such as one interrupted before
+// its RPC, is published again.
 func TestClaimerRepublishesUnrecordedClaim(t *testing.T) {
 	t.Parallel()
 

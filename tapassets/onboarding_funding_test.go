@@ -46,8 +46,8 @@ func isFakeOnboardingWalletInput(input *psbt.PInput) bool {
 
 // fakeOnboardingFunder funds a template with one coin and change, putting the
 // change first as a BIP 69 sort may. It signs every input carrying derivation
-// info, as a wallet sharing tapd's keys would. Like a wallet RPC, its calls
-// fail once the caller's context ends.
+// info, as a wallet sharing the asset wallet's keys would. Like a wallet RPC,
+// its calls fail once the caller's context ends.
 type fakeOnboardingFunder struct {
 	mu sync.Mutex
 
@@ -224,7 +224,7 @@ func testFunder(t *testing.T, onboarder *Onboarder) *fakeOnboardingFunder {
 }
 
 // TestOnboardingFundedTemplateLayout checks what the wallet funds and how the
-// funded transaction is laid out for tapd.
+// funded transaction is laid out for the asset backend.
 func TestOnboardingFundedTemplateLayout(t *testing.T) {
 	t.Parallel()
 
@@ -274,7 +274,7 @@ func TestOnboardingFundedTemplateLayout(t *testing.T) {
 }
 
 // TestOnboarderReleasesRefusedFunding frees the wallet's coins whenever a
-// funding is refused before tapd sees it.
+// funding is refused before the asset backend sees it.
 func TestOnboarderReleasesRefusedFunding(t *testing.T) {
 	t.Parallel()
 
@@ -388,7 +388,7 @@ func TestOnboarderReusesFundedTemplate(t *testing.T) {
 }
 
 // TestOnboarderFundingFailure keeps a wallet that cannot fund from reaching
-// tapd or the journal.
+// The asset backend or the journal.
 func TestOnboarderFundingFailure(t *testing.T) {
 	t.Parallel()
 
@@ -488,7 +488,7 @@ func TestOnboarderRenewsSealedLeases(t *testing.T) {
 }
 
 // TestOnboarderSignsOnlyFunderInputs has the funder sign its own inputs from
-// their journaled derivation info, while tapd's anchors reach publication
+// their journaled derivation info, while the asset anchors reach publication
 // unsigned even though the funder could derive their keys.
 func TestOnboarderSignsOnlyFunderInputs(t *testing.T) {
 	t.Parallel()

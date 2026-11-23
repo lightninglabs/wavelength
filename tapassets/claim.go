@@ -185,8 +185,8 @@ func NewClaimer(cfg ClaimerConfig) (*Claimer, error) {
 	}, nil
 }
 
-// Prepare commits and signs one claim, or returns the journaled claim,
-// without recording it in tapd. Once the commit succeeds, every retry
+// Prepare commits and signs one claim, or returns the journaled claim, without
+// recording it in the asset backend. Once the commit succeeds, every retry
 // returns the same transaction.
 func (c *Claimer) Prepare(ctx context.Context, request *ClaimRequest) (
 	*ClaimResult, error) {
@@ -206,9 +206,9 @@ func (c *Claimer) Prepare(ctx context.Context, request *ClaimRequest) (
 	return claimResult(state)
 }
 
-// Claim prepares one claim and records it in tapd, or resumes the journaled
-// claim. A publish whose outcome is unknown is reconciled before the claim is
-// published again.
+// Claim prepares one claim and records it in the asset backend, or resumes the
+// journaled claim. A publish whose outcome is unknown is reconciled before the
+// claim is published again.
 func (c *Claimer) Claim(ctx context.Context, request *ClaimRequest) (
 	*ClaimResult, error) {
 
@@ -279,7 +279,7 @@ func claimResult(state *claimState) (*ClaimResult, error) {
 	}, nil
 }
 
-// commit resumes the sealed package or commits the claim in tapd.
+// commit resumes the sealed package or commits the claim in the asset backend.
 func (c *Claimer) commit(ctx context.Context, request *ClaimRequest,
 	state *claimState) (*commitResult, error) {
 
@@ -321,9 +321,10 @@ func (c *Claimer) commit(ctx context.Context, request *ClaimRequest,
 		}
 	}
 
-	// The claimed asset goes to keys tapd derived, so tapd holds it as
-	// its own once the claim confirms. tap-sdk splits the output into one
-	// asset per issuance, each under a script key unique to its issuance.
+	// The claimed asset goes to keys the asset wallet derived, so the
+	// wallet holds it as its own once the claim confirms. tap-sdk splits
+	// the output into one asset per issuance, each under a script key
+	// unique to its issuance.
 	requestDTO := &customanchor.Request{
 		Inputs: inputs,
 		Outputs: []customanchor.AssetOutput{{
@@ -400,8 +401,8 @@ func claimTemplate(request *ClaimRequest) (*psbt.Packet, error) {
 	return packet, nil
 }
 
-// validateClaimCommit checks that tapd sealed a zero-fee claim that moves the
-// whole claimed amount into its first output.
+// validateClaimCommit checks that the asset backend sealed a zero-fee claim
+// that moves the whole claimed amount into its first output.
 func validateClaimCommit(committed *commitResult, amount uint64) error {
 	switch {
 	case committed == nil:
@@ -484,12 +485,12 @@ func (c *Claimer) sign(request *ClaimRequest, anchorPSBT []byte) ([]byte,
 	return psbtutil.Serialize(packet)
 }
 
-// publish records the signed claim in tapd, with the proof files of the claimed
-// output, since tapd may never have seen its history. The attempt is journaled
-// first, and a retry after an attempt publishes again only once tapd reports no
-// record of the claim. tapd keys a transfer by its anchor transaction, so a
-// second publish of the same claim attaches to the first rather than logging it
-// twice.
+// publish records the signed claim in the asset backend, with the proof files
+// of the claimed output, since the asset backend may never have seen its
+// history. The attempt is journaled first, and a retry after an attempt
+// publishes again only once the asset backend reports no record of the claim.
+// The asset backend keys a transfer by its anchor transaction, so a second
+// publish of the same claim attaches to the first rather than logging it twice.
 func (c *Claimer) publish(ctx context.Context, request *ClaimRequest,
 	state *claimState) error {
 
@@ -532,7 +533,7 @@ func (c *Claimer) publish(ctx context.Context, request *ClaimRequest,
 	return c.markPublished(ctx, requestID, state)
 }
 
-// markPublished journals that tapd recorded the claim.
+// markPublished journals that the asset backend recorded the claim.
 func (c *Claimer) markPublished(ctx context.Context, requestID string,
 	state *claimState) error {
 
@@ -579,7 +580,8 @@ func (c *Claimer) loadState(ctx context.Context, request *ClaimRequest) (
 			err)
 	}
 	if scriptKey == nil || internalKey == nil {
-		return nil, fmt.Errorf("tapd returned an empty claim key")
+		return nil, fmt.Errorf("asset backend returned an empty " +
+			"claim key")
 	}
 
 	state := &claimState{
@@ -595,8 +597,8 @@ func (c *Claimer) loadState(ctx context.Context, request *ClaimRequest) (
 	return state, nil
 }
 
-// storeResult journals state even if the caller was cancelled, so what tapd
-// already sealed or recorded is never forgotten.
+// storeResult journals state even if the caller was cancelled, so what the
+// asset backend already sealed or recorded is never forgotten.
 func (c *Claimer) storeResult(ctx context.Context, requestID string,
 	state *claimState) error {
 

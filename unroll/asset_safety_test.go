@@ -100,7 +100,7 @@ func TestAssetUnrollClaimsAsset(t *testing.T) {
 	claimTx.AddTxOut(wire.NewTxOut(1_000, []byte{0x51}))
 	claimer := &fakeAssetClaimer{
 		tx:  claimTx,
-		err: errors.New("tapd unavailable"),
+		err: errors.New("backend unavailable"),
 	}
 	beh.cfg.AssetClaimer = claimer
 	ledgerSink := actor.NewChannelTellOnlyRef[ledger.LedgerMsg](
@@ -142,8 +142,9 @@ func TestAssetUnrollClaimsAsset(t *testing.T) {
 		t, claimTx.TxOut[0].PkScript, submitted.ConfirmationPkScript,
 	)
 
-	// tapd leaves the claim's relay to the job, so the job tracks the
-	// claim until it is final rather than until its first confirmation.
+	// The asset backend leaves the claim's relay to the job, so the job
+	// tracks the claim until it is final rather than until its first
+	// confirmation.
 	require.Equal(
 		t, chainsource.DefaultFinalityDepth, submitted.TargetConfs,
 	)

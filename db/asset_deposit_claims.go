@@ -15,12 +15,12 @@ import (
 type AssetDepositClaimStatus string
 
 const (
-	// AssetDepositClaiming is a signed claim that tapd has not yet
-	// recorded as confirmed.
+	// AssetDepositClaiming is a signed claim that the asset backend has not
+	// yet recorded as confirmed.
 	AssetDepositClaiming AssetDepositClaimStatus = "claiming"
 
-	// AssetDepositClaimed is a claim tapd recorded as confirmed, so the
-	// asset is back in the asset wallet.
+	// AssetDepositClaimed is a claim the asset backend recorded as
+	// confirmed, so the asset is back in the asset wallet.
 	AssetDepositClaimed AssetDepositClaimStatus = "claimed"
 )
 
@@ -128,8 +128,8 @@ func (s *AssetDepositStore) ListAssetDepositClaimsByStatus(ctx context.Context,
 	return claims, nil
 }
 
-// MarkAssetDepositClaimed records that tapd confirmed a claim. Marking a
-// claimed deposit again is a no-op.
+// MarkAssetDepositClaimed records that the asset backend confirmed a claim.
+// Marking a claimed deposit again is a no-op.
 func (s *AssetDepositStore) MarkAssetDepositClaimed(ctx context.Context,
 	requestID string) error {
 
