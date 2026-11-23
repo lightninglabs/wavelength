@@ -15,16 +15,15 @@ Durable journals retain committed packages for restart recovery.
   supplies an atomic file-backed journal.
 - `OnboardingFunder` — The wallet that pays an onboarding's Bitcoin: fee
   estimates, funding an outputs-only template without signing it, leases, and
-  signing its own inputs. tapd signs the asset anchors at publish, which
-  `TapdSignsAnchorInputs` reports a tapd version can do.
+  signing its own inputs. The asset backend signs the asset anchors at
+  publish.
 - `Claimer` / `ClaimRequest` — Spends a confirmed composed output through
   its owner's exit leaf and moves the asset to keys the tapd wallet derives,
   so it becomes an ordinary holding. The claim keeps the output's full value
   and adds a zero-value P2A anchor, so the caller relays it with a CPFP
   child. The journal pins the derived keys before the commit and the signed
   transaction before the publish. `Prepare` signs a claim without recording
-  it in tapd, so the caller can record it first. `TapdCanClaim` reports
-  whether a tapd version credits a claim. A claimed output holds one input
+  it in tapd, so the caller can record it first. A claimed output holds one input
   per issuance of its asset, and a claim always supplies their proof files
   with the publish, since tapd may never have seen their history. The
   journal's request digest leaves the proof files out, so a proof rebuilt
@@ -83,8 +82,8 @@ Durable journals retain committed packages for restart recovery.
   into), `lib/arkscript` (leaf policy construction for
   `StandardVTXOLeafAnchor`), `lib/tx/psbtutil` (PSBT encode/decode).
 - **Depended on by**: `waved`, which installs `VTXOVerifier` on the round
-  actor when `assets.backend` is `tapd`, and funds asset deposits from its own
-  wallet through `Onboarder` when tapd signs its own anchor inputs.
+  actor when `assets.backend` is `embedded`, and funds asset deposits from its
+  own wallet through `Onboarder`.
   Operator-side batch APIs have no production caller in this repository.
 - **Sends** / **Receives**: none. This is a synchronous library, not an actor;
   it exchanges no mailbox messages.

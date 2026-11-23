@@ -294,42 +294,6 @@ func TestClaimerPrepareDoesNotPublish(t *testing.T) {
 	require.Equal(t, 1, driver.publishes)
 }
 
-// TestTapdCanClaim checks the tapd versions that credit a claimed asset.
-func TestTapdCanClaim(t *testing.T) {
-	t.Parallel()
-
-	for version, want := range map[string]bool{
-		"0.8.5-alpha commit=v0.8.5": false,
-		"0.8.99-alpha":              true,
-		"0.9.0-alpha.rc1":           true,
-		"0.10.0":                    true,
-		"1.0.0":                     true,
-	} {
-		got, err := TapdCanClaim(version)
-		require.NoError(t, err, version)
-		require.Equal(t, want, got, version)
-	}
-
-	_, err := TapdCanClaim("unknown")
-	require.Error(t, err)
-}
-
-// TestTapdSignsAnchorInputs checks the tapd versions that sign their own
-// anchor inputs at publish.
-func TestTapdSignsAnchorInputs(t *testing.T) {
-	t.Parallel()
-
-	for version, want := range map[string]bool{
-		"0.8.5-alpha commit=v0.8.5": false,
-		"0.8.99-alpha":              true,
-		"0.9.0-alpha.rc1":           true,
-	} {
-		got, err := TapdSignsAnchorInputs(version)
-		require.NoError(t, err, version)
-		require.Equal(t, want, got, version)
-	}
-}
-
 // TestClaimerRejectsChangedRequest checks that a journal entry serves only
 // the request it was written for.
 func TestClaimerRejectsChangedRequest(t *testing.T) {

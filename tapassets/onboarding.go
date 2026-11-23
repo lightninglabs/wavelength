@@ -141,18 +141,6 @@ type onboardingDriver interface {
 	ReconcileOnboarding(context.Context, []byte) error
 }
 
-// anchorSigningTapdVersion is the first tapd version that signs its own
-// asset anchor inputs at publish. Development builds ahead of v0.9.0 report
-// 0.8.99.
-var anchorSigningTapdVersion = [3]int{0, 8, 99}
-
-// TapdSignsAnchorInputs reports whether tapd of the given version signs its
-// own asset anchor inputs at publish, which an onboarding paid by an
-// OnboardingFunder needs.
-func TapdSignsAnchorInputs(version string) (bool, error) {
-	return tapdAtLeast(version, anchorSigningTapdVersion)
-}
-
 // OnboardingFunder pays and signs the Bitcoin side of an onboarding from a
 // wallet other than tapd's: the outputs beyond what the spent tapd anchors
 // carry, and the fee. Its inputs follow the anchors and its change follows the

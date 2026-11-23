@@ -33,37 +33,6 @@ const (
 	claimAttemptPublish = "publish"
 )
 
-// claimTapdVersion is the first tapd version that confirms a transfer
-// spending an asset it does not hold. Development builds ahead of v0.9.0
-// report 0.8.99.
-var claimTapdVersion = [3]int{0, 8, 99}
-
-// TapdCanClaim reports whether tapd of the given version credits a claimed
-// asset. Older versions cannot confirm a transfer whose input they do not
-// hold.
-func TapdCanClaim(version string) (bool, error) {
-	return tapdAtLeast(version, claimTapdVersion)
-}
-
-// tapdAtLeast reports whether a tapd version string is at least minimum.
-func tapdAtLeast(version string, minimum [3]int) (bool, error) {
-	var parsed [3]int
-	_, err := fmt.Sscanf(
-		version, "%d.%d.%d", &parsed[0], &parsed[1], &parsed[2],
-	)
-	if err != nil {
-		return false, fmt.Errorf("parse tapd version %q: %w", version,
-			err)
-	}
-	for i := range parsed {
-		if parsed[i] != minimum[i] {
-			return parsed[i] > minimum[i], nil
-		}
-	}
-
-	return true, nil
-}
-
 // ClaimRequest describes an asset claim: the owner of a confirmed composed
 // output spends it through the exit leaf of its Ark policy, which moves the
 // asset into the asset wallet as an ordinary holding.
