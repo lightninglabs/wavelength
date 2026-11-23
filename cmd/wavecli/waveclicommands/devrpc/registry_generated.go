@@ -224,7 +224,7 @@ func generatedRegistry() []serviceSpec {
 					Aliases:  []string{"deposit-asset"},
 					Input:    "waverpc.DepositAssetRequest",
 					Output:   "waverpc.AssetDeposit",
-					Comments: "DepositAsset funds a boarding output holding a Taproot Asset from the\nasset wallet of the asset backend and tracks it until its proof\nconfirms. Retrying with the same request_id resumes the same\ndeposit. Requires an asset backend; a tapd backend must run tapd\nv0.9.0 or later.",
+					Comments: "DepositAsset funds a boarding output holding a Taproot Asset from the\nasset wallet of the asset backend and tracks it until its proof\nconfirms. Retrying with the same request_id resumes the same\ndeposit. Requires an asset backend.",
 				},
 				{
 					Name:     "ListAssetDeposits",
@@ -245,7 +245,7 @@ func generatedRegistry() []serviceSpec {
 					Aliases:  []string{"claim-asset-deposit"},
 					Input:    "waverpc.ClaimAssetDepositRequest",
 					Output:   "waverpc.AssetDeposit",
-					Comments: "ClaimAssetDeposit spends a confirmed asset deposit that no round\nholds through the owner's exit path, once the exit delay has passed,\nand returns the asset to the asset wallet of the asset backend. The\nclaim pays its fee with a CPFP child from the daemon wallet. Retrying\nresumes the same claim. Requires an asset backend; a tapd backend must\nrun tapd v0.9.0 or later, which confirms transfers spending assets it\ndoes not hold.",
+					Comments: "ClaimAssetDeposit spends a confirmed asset deposit that no round\nholds through the owner's exit path, once the exit delay has passed,\nand returns the asset to the asset wallet of the asset backend. The\nclaim pays its fee with a CPFP child from the daemon wallet. Retrying\nresumes the same claim. Requires an asset backend.",
 				},
 				{
 					Name:     "NewAssetReceiveKeys",

@@ -181,8 +181,7 @@ service DaemonService {
     // DepositAsset funds a boarding output holding a Taproot Asset from the
     // asset wallet of the asset backend and tracks it until its proof
     // confirms. Retrying with the same request_id resumes the same
-    // deposit. Requires an asset backend; a tapd backend must run tapd
-    // v0.9.0 or later.
+    // deposit. Requires an asset backend.
     rpc DepositAsset (DepositAssetRequest) returns (AssetDeposit);
 
     // ListAssetDeposits returns the asset deposits of this daemon.
@@ -198,9 +197,7 @@ service DaemonService {
     // holds through the owner's exit path, once the exit delay has passed,
     // and returns the asset to the asset wallet of the asset backend. The
     // claim pays its fee with a CPFP child from the daemon wallet. Retrying
-    // resumes the same claim. Requires an asset backend; a tapd backend must
-    // run tapd v0.9.0 or later, which confirms transfers spending assets it
-    // does not hold.
+    // resumes the same claim. Requires an asset backend.
     rpc ClaimAssetDeposit (ClaimAssetDepositRequest) returns (AssetDeposit);
 
     // NewAssetReceiveKeys derives the keys a sender needs to transfer a
@@ -1903,7 +1900,8 @@ message DepositAssetRequest {
     string asset_ref = 2;
 
     // asset_amount is the number of asset units to deposit. They come
-    // from one issuance, and any surplus returns to tapd as change.
+    // from one issuance, and any surplus returns to the asset wallet as
+    // change.
     uint64 asset_amount = 3;
 
     // sat_per_vbyte is the funding fee rate. Zero uses target_conf.
@@ -1938,8 +1936,8 @@ message ListAssetDepositsResponse {
 enum AssetDepositStatus {
     ASSET_DEPOSIT_STATUS_UNSPECIFIED = 0;
 
-    // ASSET_DEPOSIT_STATUS_FUNDING means tapd has not published the
-    // deposit yet. error holds the reason of a failed attempt.
+    // ASSET_DEPOSIT_STATUS_FUNDING means the asset backend has not
+    // published the deposit yet. error holds the reason of a failed attempt.
     ASSET_DEPOSIT_STATUS_FUNDING = 1;
 
     // ASSET_DEPOSIT_STATUS_PUBLISHED means the deposit transaction is
@@ -1967,7 +1965,7 @@ message AssetDeposit {
     // BTC VTXO when the deposit boards.
     int64 value_sat = 6;
 
-    // fee_sat is the funding fee paid by the tapd wallet.
+    // fee_sat is the funding fee of the deposit transaction.
     uint64 fee_sat = 7;
 
     // confirmed_height is the height of the confirmed proof, zero before.
@@ -1980,11 +1978,12 @@ message AssetDeposit {
     // checkpoints with it or after that round fails.
     string round_id = 10;
 
-    // claim_txid is the transaction that claims the deposit back to the tapd
-    // wallet, empty unless a claim was signed.
+    // claim_txid is the transaction that claims the deposit back to the
+    // asset wallet, empty unless a claim was signed.
     string claim_txid = 11;
 
-    // claimed is true once tapd records the claim six blocks deep.
+    // claimed is true once the asset backend records the claim six blocks
+    // deep.
     bool claimed = 12;
 }
 

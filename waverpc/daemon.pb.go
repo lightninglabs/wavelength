@@ -350,8 +350,8 @@ type AssetDepositStatus int32
 
 const (
 	AssetDepositStatus_ASSET_DEPOSIT_STATUS_UNSPECIFIED AssetDepositStatus = 0
-	// ASSET_DEPOSIT_STATUS_FUNDING means tapd has not published the
-	// deposit yet. error holds the reason of a failed attempt.
+	// ASSET_DEPOSIT_STATUS_FUNDING means the asset backend has not
+	// published the deposit yet. error holds the reason of a failed attempt.
 	AssetDepositStatus_ASSET_DEPOSIT_STATUS_FUNDING AssetDepositStatus = 1
 	// ASSET_DEPOSIT_STATUS_PUBLISHED means the deposit transaction is
 	// published and has fewer confirmations than the operator requires of a
@@ -6672,7 +6672,8 @@ type DepositAssetRequest struct {
 	// asset_ref is the asset ID, or the group key of a grouped asset.
 	AssetRef string `protobuf:"bytes,2,opt,name=asset_ref,json=assetRef,proto3" json:"asset_ref,omitempty"`
 	// asset_amount is the number of asset units to deposit. They come
-	// from one issuance, and any surplus returns to tapd as change.
+	// from one issuance, and any surplus returns to the asset wallet as
+	// change.
 	AssetAmount uint64 `protobuf:"varint,3,opt,name=asset_amount,json=assetAmount,proto3" json:"asset_amount,omitempty"`
 	// sat_per_vbyte is the funding fee rate. Zero uses target_conf.
 	SatPerVbyte uint64 `protobuf:"varint,4,opt,name=sat_per_vbyte,json=satPerVbyte,proto3" json:"sat_per_vbyte,omitempty"`
@@ -6940,7 +6941,7 @@ type AssetDeposit struct {
 	// the round fee and the asset VTXO's satoshis, and the rest becomes a
 	// BTC VTXO when the deposit boards.
 	ValueSat int64 `protobuf:"varint,6,opt,name=value_sat,json=valueSat,proto3" json:"value_sat,omitempty"`
-	// fee_sat is the funding fee paid by the tapd wallet.
+	// fee_sat is the funding fee of the deposit transaction.
 	FeeSat uint64 `protobuf:"varint,7,opt,name=fee_sat,json=feeSat,proto3" json:"fee_sat,omitempty"`
 	// confirmed_height is the height of the confirmed proof, zero before.
 	ConfirmedHeight uint32 `protobuf:"varint,8,opt,name=confirmed_height,json=confirmedHeight,proto3" json:"confirmed_height,omitempty"`
@@ -6949,10 +6950,11 @@ type AssetDeposit struct {
 	// round_id is the round that spends the deposit, empty until a round
 	// checkpoints with it or after that round fails.
 	RoundId string `protobuf:"bytes,10,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
-	// claim_txid is the transaction that claims the deposit back to the tapd
-	// wallet, empty unless a claim was signed.
+	// claim_txid is the transaction that claims the deposit back to the
+	// asset wallet, empty unless a claim was signed.
 	ClaimTxid string `protobuf:"bytes,11,opt,name=claim_txid,json=claimTxid,proto3" json:"claim_txid,omitempty"`
-	// claimed is true once tapd records the claim six blocks deep.
+	// claimed is true once the asset backend records the claim six blocks
+	// deep.
 	Claimed       bool `protobuf:"varint,12,opt,name=claimed,proto3" json:"claimed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
