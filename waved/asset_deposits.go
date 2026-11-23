@@ -106,23 +106,13 @@ type assetDepositStore interface {
 	AssetDepositRound(context.Context, string) (string, error)
 }
 
-// assetDepositService funds asset deposits from the tapd wallet and tracks
+// assetDepositService funds asset deposits from the asset wallet and tracks
 // them until their proofs confirm.
 type assetDepositService struct {
 	log       btclog.Logger
 	store     assetDepositStore
 	backend   assetDepositBackend
 	onboarder assetOnboarder
-
-	// signsAnchors is set for a backend that signs its own anchor inputs
-	// at publish whatever version it reports, as the embedded engine
-	// does. tapd is asked for its version.
-	signsAnchors bool
-
-	// creditsClaims is set for a backend that confirms a transfer
-	// spending an asset it does not hold whatever version it reports, as
-	// the embedded engine does. tapd is asked for its version.
-	creditsClaims bool
 
 	// terms returns the operator terms the deposit policy commits to.
 	terms func() *types.OperatorTerms
@@ -137,7 +127,7 @@ type assetDepositService struct {
 	registerBoarding assetBoardingRegistrar
 
 	// claims, claimer, broadcastClaim and reserveClaim return a deposit
-	// no round holds to the tapd wallet. Claims are unavailable while any
+	// no round holds to the asset wallet. Claims are unavailable while any
 	// of them is nil.
 	claims         assetDepositClaimStore
 	claimer        assetClaimer
@@ -145,8 +135,7 @@ type assetDepositService struct {
 	reserveClaim   claimReserver
 
 	// bestBlockHash checks the block a claim confirmed in against the
-	// best chain. It is nil for tapd, which follows the reorganizations
-	// of its own transfers.
+	// best chain. Without it, the block the backend reports is trusted.
 	bestBlockHash blockHashReader
 
 	// claimsMu guards trackedClaims, the claims txconfirm tracks in this
@@ -154,8 +143,8 @@ type assetDepositService struct {
 	claimsMu      sync.Mutex
 	trackedClaims map[chainhash.Hash]struct{}
 
-	// mu serializes funding, because tapd wallet input selection must not
-	// interleave between deposits.
+	// mu serializes funding, because asset wallet input selection must
+	// not interleave between deposits.
 	mu sync.Mutex
 
 	// poll asks the watcher to check published deposits now.
@@ -167,8 +156,6 @@ type assetDepositConfig struct {
 	log              btclog.Logger
 	store            assetDepositStore
 	backend          assetDepositBackend
-	signsAnchors     bool
-	creditsClaims    bool
 	onboarder        assetOnboarder
 	terms            func() *types.OperatorTerms
 	quoteBoardingFee boardingFeeQuoter
@@ -187,8 +174,6 @@ func newAssetDepositService(cfg *assetDepositConfig) *assetDepositService {
 		log:              cfg.log,
 		store:            cfg.store,
 		backend:          cfg.backend,
-		signsAnchors:     cfg.signsAnchors,
-		creditsClaims:    cfg.creditsClaims,
 		onboarder:        cfg.onboarder,
 		terms:            cfg.terms,
 		quoteBoardingFee: cfg.quoteBoardingFee,
@@ -213,10 +198,6 @@ func (d *assetDepositService) Deposit(ctx context.Context,
 	if err := validateDepositAssetRequest(req); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := d.checkAnchorSigning(ctx); err != nil {
-		return nil, err
-	}
-
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -241,32 +222,6 @@ func (d *assetDepositService) Deposit(ctx context.Context,
 	}
 
 	return d.fund(ctx, deposit)
-}
-
-// checkAnchorSigning fails unless the asset backend signs its own anchor
-// inputs at publish, since the daemon wallet pays the rest of the deposit.
-func (d *assetDepositService) checkAnchorSigning(ctx context.Context) error {
-	if d.signsAnchors {
-		return nil
-	}
-
-	info, err := d.backend.GetInfo(ctx)
-	if err != nil || info == nil {
-		return status.Errorf(codes.Unavailable, "read tapd info: %v",
-			err)
-	}
-	supported, err := tapassets.TapdSignsAnchorInputs(info.Version)
-	if err != nil {
-		return status.Errorf(codes.FailedPrecondition, "asset "+
-			"deposits: %v", err)
-	}
-	if !supported {
-		return status.Errorf(codes.FailedPrecondition, "tapd %s "+
-			"cannot sign its anchor inputs; deposits require tapd "+
-			"v0.9.0 or later", info.Version)
-	}
-
-	return nil
 }
 
 // create sizes the deposit, selects its funding proofs and records the
@@ -552,7 +507,7 @@ func (d *assetDepositService) confirmPublished(ctx context.Context) {
 	depth := max(terms.MinConfirmations, wallet.MinBoardingConfs)
 	info, err := d.backend.GetInfo(ctx)
 	if err != nil || info == nil {
-		d.log.DebugS(ctx, "Unable to read the tapd chain tip",
+		d.log.DebugS(ctx, "Unable to read the asset chain tip",
 			btclog.Fmt("error", "%v", err),
 		)
 
@@ -773,8 +728,8 @@ func (f *depositFunder) FeeRate(ctx context.Context, targetConf uint32) (
 
 // FundTemplate funds an outputs-only template from the daemon wallet. A
 // nested SegWit coin gains a scriptSig when signed, which would change the
-// txid tapd seals, so such coins are leased away from coin selection while the
-// wallet funds.
+// txid the asset backend seals, so such coins are leased away from coin
+// selection while the wallet funds.
 func (f *depositFunder) FundTemplate(ctx context.Context, packet *psbt.Packet,
 	feeRate chainfee.SatPerKWeight, lockID walletcore.LockID,
 	lockExpiry time.Duration) (int32, error) {

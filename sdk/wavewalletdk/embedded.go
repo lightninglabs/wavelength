@@ -443,10 +443,6 @@ func cloneDaemonConfig(cfg *waved.Config) *waved.Config {
 	}
 	if cfg.Assets != nil {
 		assetsCfg := *cfg.Assets
-		if cfg.Assets.Tapd != nil {
-			tapdCfg := *cfg.Assets.Tapd
-			assetsCfg.Tapd = &tapdCfg
-		}
 		assetsCfg.GroupKeys = append(
 			[]string(nil), cfg.Assets.GroupKeys...,
 		)

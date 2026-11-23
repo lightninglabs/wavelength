@@ -137,14 +137,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   still exist. A nil cursor starts at the newest session; direction zero and
   status `-1` disable their respective filters; a non-positive limit is an
   error.
-- `AssetDepositStore` / `AssetDeposit` — asset deposits funded from tapd:
+- `AssetDepositStore` / `AssetDeposit` — asset deposits funded from the
+  asset wallet:
   the stored request (replayed verbatim on retry), the published output and
   boarding claim, and the confirmed proof. Reusing a request ID for a
   different request fails with `ErrAssetDepositMismatch`; repeating a
   lifecycle update is a no-op. `AssetDeposit.RoundBoarding` turns a confirmed
   deposit into a round boarding input, and `AssetDepositRound` names the round
   that spends it. `AssetDepositClaim` is a deposit's one claim back to the
-  asset wallet: `claiming` once signed, `claimed` once tapd confirms it.
+  asset wallet: `claiming` once signed, `claimed` once the asset backend
+  confirms it.
   Recording a different claim transaction fails with
   `ErrAssetDepositMismatch`.
 - `AssetEngineStore` — the store of tap-sdk's embedded asset engine

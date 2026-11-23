@@ -45,7 +45,7 @@ type mobileConfig struct {
 	WalletBlockHeadersSource  string `json:"wallet_block_headers_source"`
 	WalletFilterHeadersSource string `json:"wallet_filter_headers_source"`
 
-	// Taproot Assets backend: "none", "tapd" or "embedded". Empty keeps
+	// Taproot Assets backend: "none" or "embedded". Empty keeps
 	// the daemon default, which disables assets.
 	AssetsBackend  string   `json:"assets_backend"`
 	AssetGroupKeys []string `json:"asset_group_keys"`

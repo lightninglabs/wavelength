@@ -193,10 +193,6 @@ func (d *assetDepositService) checkClaimable(ctx context.Context,
 		return status.Errorf(codes.Unavailable, "read asset backend "+
 			"info: %v", err)
 	}
-	if err := d.checkClaimSupport(info.Version); err != nil {
-		return err
-	}
-
 	// The exit leaf's relative timelock lets the claim into the block
 	// at confirmed_height + exit_delay at the earliest.
 	mature := uint64(deposit.ConfirmedHeight) +
@@ -205,27 +201,6 @@ func (d *assetDepositService) checkClaimable(ctx context.Context,
 		return status.Errorf(codes.FailedPrecondition, "asset deposit "+
 			"%s can be claimed from height %d",
 			deposit.Request.RequestID, mature)
-	}
-
-	return nil
-}
-
-// checkClaimSupport fails for a tapd whose version cannot confirm a transfer
-// spending an asset it does not hold.
-func (d *assetDepositService) checkClaimSupport(version string) error {
-	if d.creditsClaims {
-		return nil
-	}
-
-	supported, err := tapassets.TapdCanClaim(version)
-	if err != nil {
-		return status.Errorf(codes.FailedPrecondition, "asset deposit "+
-			"claims: %v", err)
-	}
-	if !supported {
-		return status.Errorf(codes.FailedPrecondition, "tapd %s "+
-			"cannot credit a claimed asset; claims require tapd "+
-			"v0.9.0 or later", version)
 	}
 
 	return nil

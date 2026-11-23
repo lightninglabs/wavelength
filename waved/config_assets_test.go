@@ -2,7 +2,6 @@ package waved
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -12,8 +11,8 @@ const testGroupKeyHex = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959" +
 	"f2815b16f81798"
 
 // TestConfigValidateAssets checks that the asset backend selector accepts
-// only the implemented backends, that tapd requires an address, and that
-// the embedded backend runs on regtest only, on any wallet.
+// only the implemented backends, and that the embedded backend runs on
+// regtest only, on any wallet.
 func TestConfigValidateAssets(t *testing.T) {
 	t.Parallel()
 
@@ -35,45 +34,14 @@ func TestConfigValidateAssets(t *testing.T) {
 			wantBackend: AssetBackendNone,
 		},
 		{
-			name: "empty backend disables assets",
-			assets: &AssetsConfig{
-				Tapd: &TapdConfig{},
-			},
+			name:        "empty backend disables assets",
+			assets:      &AssetsConfig{},
 			wantBackend: AssetBackendNone,
-		},
-		{
-			name: "tapd",
-			assets: &AssetsConfig{
-				Backend: AssetBackendTapd,
-				Tapd: &TapdConfig{
-					Host: "localhost:10029",
-				},
-			},
-			wantBackend: AssetBackendTapd,
-		},
-		{
-			name: "tapd without host",
-			assets: &AssetsConfig{
-				Backend: AssetBackendTapd,
-				Tapd:    &TapdConfig{},
-			},
-			wantErr: "assets.tapd.host is required",
-		},
-		{
-			name: "tapd with negative timeout",
-			assets: &AssetsConfig{
-				Backend: AssetBackendTapd,
-				Tapd: &TapdConfig{
-					Host:       "localhost:10029",
-					RPCTimeout: -time.Second,
-				},
-			},
-			wantErr: "assets.tapd.rpctimeout",
 		},
 		{
 			name: "unknown backend",
 			assets: &AssetsConfig{
-				Backend: "universe",
+				Backend: "tapd",
 			},
 			wantErr: "unknown assets.backend",
 		},
@@ -149,16 +117,16 @@ func TestConfigValidateAssets(t *testing.T) {
 	}
 }
 
-// TestConnectAssetBackendNone checks that disabled assets install no
-// verifier, so rounds with asset requests fail before signing.
-func TestConnectAssetBackendNone(t *testing.T) {
+// TestAssetBackendNone checks that disabled assets install no verifier, so
+// rounds with asset requests fail before signing.
+func TestAssetBackendNone(t *testing.T) {
 	t.Parallel()
 
-	cfg := DefaultConfig()
-	s := &Server{cfg: cfg}
+	s := &Server{cfg: DefaultConfig()}
 
-	verifier, cleanup, err := s.connectAssetBackend(t.Context())
+	cleanup, err := s.initEmbeddedAssets(t.Context(), nil)
 	require.NoError(t, err)
-	require.Nil(t, verifier)
 	cleanup()
+	require.Nil(t, s.assetVTXOVerifier)
+	require.Nil(t, s.assetClient)
 }

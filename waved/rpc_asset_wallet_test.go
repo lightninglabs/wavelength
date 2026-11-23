@@ -14,12 +14,12 @@ import (
 )
 
 // fakeProofBackend is an asset backend that imports a proof file of two
-// proofs. Like a tapd that has not seen the asset's group, it refuses to
-// verify the file as a whole.
+// proofs. It refuses to verify the file unless valid is set.
 type fakeProofBackend struct {
 	tapsdk.Client
 
-	tip *tapsdk.DecodedProof
+	tip   *tapsdk.DecodedProof
+	valid bool
 
 	verified   int
 	inserted   int
@@ -40,13 +40,17 @@ func (f *fakeProofBackend) DecodeProof(context.Context, []byte) (
 	return f.tip, nil
 }
 
-// VerifyProof refuses the file, whose group the backend has not seen.
+// VerifyProof accepts the file when valid is set, and otherwise refuses it
+// as a file whose group the backend does not trust.
 func (f *fakeProofBackend) VerifyProof(context.Context, []byte) (
 	*tapsdk.VerifyProofResponse, error) {
 
 	f.verified++
+	if !f.valid {
+		return nil, errors.New("group key is not known")
+	}
 
-	return nil, errors.New("group key is not known")
+	return &tapsdk.VerifyProofResponse{Valid: true}, nil
 }
 
 // InsertProof counts an inserted proof.
@@ -110,20 +114,20 @@ func newProofImportFixture(t *testing.T) (*RPCServer, *fakeProofBackend,
 		}
 }
 
-// TestImportAssetProofUnseenGroup checks that the tapd backend imports the
-// proof of a group it has not seen: it inserts the proofs, issuance first,
-// without verifying the file before.
-func TestImportAssetProofUnseenGroup(t *testing.T) {
+// TestImportAssetProof checks that a proof file that verifies is imported:
+// the backend receives its proofs and registers the transfer.
+func TestImportAssetProof(t *testing.T) {
 	t.Parallel()
 
 	rpcServer, backend, req := newProofImportFixture(t)
+	backend.valid = true
 
 	owned, err := rpcServer.ImportAssetProof(t.Context(), req)
 	require.NoError(t, err)
 	require.Equal(t, req.AssetRef, owned.AssetRef)
 	require.EqualValues(t, 21, owned.Amount)
 
-	require.Zero(t, backend.verified)
+	require.Equal(t, 1, backend.verified)
 	require.Equal(t, 2, backend.inserted)
 	require.Equal(t, 1, backend.registered)
 }
@@ -142,9 +146,9 @@ func TestImportAssetProofWrongAsset(t *testing.T) {
 	require.Zero(t, backend.registered)
 }
 
-// TestImportAssetProofEngineVerifiesFirst checks that the embedded backend
-// is given no proof of a file that does not verify.
-func TestImportAssetProofEngineVerifiesFirst(t *testing.T) {
+// TestImportAssetProofVerifiesFirst checks that the asset backend is given
+// no proof of a file that does not verify.
+func TestImportAssetProofVerifiesFirst(t *testing.T) {
 	t.Parallel()
 
 	rpcServer, backend, req := newProofImportFixture(t)

@@ -131,9 +131,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   and joins both goroutines.
 - `assets.backend` selects how asset VTXOs are verified. `none` (the
   default) installs no verifier, so a round that would create an asset VTXO
-  for this daemon fails before signing. `tapd` dials tapd at startup, checks
-  that it runs on the daemon's network, and refuses to start otherwise.
-  `embedded` runs tap-sdk's in-process engine and needs no tapd.
+  for this daemon fails before signing. `embedded` runs tap-sdk's in-process
+  engine, with no tapd beside the daemon.
 - The embedded backend (`asset_engine.go`) is the engine on three daemon
   resources: `db.AssetEngineStore` for its keys, proofs and transfers,
   the daemon wallet for its keys and signatures, and the chain backend
@@ -158,25 +157,20 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   trusted group. Trust comes from `assets.groupkeys`, from the asset a
   caller names (`groupTrustingVerifier` for a round's asset VTXO,
   `ImportAssetProof` for a received asset), and from the assets the wallet
-  holds. The tapd backend asks tapd instead.
+  holds.
 - `NewAssetReceiveKeys`, `ImportAssetProof` and `ListOwnedAssets` are the
-  asset wallet of either backend through tap-sdk: keys a sender transfers an
-  asset to, the import of that transfer's proof, and the on-chain holdings.
+  asset wallet through tap-sdk: keys a sender transfers an asset to, the
+  import of that transfer's proof, and the on-chain holdings.
   `ImportAssetProof` checks that the proof is of the asset the caller
-  names before it stores anything. The embedded backend also verifies the
-  file first. tapd verifies each proof as the import inserts it, because
-  it knows a group only after the import has inserted the issuance.
+  names, and verifies the file, before it stores anything: the engine holds
+  the proofs of a file before it verifies them.
 - `NewAssetFundingAddress` hands out a backing-wallet address through
   `NewWalletAddress`. A deposit spends the daemon wallet's coins, and a
   wallet SDK host has no other way to learn an address of that wallet.
 - `DepositAsset` needs an asset backend; without one the RPC returns
-  `FailedPrecondition`. tapd signs its own asset inputs at publish, and
-  waved never connects to the lnd behind tapd. A tapd that
-  `tapassets.TapdSignsAnchorInputs` rejects (older than v0.9.0) is refused
-  with `FailedPrecondition` before the deposit is recorded. The embedded
-  engine signs its anchor inputs with keys of the daemon's seed, so no
-  version gates it, and its deposit journal lives in the database instead
-  of files, which a browser does not have. A backend that tap-sdk does not
+  `FailedPrecondition`. The engine signs its anchor inputs with keys of the
+  daemon's seed, and its deposit journal lives in the database, since a
+  browser has no files. A backend that tap-sdk does not
   report as signing them fails the deposit with `FailedPrecondition` before
   anything is sealed, and the wallet's leased coins are released. The daemon
   wallet pays and signs the deposit's Bitcoin through `depositFunder`, over the
@@ -184,7 +178,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   template without signing it, and leases its inputs all or none, and
   `SignInputs` signs and finalizes only the inputs whose derivation info it
   can derive. Nested SegWit coins are leased under `depositExclusionLockID`
-  while it funds, since their scriptSig would change the txid tapd seals. A
+  while it funds, since their scriptSig would change the txid the engine
+  seals. A
   confirmation target resolves through the chain backend's sat/kWU estimate
   where it has one (`EstimateFeePerKW`), since `EstimateFee` truncates to
   whole sat/vB. The deposit output's value is not a caller parameter:
@@ -194,9 +189,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   proofs, is stored before it is funded, and a retry under the same request ID
   replays that stored request, because the onboarding journal is bound to its
   digest. Funding is serialized, since two deposits must not select the same
-  tapd outputs. A failed attempt stays `funding` with its error; a published one
+  asset outputs. A failed attempt stays `funding` with its error; a published one
   is polled until its transfer has the operator's `MinConfirmations` (at least
-  one) by tapd's chain tip, then stores the exported proof. The operator rejects
+  one) by the engine's chain tip, then stores the exported proof. The operator rejects
   a shallower boarding input, and the depth bounds the reorgs that could replace
   the block the proof commits to. Deposits stay out of the boarding tables, so
   Bitcoin boarding and boarding sweeps never select them.
@@ -214,16 +209,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   asset wallet of the asset backend, once the boarding exit delay has passed
   since its proof's height. The claim reads the proof and its height from
   the backend again, since a reorganization deeper than the boarding depth
-  moves the deposit to another block after its row is written. It refuses a
-  tapd that `tapassets.TapdCanClaim` rejects, since such a tapd cannot
-  confirm a transfer spending an asset it does not hold. No version gates
-  the embedded engine. `tapassets.Claimer` spends the deposit through the
+  moves the deposit to another block after its row is written.
+  `tapassets.Claimer` spends the deposit through the
   owner's composed exit leaf into keys the backend derives, at the
   deposit's full value, so the claim pays no fee;
   txconfirm relays it with a CPFP child from the daemon wallet. The claim
   journal pins the backend's keys and the signed transaction, so a retry or
-  a restart rebuilds the same claim. The tapd backend keeps the journal in
-  files (`assets/claims`), and the embedded backend keeps it in the database
+  a restart rebuilds the same claim. The journal lives in the database
   (`assetJournal`), beside the deposit journal.
 - A claim is reserved and recorded before the asset backend learns of it. The
   round actor reserves the deposit (`round.ReserveAssetDepositClaimRequest`),
@@ -238,16 +230,14 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   reports a block that left the chain while the daemon was down, until the
   claim is mined again.
 - One `tapassets.Claimer` (`Server.assetClaimer`) claims both deposits
-  (`deposit/` journal keys) and asset VTXOs (`vtxo/`). The tapd backend
-  creates it when tapd connects, and the embedded backend creates it with
-  the engine. The unroll registry hands a matured asset VTXO to
+  (`deposit/` journal keys) and asset VTXOs (`vtxo/`). `initEmbeddedAssets`
+  creates it with the engine. The unroll registry hands a matured asset VTXO to
   `assetVTXOClaimer`, which takes the proof path and OP_TRUE witness of each
   issuance the VTXO holds from its sealed package, reads the block of every
   transaction on those paths through one-shot chainsource confirmations with
   `IncludeBlock` (bounded by `assetVTXOClaimChainTimeout`), and supplies the
   confirmed proof files with the claim, since the backend never saw the
-  tree's history. tapd must accept `input_proof_files`; an older tapd refuses
-  the publish and the unroll retries at the next block.
+  tree's history.
 - The embedded engine verifies each proof file a claim supplies back to its
   issuance before it records the claim, and a grouped asset verifies only
   for a trusted group. `groupTrustingClaimer` therefore trusts the group of

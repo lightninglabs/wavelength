@@ -8,7 +8,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// DepositAsset funds a boarding output holding a Taproot Asset from the tapd
+// DepositAsset funds a boarding output holding a Taproot Asset from the asset
 // wallet, or resumes the deposit with the same request ID.
 func (r *RPCServer) DepositAsset(ctx context.Context,
 	req *waverpc.DepositAssetRequest) (*waverpc.AssetDeposit, error) {
