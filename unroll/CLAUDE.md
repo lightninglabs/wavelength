@@ -452,8 +452,8 @@ withheld, including a sweep restored from a checkpoint.
 With an `AssetClaimer` configured, the matured exit of an asset VTXO is the
 claimer's claim instead: the leaf spent through its exit leaf into the asset
 wallet. The claim pays no fee, so `startSweep` hands it to txconfirm for CPFP
-and follows it like a sweep, replacing any staged sweep. tapd leaves the
-claim's relay to the job, so the job asks txconfirm for
+and follows it like a sweep, replacing any staged sweep. The asset backend
+leaves the claim's relay to the job, so the job asks txconfirm for
 `chainsource.DefaultFinalityDepth` confirmations and stays open, resuming the
 relay after a restart, until the claim is final. The VTXO's spend watch sees
 the claim at its first confirmation; that does not complete the job, only

@@ -9,45 +9,43 @@ Durable journals retain committed packages for restart recovery.
 
 ## Key Types
 
-- `Onboarder` — Moves tapd inventory into a composed boarding output that
+- `Onboarder` — Moves asset wallet inventory into a composed boarding output that
   an `OnboardingFunder` pays for, returns asset change, and journals the owner
-  keys, funded template, sealed package, and signed transaction. `FileStore`
-  supplies an atomic file-backed journal.
+  keys, funded template, sealed package, and signed transaction.
 - `OnboardingFunder` — The wallet that pays an onboarding's Bitcoin: fee
   estimates, funding an outputs-only template without signing it, leases, and
-  signing its own inputs. tapd signs the asset anchors at publish, which
-  `TapdSignsAnchorInputs` reports a tapd version can do.
+  signing its own inputs. The asset backend signs the asset anchors at
+  publish.
 - `Claimer` / `ClaimRequest` — Spends a confirmed composed output through
-  its owner's exit leaf and moves the asset to keys the tapd wallet derives,
+  its owner's exit leaf and moves the asset to keys the asset wallet derives,
   so it becomes an ordinary holding. The claim keeps the output's full value
   and adds a zero-value P2A anchor, so the caller relays it with a CPFP
   child. The journal pins the derived keys before the commit and the signed
   transaction before the publish. `Prepare` signs a claim without recording
-  it in tapd, so the caller can record it first. `TapdCanClaim` reports
-  whether a tapd version credits a claim. A claimed output holds one input
+  it in the asset backend, so the caller can record it first. A claimed output holds one input
   per issuance of its asset, and a claim always supplies their proof files
-  with the publish, since tapd may never have seen their history. The
+  with the publish, since the backend may never have seen their history. The
   journal's request digest leaves the proof files out, so a proof rebuilt
   after a reorganization still serves a journaled claim.
   `DecodeAssetVTXOClaimInputs` reads, for each issuance an asset VTXO's leaf
   holds, the proof path down to the leaf and the OP_TRUE witness from the
   leaf's sealed package.
 - `SelectOnboardingProofs` / `ExportOnboardedProof` — Pick and export the
-  confirmed proofs of the tapd anchors that fund an onboarding (one issuance,
+  confirmed proofs of the asset anchors that fund an onboarding (one issuance,
   smallest covering anchor, else the largest anchors up to
   `MaxTransitionInputs`), and export the onboarding output's proof once its
   transfer confirms (`ErrOnboardedProofPending` before).
 - `BatchAnchorCommitter` — Creates caller-funded asset batch outputs.
   `DeriveScript` produces the batch output script before funding, `Commit`
   seals the transfer package against a funded PSBT, and `Publish` records the
-  finalized anchor PSBT in tapd.
+  finalized anchor PSBT in the asset backend.
 - `BatchAnchorRequest` / `BatchAnchorCommit` / `BatchAnchorScript` — The
   request describing the asset move (sources, amount, cosigners, sweep leaf,
   output index), the sealed result, and the derived batch output script with
   its internal key, signing tweak, and Taproot Asset commitment root.
 - `BatchAnchorSource` / `BatchAnchorChange` — One confirmed asset input
   (proof file, anchor outpoint, verifier), and the optional surplus output
-  returned to the operator's tapd wallet via `DeriveBatchAnchorChange`.
+  returned to the operator's asset wallet via `DeriveBatchAnchorChange`.
 - `BuildAssetTree` / `AssetTreeRequest` / `TreeMaterializerConfig` — Builds an
   asset VTXO tree beneath a batch output, returning a `lib/tree.Tree` whose
   node outputs commit to the asset transitions.
@@ -83,30 +81,30 @@ Durable journals retain committed packages for restart recovery.
   into), `lib/arkscript` (leaf policy construction for
   `StandardVTXOLeafAnchor`), `lib/tx/psbtutil` (PSBT encode/decode).
 - **Depended on by**: `waved`, which installs `VTXOVerifier` on the round
-  actor when `assets.backend` is `tapd`, and funds asset deposits from its own
-  wallet through `Onboarder` when tapd signs its own anchor inputs.
+  actor when `assets.enabled` is set, and funds asset deposits from its own
+  wallet through `Onboarder`.
   Operator-side batch APIs have no production caller in this repository.
 - **Sends** / **Receives**: none. This is a synchronous library, not an actor;
   it exchanges no mailbox messages.
 
 ## Invariants
 
-- **Journaled commits are replay-safe, not retry-safe.** Every tapd commit goes
+- **Journaled commits are replay-safe, not retry-safe.** Every backend commit goes
   through `customAnchorCommitJournal`: the sealed package is written to `Store`
   under a deterministic key before the caller sees it, and a later call with the
   same request digest decodes the journaled package instead of committing again.
   The journal write uses `context.WithoutCancel` plus a bounded timeout, so a
-  cancelled request still records what tapd already sealed.
+  cancelled request still records what the backend already sealed.
 - **A journal key is bound to one request digest.** The digest is computed over
   the request under a domain-separated hash (`wavelength/asset-tree-request/v0`
   for trees). Loading state whose digest does not match the current request is
   an error, not a silent overwrite — it means the caller changed the request
   under a key that already sealed a different transition.
-- **`ErrReconciliationRequired` means "do not retry blindly."** When tapd reports
+- **`ErrReconciliationRequired` means "do not retry blindly."** When the backend reports
   a publish attempt with an unknown outcome, `Publish` joins this sentinel onto
   the error. The transaction may already be in flight; the caller must check the
-  real outcome before re-publishing. A claim is the exception: once tapd
-  reports no record of it, `Claimer` publishes it again, because tapd keys a
+  real outcome before re-publishing. A claim is the exception: once the backend
+  reports no record of it, `Claimer` publishes it again, because the backend keys a
   transfer by its anchor transaction and a second publish attaches to the
   first.
 - **Value and asset amount must both be conserved.** `AssetTreeRequest` requires
@@ -120,18 +118,18 @@ Durable journals retain committed packages for restart recovery.
 - **Exactly one of `ProofFile` and `ProofPath` is set** on a
   `TreeRootAssetInput`: a confirmed asset state versus one with unconfirmed
   transitions still in the path.
-- An empty `Witness` on a source or root input asks tapd to sign that asset
+- An empty `Witness` on a source or root input asks the backend to sign that asset
   input; a non-empty stack is taken as caller-supplied authorization.
-- **The funder pays, and tapd only commits.** The funder sees an outputs-only
+- **The funder pays, and the backend only commits.** The funder sees an outputs-only
   template whose asset outputs are reduced, down to dust, by the spent
   anchors' value net of the fee for their key-path weight, so it selects only
   what the anchors leave uncovered; anchor value beyond that goes to its
   change. The Onboarder then lays the transaction out as anchors, funder
   inputs, asset outputs, funder change, and commits it caller-funded exact,
-  so tapd adds no input or output. The funder may reorder what it funds; only
+  so the backend adds no input or output. The funder may reorder what it funds; only
   its inputs and change are taken from its template. Each funder input must
   spend a native SegWit output (`NativeSegWitScript`), since a scriptSig
-  would change the txid tapd seals. Fee rates stay in sat/kWU throughout.
+  would change the txid the backend seals. Fee rates stay in sat/kWU throughout.
 - **Funded coins are journaled before the commit.** A retry reuses the
   journaled template and renews its leases, so it spends the same coins, and
   a sealed package renews them until it publishes. A refused commit, or a fee
@@ -139,11 +137,11 @@ Durable journals retain committed packages for restart recovery.
   release fails, which keeps the template for the retry. Releases and the
   template's journal write outlive a cancelled caller; an ambiguous commit
   keeps the coins.
-- **tapd signs its anchors at publish.** Every anchor has a backend-signed
+- **The backend signs its anchors at publish.** Every anchor has a backend-signed
   plan, so it reaches publication unsigned, and the funder signs and finalizes
   only its own inputs. The funder signs a copy in which the anchors carry no
   derivation info and its inputs carry the derivations journaled with the
-  funded template, so a wallet that shares tapd's keys cannot sign an anchor.
+  funded template, so a wallet that shares the asset wallet's keys cannot sign an anchor.
   The Onboarder rejects a package that is not caller-funded exact.
 - **Anchor leaves must assemble into their Ark policy tree.** tap-sdk pairs
   adjacent `TapLeaves`, while arkscript splits a policy's leaves in halves.
@@ -153,7 +151,7 @@ Durable journals retain committed packages for restart recovery.
 - **A transition merges at most `MaxTransitionInputs` inputs per issuance.**
   Each extra input becomes a co-input path of the proof path step, which
   tap-sdk bounds. Plans above the bound fail with
-  `ErrTooManyTransitionInputs` before tapd seals anything.
+  `ErrTooManyTransitionInputs` before the backend seals anything.
 - **An asset VTXO is verified against its round, not a wallet.**
   `VTXOVerifier` requires the leaf package to seal the leaf's own
   transaction, and every asset output to land in the VTXO under an OP_TRUE

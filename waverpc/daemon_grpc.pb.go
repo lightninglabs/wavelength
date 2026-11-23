@@ -214,8 +214,7 @@ type DaemonServiceClient interface {
 	// DepositAsset funds a boarding output holding a Taproot Asset from the
 	// asset wallet of the asset backend and tracks it until its proof
 	// confirms. Retrying with the same request_id resumes the same
-	// deposit. Requires an asset backend; a tapd backend must run tapd
-	// v0.9.0 or later.
+	// deposit. Requires an asset backend.
 	DepositAsset(ctx context.Context, in *DepositAssetRequest, opts ...grpc.CallOption) (*AssetDeposit, error)
 	// ListAssetDeposits returns the asset deposits of this daemon.
 	ListAssetDeposits(ctx context.Context, in *ListAssetDepositsRequest, opts ...grpc.CallOption) (*ListAssetDepositsResponse, error)
@@ -227,9 +226,7 @@ type DaemonServiceClient interface {
 	// holds through the owner's exit path, once the exit delay has passed,
 	// and returns the asset to the asset wallet of the asset backend. The
 	// claim pays its fee with a CPFP child from the daemon wallet. Retrying
-	// resumes the same claim. Requires an asset backend; a tapd backend must
-	// run tapd v0.9.0 or later, which confirms transfers spending assets it
-	// does not hold.
+	// resumes the same claim. Requires an asset backend.
 	ClaimAssetDeposit(ctx context.Context, in *ClaimAssetDepositRequest, opts ...grpc.CallOption) (*AssetDeposit, error)
 	// NewAssetReceiveKeys derives the keys a sender needs to transfer a
 	// Taproot Asset to this daemon's asset wallet on chain: the script key
@@ -1047,8 +1044,7 @@ type DaemonServiceServer interface {
 	// DepositAsset funds a boarding output holding a Taproot Asset from the
 	// asset wallet of the asset backend and tracks it until its proof
 	// confirms. Retrying with the same request_id resumes the same
-	// deposit. Requires an asset backend; a tapd backend must run tapd
-	// v0.9.0 or later.
+	// deposit. Requires an asset backend.
 	DepositAsset(context.Context, *DepositAssetRequest) (*AssetDeposit, error)
 	// ListAssetDeposits returns the asset deposits of this daemon.
 	ListAssetDeposits(context.Context, *ListAssetDepositsRequest) (*ListAssetDepositsResponse, error)
@@ -1060,9 +1056,7 @@ type DaemonServiceServer interface {
 	// holds through the owner's exit path, once the exit delay has passed,
 	// and returns the asset to the asset wallet of the asset backend. The
 	// claim pays its fee with a CPFP child from the daemon wallet. Retrying
-	// resumes the same claim. Requires an asset backend; a tapd backend must
-	// run tapd v0.9.0 or later, which confirms transfers spending assets it
-	// does not hold.
+	// resumes the same claim. Requires an asset backend.
 	ClaimAssetDeposit(context.Context, *ClaimAssetDepositRequest) (*AssetDeposit, error)
 	// NewAssetReceiveKeys derives the keys a sender needs to transfer a
 	// Taproot Asset to this daemon's asset wallet on chain: the script key

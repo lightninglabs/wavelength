@@ -14,7 +14,6 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
 	"github.com/lightninglabs/tap-sdk/customanchor"
-	"github.com/lightninglabs/tap-sdk/embedded"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/types"
@@ -27,35 +26,34 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// fakeDepositTapd serves one wallet anchor, the transfer that funds the
+// fakeDepositBackend serves one wallet anchor, the transfer that funds the
 // deposit output, and the chain tip.
-type fakeDepositTapd struct {
+type fakeDepositBackend struct {
 	utxos     map[string]*tapsdk.ManagedUtxo
 	transfers []*tapsdk.AssetTransfer
 	height    uint32
-	version   string
 
 	// proof replaces the proof file ExportProof returns.
 	proof []byte
 }
 
-func (f *fakeDepositTapd) GetInfo(context.Context) (*tapsdk.Info, error) {
-	return &tapsdk.Info{BlockHeight: f.height, Version: f.version}, nil
+func (f *fakeDepositBackend) GetInfo(context.Context) (*tapsdk.Info, error) {
+	return &tapsdk.Info{BlockHeight: f.height}, nil
 }
 
-func (f *fakeDepositTapd) ListUtxos(context.Context, *tapsdk.ListUtxosRequest) (
-	map[string]*tapsdk.ManagedUtxo, error) {
+func (f *fakeDepositBackend) ListUtxos(context.Context,
+	*tapsdk.ListUtxosRequest) (map[string]*tapsdk.ManagedUtxo, error) {
 
 	return f.utxos, nil
 }
 
-func (f *fakeDepositTapd) ListTransfers(context.Context,
+func (f *fakeDepositBackend) ListTransfers(context.Context,
 	*tapsdk.ListTransfersRequest) ([]*tapsdk.AssetTransfer, error) {
 
 	return f.transfers, nil
 }
 
-func (f *fakeDepositTapd) ExportProof(_ context.Context, _ tapsdk.AssetRef,
+func (f *fakeDepositBackend) ExportProof(_ context.Context, _ tapsdk.AssetRef,
 	_ tapsdk.PubKey, outpoint *tapsdk.Outpoint) (*tapsdk.ProofFile, error) {
 
 	if f.proof != nil {
@@ -86,7 +84,7 @@ func (f *fakeOnboarder) Onboard(_ context.Context,
 // depositFixture wires a deposit service to fakes and a real store.
 type depositFixture struct {
 	service   *assetDepositService
-	tapd      *fakeDepositTapd
+	backend   *fakeDepositBackend
 	onboarder *fakeOnboarder
 	terms     *types.OperatorTerms
 	roundFee  btcutil.Amount
@@ -119,8 +117,7 @@ func newDepositFixture(t *testing.T) *depositFixture {
 		template, leafHash,
 	)
 	require.NoError(t, err)
-	tapd := &fakeDepositTapd{
-		version: "0.9.0-alpha",
+	backend := &fakeDepositBackend{
 		utxos: map[string]*tapsdk.ManagedUtxo{
 			"anchor": {
 				OutPoint: tapsdk.Outpoint{
@@ -183,7 +180,7 @@ func newDepositFixture(t *testing.T) *depositFixture {
 		),
 	)
 	fixture := &depositFixture{
-		tapd:      tapd,
+		backend:   backend,
 		onboarder: onboarder,
 		terms: &types.OperatorTerms{
 			PubKey:            operatorKey,
@@ -198,7 +195,7 @@ func newDepositFixture(t *testing.T) *depositFixture {
 		log:       btclog.Disabled,
 		store:     store,
 		claims:    store,
-		backend:   tapd,
+		backend:   backend,
 		onboarder: onboarder,
 		terms: func() *types.OperatorTerms {
 			return fixture.terms
@@ -269,9 +266,10 @@ func TestAssetDepositFunding(t *testing.T) {
 	require.Equal(t, codes.AlreadyExists, status.Code(err))
 }
 
-// TestAssetDepositUnsupportedTapd checks that a tapd that tap-sdk does not
-// report as signing its own anchor inputs fails the deposit as a precondition.
-func TestAssetDepositUnsupportedTapd(t *testing.T) {
+// TestAssetDepositUnsupportedBackend checks that a backend that tap-sdk does
+// not report as signing its own anchor inputs fails the deposit as a
+// precondition.
+func TestAssetDepositUnsupportedBackend(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -290,43 +288,9 @@ func TestAssetDepositUnsupportedTapd(t *testing.T) {
 	require.Equal(t, db.AssetDepositFunding, deposits[0].Status)
 }
 
-// TestAssetDepositOldTapd checks that a deposit is refused before it is
-// recorded when tapd cannot sign its own anchor inputs.
-func TestAssetDepositOldTapd(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-	f := newDepositFixture(t)
-	f.tapd.version = "0.8.5-alpha commit=v0.8.5"
-
-	_, err := f.service.Deposit(ctx, f.request("alice-1"))
-	require.Equal(t, codes.FailedPrecondition, status.Code(err))
-	require.ErrorContains(t, err, "v0.9.0 or later")
-	require.Empty(t, f.onboarder.requests)
-
-	deposits, err := f.service.List(ctx)
-	require.NoError(t, err)
-	require.Empty(t, deposits)
-}
-
-// TestAssetDepositSigningBackend checks that a backend that signs its own
-// anchor inputs deposits whatever version it reports.
-func TestAssetDepositSigningBackend(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-	f := newDepositFixture(t)
-	f.tapd.version = embedded.Version
-	f.service.signsAnchors = true
-
-	deposit, err := f.service.Deposit(ctx, f.request("alice-1"))
-	require.NoError(t, err)
-	require.Equal(t, db.AssetDepositPublished, deposit.Status)
-}
-
 // TestAssetDepositRetry checks that a failed attempt stays funding with its
-// error, and that a retry replays the stored proofs even once tapd no longer
-// lists the anchor.
+// error, and that a retry replays the stored proofs even once the asset backend
+// no longer lists the anchor.
 func TestAssetDepositRetry(t *testing.T) {
 	t.Parallel()
 
@@ -347,7 +311,7 @@ func TestAssetDepositRetry(t *testing.T) {
 	require.Contains(t, deposits[0].LastError, "publish outcome unknown")
 
 	f.onboarder.err = nil
-	f.tapd.utxos = nil
+	f.backend.utxos = nil
 	f.roundFee = 900
 	deposit, err := f.service.Deposit(ctx, f.request("alice-1"))
 	require.NoError(t, err)
@@ -490,22 +454,22 @@ func TestAssetDepositConfirmation(t *testing.T) {
 	_, err := f.service.Deposit(ctx, f.request("alice-1"))
 	require.NoError(t, err)
 
-	f.tapd.height = 209
+	f.backend.height = 209
 	f.service.confirmPublished(ctx)
 	deposits, err := f.service.List(ctx)
 	require.NoError(t, err)
 	require.Equal(t, db.AssetDepositPublished, deposits[0].Status)
 
 	// Two confirmations stay below the operator's three.
-	f.tapd.transfers[0].AnchorTxBlockHash = [32]byte{1}
-	f.tapd.transfers[0].AnchorTxBlockHeight = 210
-	f.tapd.height = 211
+	f.backend.transfers[0].AnchorTxBlockHash = [32]byte{1}
+	f.backend.transfers[0].AnchorTxBlockHeight = 210
+	f.backend.height = 211
 	f.service.confirmPublished(ctx)
 	deposits, err = f.service.List(ctx)
 	require.NoError(t, err)
 	require.Equal(t, db.AssetDepositPublished, deposits[0].Status)
 
-	f.tapd.height = 212
+	f.backend.height = 212
 	f.service.confirmPublished(ctx)
 
 	deposits, err = f.service.List(ctx)
@@ -540,9 +504,9 @@ func TestAssetDepositBoard(t *testing.T) {
 	_, err = f.service.Board(ctx, "alice-1")
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 
-	f.tapd.transfers[0].AnchorTxBlockHash = [32]byte{1}
-	f.tapd.transfers[0].AnchorTxBlockHeight = 210
-	f.tapd.height = 210
+	f.backend.transfers[0].AnchorTxBlockHash = [32]byte{1}
+	f.backend.transfers[0].AnchorTxBlockHeight = 210
+	f.backend.height = 210
 	f.service.confirmPublished(ctx)
 
 	_, err = f.service.Board(ctx, "alice-1")
@@ -578,7 +542,7 @@ type fakeAssetClaimer struct {
 	tx       *wire.MsgTx
 	request  *tapassets.ClaimRequest
 
-	// onClaim runs before a claim is recorded in tapd.
+	// onClaim runs before a claim is recorded in the asset backend.
 	onClaim func()
 }
 
@@ -604,9 +568,9 @@ func (f *fakeAssetClaimer) Claim(_ context.Context,
 }
 
 // TestAssetDepositClaim checks that a confirmed deposit is claimed only once
-// its exit leaf opens on a tapd that credits it, that the claim is recorded
-// before tapd learns of it and handed to txconfirm again after a restart,
-// and that a claim is final only at the finality depth.
+// its exit leaf opens, that the claim is recorded before the asset backend
+// learns of it and handed to txconfirm again after a restart, and that a
+// claim is final only at the finality depth.
 func TestAssetDepositClaim(t *testing.T) {
 	t.Parallel()
 
@@ -651,26 +615,18 @@ func TestAssetDepositClaim(t *testing.T) {
 	_, err = f.service.Claim(ctx, "alice-1")
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 
-	f.tapd.transfers[0].AnchorTxBlockHash = [32]byte{1}
-	f.tapd.transfers[0].AnchorTxBlockHeight = 210
-	f.tapd.height = 210
+	f.backend.transfers[0].AnchorTxBlockHash = [32]byte{1}
+	f.backend.transfers[0].AnchorTxBlockHeight = 210
+	f.backend.height = 210
 	f.service.confirmPublished(ctx)
 
 	// The exit leaf opens 144 blocks after the deposit confirmed.
-	f.tapd.height = 210 + 142
+	f.backend.height = 210 + 142
 	_, err = f.service.Claim(ctx, "alice-1")
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
-
-	// A tapd that cannot confirm a transfer spending an asset it does
-	// not hold would never credit the claim.
-	f.tapd.height = 210 + 143
-	f.tapd.version = "0.8.5-alpha"
-	_, err = f.service.Claim(ctx, "alice-1")
-	require.Equal(t, codes.FailedPrecondition, status.Code(err))
-	require.Zero(t, claimer.prepares)
 
 	// A deposit a round holds is not claimed.
-	f.tapd.version = "0.9.0-alpha"
+	f.backend.height = 210 + 143
 	reserveErr = round.ErrBoardingInFlight
 	_, err = f.service.Claim(ctx, "alice-1")
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
@@ -718,13 +674,13 @@ func TestAssetDepositClaim(t *testing.T) {
 	// A confirmed claim stays pending until it is buried at the finality
 	// depth, and is handed to txconfirm again after a restart so a reorg
 	// is still followed.
-	claimHeight := f.tapd.height + 1
-	f.tapd.transfers = append(f.tapd.transfers, &tapsdk.AssetTransfer{
+	claimHeight := f.backend.height + 1
+	f.backend.transfers = append(f.backend.transfers, &tapsdk.AssetTransfer{
 		TransferTxid:        claimTx.TxHash(),
 		AnchorTxBlockHash:   [32]byte{2},
 		AnchorTxBlockHeight: claimHeight,
 	})
-	f.tapd.height = claimHeight + claimFinalityDepth - 2
+	f.backend.height = claimHeight + claimFinalityDepth - 2
 	f.service.trackedClaims = make(map[chainhash.Hash]struct{})
 	f.service.confirmClaims(ctx)
 	claim, err = f.service.ClaimOf(ctx, "alice-1")
@@ -732,7 +688,7 @@ func TestAssetDepositClaim(t *testing.T) {
 	require.Equal(t, db.AssetDepositClaiming, claim.Status)
 	require.Equal(t, 3, broadcasts)
 
-	f.tapd.height = claimHeight + claimFinalityDepth - 1
+	f.backend.height = claimHeight + claimFinalityDepth - 1
 	f.service.confirmClaims(ctx)
 	claim, err = f.service.ClaimOf(ctx, "alice-1")
 	require.NoError(t, err)
@@ -773,15 +729,15 @@ func TestAssetDepositClaimCurrentProof(t *testing.T) {
 
 	_, err := f.service.Deposit(ctx, f.request("alice-1"))
 	require.NoError(t, err)
-	f.tapd.transfers[0].AnchorTxBlockHash = [32]byte{1}
-	f.tapd.transfers[0].AnchorTxBlockHeight = 210
-	f.tapd.height = 210
+	f.backend.transfers[0].AnchorTxBlockHash = [32]byte{1}
+	f.backend.transfers[0].AnchorTxBlockHeight = 210
+	f.backend.height = 210
 	f.service.confirmPublished(ctx)
 
 	// A reorganization takes the deposit out of the chain.
-	f.tapd.transfers[0].AnchorTxBlockHash = [32]byte{}
-	f.tapd.transfers[0].AnchorTxBlockHeight = 0
-	f.tapd.height = 210 + 143
+	f.backend.transfers[0].AnchorTxBlockHash = [32]byte{}
+	f.backend.transfers[0].AnchorTxBlockHeight = 0
+	f.backend.height = 210 + 143
 	_, err = f.service.Claim(ctx, "alice-1")
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 	require.ErrorContains(t, err, "not confirmed on the best chain")
@@ -789,15 +745,15 @@ func TestAssetDepositClaimCurrentProof(t *testing.T) {
 
 	// It confirms again three blocks higher, with another proof. The
 	// exit leaf opens 144 blocks after that block.
-	f.tapd.transfers[0].AnchorTxBlockHash = [32]byte{3}
-	f.tapd.transfers[0].AnchorTxBlockHeight = 213
-	f.tapd.proof = []byte("proof at 213")
+	f.backend.transfers[0].AnchorTxBlockHash = [32]byte{3}
+	f.backend.transfers[0].AnchorTxBlockHeight = 213
+	f.backend.proof = []byte("proof at 213")
 	_, err = f.service.Claim(ctx, "alice-1")
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 	require.ErrorContains(t, err, "can be claimed from height 357")
 	require.Zero(t, claimer.prepares)
 
-	f.tapd.height = 213 + 143
+	f.backend.height = 213 + 143
 	claimed, err := f.service.Claim(ctx, "alice-1")
 	require.NoError(t, err)
 	require.EqualValues(t, 213, claimed.ConfirmedHeight)
@@ -807,8 +763,8 @@ func TestAssetDepositClaimCurrentProof(t *testing.T) {
 	require.Equal(t, []uint32{213}, heightHints)
 
 	// A restart hands the claim to txconfirm with the current proof too.
-	f.tapd.proof = []byte("proof at 214")
-	f.tapd.transfers[0].AnchorTxBlockHeight = 214
+	f.backend.proof = []byte("proof at 214")
+	f.backend.transfers[0].AnchorTxBlockHeight = 214
 	f.service.trackedClaims = make(map[chainhash.Hash]struct{})
 	f.service.confirmClaims(ctx)
 	require.Equal(
@@ -854,11 +810,11 @@ func TestAssetDepositClaimFinalOnBestChain(t *testing.T) {
 
 	_, err := f.service.Deposit(ctx, f.request("alice-1"))
 	require.NoError(t, err)
-	f.tapd.transfers[0].AnchorTxBlockHash = [32]byte{1}
-	f.tapd.transfers[0].AnchorTxBlockHeight = 210
-	f.tapd.height = 210
+	f.backend.transfers[0].AnchorTxBlockHash = [32]byte{1}
+	f.backend.transfers[0].AnchorTxBlockHeight = 210
+	f.backend.height = 210
 	f.service.confirmPublished(ctx)
-	f.tapd.height = 210 + 143
+	f.backend.height = 210 + 143
 	_, err = f.service.Claim(ctx, "alice-1")
 	require.NoError(t, err)
 	require.Equal(t, 1, broadcasts)
@@ -866,13 +822,13 @@ func TestAssetDepositClaimFinalOnBestChain(t *testing.T) {
 	// The backend recorded the claim in a block that left the chain
 	// while the daemon was down. However deep that height is, the claim
 	// stays pending and goes to txconfirm again.
-	claimHeight := f.tapd.height + 1
-	f.tapd.transfers = append(f.tapd.transfers, &tapsdk.AssetTransfer{
+	claimHeight := f.backend.height + 1
+	f.backend.transfers = append(f.backend.transfers, &tapsdk.AssetTransfer{
 		TransferTxid:        claimTx.TxHash(),
 		AnchorTxBlockHash:   [32]byte{2},
 		AnchorTxBlockHeight: claimHeight,
 	})
-	f.tapd.height = claimHeight + claimFinalityDepth
+	f.backend.height = claimHeight + claimFinalityDepth
 	bestBlocks[claimHeight] = chainhash.Hash{9}
 	f.service.trackedClaims = make(map[chainhash.Hash]struct{})
 	f.service.confirmClaims(ctx)
@@ -889,60 +845,17 @@ func TestAssetDepositClaimFinalOnBestChain(t *testing.T) {
 	require.Equal(t, db.AssetDepositClaiming, claim.Status)
 
 	// The claim confirms again, and the backend records its new block.
-	f.tapd.transfers[1].AnchorTxBlockHash = [32]byte{4}
-	f.tapd.transfers[1].AnchorTxBlockHeight = claimHeight + 2
+	f.backend.transfers[1].AnchorTxBlockHash = [32]byte{4}
+	f.backend.transfers[1].AnchorTxBlockHeight = claimHeight + 2
 	bestBlocks[claimHeight+2] = chainhash.Hash{4}
 	f.service.confirmClaims(ctx)
 	claim, err = f.service.ClaimOf(ctx, "alice-1")
 	require.NoError(t, err)
 	require.Equal(t, db.AssetDepositClaiming, claim.Status)
 
-	f.tapd.height = claimHeight + 2 + claimFinalityDepth - 1
+	f.backend.height = claimHeight + 2 + claimFinalityDepth - 1
 	f.service.confirmClaims(ctx)
 	claim, err = f.service.ClaimOf(ctx, "alice-1")
 	require.NoError(t, err)
 	require.Equal(t, db.AssetDepositClaimed, claim.Status)
-}
-
-// TestAssetDepositClaimCreditingBackend checks that a backend that confirms
-// a transfer spending an asset it does not hold claims a deposit whatever
-// version it reports.
-func TestAssetDepositClaimCreditingBackend(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-	f := newDepositFixture(t)
-
-	claimTx := wire.NewMsgTx(3)
-	claimTx.AddTxIn(&wire.TxIn{PreviousOutPoint: f.output})
-	claimTx.AddTxOut(wire.NewTxOut(10_000, []byte{0x51}))
-	claimer := &fakeAssetClaimer{tx: claimTx}
-	f.service.claimer = claimer
-	f.service.broadcastClaim = func(context.Context, *wire.MsgTx,
-		uint32) error {
-
-		return nil
-	}
-	f.service.reserveClaim = func(context.Context, wire.OutPoint) error {
-		return nil
-	}
-
-	_, err := f.service.Deposit(ctx, f.request("alice-1"))
-	require.NoError(t, err)
-	f.tapd.transfers[0].AnchorTxBlockHash = [32]byte{1}
-	f.tapd.transfers[0].AnchorTxBlockHeight = 210
-	f.tapd.height = 210
-	f.service.confirmPublished(ctx)
-
-	// The engine's version is not a tapd version.
-	f.tapd.height = 210 + 143
-	f.tapd.version = embedded.Version
-	_, err = f.service.Claim(ctx, "alice-1")
-	require.Equal(t, codes.FailedPrecondition, status.Code(err))
-	require.Zero(t, claimer.prepares)
-
-	f.service.creditsClaims = true
-	_, err = f.service.Claim(ctx, "alice-1")
-	require.NoError(t, err)
-	require.Equal(t, 1, claimer.calls)
 }

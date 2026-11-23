@@ -224,13 +224,10 @@ type Server struct {
 	// backend. It is nil when assets are disabled.
 	assetVTXOVerifier round.AssetVTXOVerifier
 
-	// assetClient is the connected asset backend, nil when assets are
-	// disabled: the tapd connection of the tapd backend, or the engine of
-	// the embedded one.
+	// assetClient is the asset backend, nil when assets are disabled.
 	assetClient tapsdk.Client
 
-	// embeddedAssets is the engine of the embedded asset backend, nil on
-	// any other backend.
+	// embeddedAssets is the asset engine, nil when assets are disabled.
 	embeddedAssets *embedded.Client
 
 	// assetClaimer claims asset deposits and asset VTXOs back to the
@@ -1410,14 +1407,6 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 		return fmt.Errorf("unknown wallet type %q", s.cfg.Wallet.Type)
 	}
 
-	// Connect the asset backend before any round can need it.
-	assetVerifier, closeAssets, err := s.connectAssetBackend(ctx)
-	if err != nil {
-		return err
-	}
-	defer closeAssets()
-	s.assetVTXOVerifier = assetVerifier
-
 	// NOTE: Identity key derivation, server connection, and
 	// mailbox transport wiring are deferred to
 	// connectAndBootstrapMailbox(), which runs either
@@ -1612,7 +1601,7 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	s.activityStore = dbStore.NewActivityStore(s.clk)
 	s.cfg.ActivityStore = s.activityStore
 
-	// The embedded asset backend lives in the database, so it is created
+	// The asset engine lives in the database, so it is created
 	// here, still before any round can need it.
 	stopEmbeddedAssets, err := s.initEmbeddedAssets(ctx, dbStore)
 	if err != nil {

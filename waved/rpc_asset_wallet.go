@@ -116,23 +116,16 @@ func (r *RPCServer) ImportAssetProof(ctx context.Context,
 	}
 
 	// The engine holds the proofs of a file before it verifies them, so
-	// it is given only a file that verifies. tapd verifies each proof
-	// as the import inserts it, and can verify a transfer of a grouped
-	// asset only once the import has inserted the group's issuance.
-	if r.server.embeddedAssets != nil {
-		verified, err := wallet.Client().VerifyProof(
-			ctx, req.GetProofFile(),
+	// it is given only a file that verifies.
+	verified, err := wallet.Client().VerifyProof(ctx, req.GetProofFile())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "verify asset "+
+			"proof: %v", err)
+	}
+	if verified == nil || !verified.Valid {
+		return nil, status.Error(
+			codes.InvalidArgument, "asset proof is not valid",
 		)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "verify "+
-				"asset proof: %v", err)
-		}
-		if verified == nil || !verified.Valid {
-			return nil, status.Error(
-				codes.InvalidArgument,
-				"asset proof is not valid",
-			)
-		}
 	}
 
 	_, err = wallet.ImportProofFile(ctx, &tapsdk.ProofFile{

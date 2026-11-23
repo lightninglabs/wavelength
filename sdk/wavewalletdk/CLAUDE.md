@@ -124,8 +124,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
   JSON number.
   `AssetDeposit.ClaimTxid` and `Claimed` report a deposit claimed back to
   the asset backend's wallet, which does not board.
-  `Config.AssetsBackend` and `Config.AssetGroupKeys` select and configure the
-  daemon's asset backend; empty values keep the daemon configuration.
+  `Config.AssetsEnabled` turns on Taproot Assets in the daemon and
+  `Config.AssetGroupKeys` lists the groups it trusts; zero values keep the
+  daemon configuration.
 - `ErrWalletRPCUnavailable` — sentinel returned by every wallet method
   on builds without the `wavewalletrpc` tag.
 - `ErrSwapRuntimeUnavailable` — back-compat alias for

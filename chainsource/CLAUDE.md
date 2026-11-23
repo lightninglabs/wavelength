@@ -11,7 +11,7 @@ communication alongside the raw registration API.
 
 - `BlockHeaderSource` — Optional backend interface:
   `BlockHeaderByHeight` returns the best-chain header at a height. The
-  Esplora and neutrino backends implement it; the embedded asset backend
+  Esplora and neutrino backends implement it; the asset engine
   verifies proofs against it.
 - `ChainBackend` — Interface: `EstimateFee`, `BestBlock`, `BroadcastTx`,
   `TestMempoolAccept`, `RegisterConf/Spend/Blocks`, `SubmitPackage`,

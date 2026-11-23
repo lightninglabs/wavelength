@@ -11,10 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestAssetsBackendOverride verifies embedded hosts can select the asset
-// backend, and that unset convenience fields keep a caller-owned daemon
+// TestAssetsEnabledOverride verifies embedded hosts can turn on Taproot
+// Assets, and that unset convenience fields keep a caller-owned daemon
 // config.
-func TestAssetsBackendOverride(t *testing.T) {
+func TestAssetsEnabledOverride(t *testing.T) {
 	t.Parallel()
 
 	t.Run("default disables assets", func(t *testing.T) {
@@ -22,22 +22,18 @@ func TestAssetsBackendOverride(t *testing.T) {
 
 		daemonCfg, err := daemonConfig(DefaultConfig())
 		require.NoError(t, err)
-		require.Equal(
-			t, waved.AssetBackendNone, daemonCfg.Assets.Backend,
-		)
+		require.False(t, daemonCfg.Assets.Enabled)
 	})
 
 	t.Run("convenience override", func(t *testing.T) {
 		t.Parallel()
 
 		cfg := DefaultConfig()
-		cfg.AssetsBackend = waved.AssetBackendEmbedded
+		cfg.AssetsEnabled = true
 		cfg.AssetGroupKeys = []string{"02aa"}
 		daemonCfg, err := daemonConfig(cfg)
 		require.NoError(t, err)
-		require.Equal(
-			t, waved.AssetBackendEmbedded, daemonCfg.Assets.Backend,
-		)
+		require.True(t, daemonCfg.Assets.Enabled)
 		require.Equal(t, []string{"02aa"}, daemonCfg.Assets.GroupKeys)
 	})
 
@@ -45,13 +41,11 @@ func TestAssetsBackendOverride(t *testing.T) {
 		t.Parallel()
 
 		base := waved.DefaultConfig()
-		base.Assets.Backend = waved.AssetBackendEmbedded
+		base.Assets.Enabled = true
 		base.Assets.GroupKeys = []string{"03bb"}
 		daemonCfg, err := daemonConfig(Config{DaemonConfig: base})
 		require.NoError(t, err)
-		require.Equal(
-			t, waved.AssetBackendEmbedded, daemonCfg.Assets.Backend,
-		)
+		require.True(t, daemonCfg.Assets.Enabled)
 		require.Equal(t, []string{"03bb"}, daemonCfg.Assets.GroupKeys)
 
 		// The daemon config is a copy, not the caller's slice.

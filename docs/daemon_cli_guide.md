@@ -141,12 +141,8 @@ waved \
 | `--lnd.macaroonpath` | | Path to lnd admin macaroon |
 | `--lnd.rpctimeout` | `30s` | Timeout for lnd RPC calls |
 | `--lnd.account` | _(empty)_ | lnd wallet account to spend from; empty uses lnd's default account. Set when sharing an lnd node with another daemon. The account must already exist and be taproot-scoped; a watch-only account is accepted only on a remote-signing lnd (one whose default account is itself watch-only) and must report an extended public key and derivation path |
-| `--assets.backend` | `none` | Taproot Assets backend: `none` refuses asset VTXOs, `tapd` verifies their proofs through a tapd node, adding issuance proofs of unknown assets to its universe, `embedded` holds and verifies assets inside the daemon (regtest only) |
-| `--assets.groupkeys` | | Asset groups the `embedded` backend trusts, as hex compressed public keys |
-| `--assets.tapd.host` | | tapd gRPC address; required with `--assets.backend=tapd` |
-| `--assets.tapd.tlspath` | | Path to tapd TLS certificate |
-| `--assets.tapd.macaroonpath` | | Path to tapd admin macaroon |
-| `--assets.tapd.rpctimeout` | `30s` | Timeout for tapd RPC calls |
+| `--assets.enabled` | `false` | Hold and verify Taproot Assets inside the daemon (regtest only). When off, the daemon refuses asset VTXOs |
+| `--assets.groupkeys` | | Asset groups the daemon trusts, as hex compressed public keys |
 | `--server.host` | network default | Ark operator address override for the selected transport |
 | `--server.transport` | `grpc` | Ark operator transport: `grpc` or `rest` |
 | `--server.insecure` | `false` | Disable TLS for server connection |
@@ -448,13 +444,12 @@ wavecli dev daemon NewAddress
 
 ### `dev daemon NewAssetReceiveKeys` / `ImportAssetProof` / `ListOwnedAssets`
 
-Receive a Taproot Asset on chain into the asset wallet of the asset backend
-and list what it holds. `NewAssetReceiveKeys` returns the script key and the
+Receive a Taproot Asset on chain into the daemon's asset wallet and list what
+it holds. `NewAssetReceiveKeys` returns the script key and the
 anchor internal key a sender transfers the asset to. The sender hands over
 the proof file of that transfer, and `ImportAssetProof` verifies it, checks
 that it is of the asset named in `asset_ref`, and adds the asset to the
-wallet. With `--assets.backend=embedded` the wallet is the daemon's own; with
-`tapd` it is tapd's.
+wallet.
 
 An asset deposit spends the daemon wallet's Bitcoin.
 `NewAssetFundingAddress` returns a backing-wallet address to send that
@@ -471,18 +466,16 @@ wavecli dev daemon ListOwnedAssets
 ### `dev daemon deposit-asset` / `dev daemon list-asset-deposits`
 
 Fund a boarding output holding a Taproot Asset from the asset wallet, and list
-those deposits. Requires an asset backend. With `--assets.backend=embedded`
-the daemon signs its own asset inputs with keys from its seed. With
-`--assets.backend=tapd` it requires tapd v0.9.0 or later,
-which signs its own asset inputs when it publishes. The units come from one issuance, and any
-surplus returns to tapd as change. The daemon's own wallet pays and signs for
-the network fee, bounded by `--max-fee-sat`, and the Bitcoin value of the
-deposit output (`value_sat`) beyond what tapd's spent asset outputs carry.
-tapd signs only those asset outputs, when it publishes. The daemon sizes the deposit value from the operator's terms: two
+those deposits. Requires `--assets.enabled`. The daemon signs its
+asset inputs with keys from its seed. The units come from one issuance, and any
+surplus returns to the asset wallet as change. The daemon's own wallet pays and
+signs for the network fee, bounded by `--max-fee-sat`, and the Bitcoin value of
+the deposit output (`value_sat`) beyond what the spent asset outputs carry. The
+daemon sizes the deposit value from the operator's terms: two
 minimum VTXOs plus twice the quoted round fee. When the deposit boards, the value pays the round fee and
 the asset VTXO's satoshis, and the rest becomes a BTC VTXO. Retrying with the
 same `--request-id` resumes the deposit instead of funding it again. A
-deposit is `published` once tapd broadcasts it and `confirmed` once it has the
+deposit is `published` once the daemon broadcasts it and `confirmed` once it has the
 confirmations the operator requires of a boarding input.
 
 ```bash
@@ -514,10 +507,7 @@ The claim pays no fee itself; the daemon wallet pays it through a CPFP child
 and bumps it until it confirms. `list-asset-deposits` shows the `claim_txid`,
 and `claimed` once the claim is six blocks deep. A deposit that is claimed, or
 being claimed, can no longer board, and a deposit that a round holds cannot be
-claimed. Retrying returns the same claim. With `--assets.backend=tapd` the
-daemon refuses claims unless tapd confirms transfers spending assets it does
-not hold, first released in v0.9.0. With `--assets.backend=embedded` the asset
-wallet is the daemon's own and no tapd version is required.
+claimed. Retrying returns the same claim.
 
 ```bash
 wavecli dev daemon claim-asset-deposit --request-id alice-1

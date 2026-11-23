@@ -46,8 +46,8 @@ func isFakeOnboardingWalletInput(input *psbt.PInput) bool {
 
 // fakeOnboardingFunder funds a template with one coin and change, putting the
 // change first as a BIP 69 sort may. It signs every input carrying derivation
-// info, as a wallet sharing tapd's keys would. Like a wallet RPC, its calls
-// fail once the caller's context ends.
+// info, as a wallet sharing the asset wallet's keys would. Like a wallet RPC,
+// its calls fail once the caller's context ends.
 type fakeOnboardingFunder struct {
 	mu sync.Mutex
 
@@ -224,18 +224,17 @@ func testFunder(t *testing.T, onboarder *Onboarder) *fakeOnboardingFunder {
 }
 
 // TestOnboardingFundedTemplateLayout checks what the wallet funds and how the
-// funded transaction is laid out for tapd.
+// funded transaction is laid out for the asset backend.
 func TestOnboardingFundedTemplateLayout(t *testing.T) {
 	t.Parallel()
 
 	request, inventory, owner := testMultiUtxoOnboardingRequest(t, 40)
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 	funder := testFunder(t, onboarder)
 
-	_, err = onboarder.Onboard(t.Context(), request)
+	_, err := onboarder.Onboard(t.Context(), request)
 	require.NoError(t, err)
 
 	// The two 1,000 sat anchors cover all but the fee for their own 460
@@ -275,7 +274,7 @@ func TestOnboardingFundedTemplateLayout(t *testing.T) {
 }
 
 // TestOnboarderReleasesRefusedFunding frees the wallet's coins whenever a
-// funding is refused before tapd sees it.
+// funding is refused before the asset backend sees it.
 func TestOnboarderReleasesRefusedFunding(t *testing.T) {
 	t.Parallel()
 
@@ -319,15 +318,14 @@ func TestOnboarderReleasesRefusedFunding(t *testing.T) {
 
 			request, inventory, owner := testOnboardingRequest(t)
 			driver := newFakeOnboardingDriver()
-			store, err := NewFileStore(t.TempDir())
-			require.NoError(t, err)
+			store := newMemoryStore()
 			onboarder := testOnboarder(
 				driver, inventory, store, owner,
 			)
 			funder := testFunder(t, onboarder)
 			test.configure(request, funder)
 
-			_, err = onboarder.Onboard(t.Context(), request)
+			_, err := onboarder.Onboard(t.Context(), request)
 			require.ErrorContains(t, err, test.errContains)
 			require.Equal(t, 1, funder.funds)
 			require.Empty(t, funder.leases)
@@ -349,8 +347,7 @@ func TestOnboarderReusesFundedTemplate(t *testing.T) {
 	t.Parallel()
 
 	request, inventory, owner := testOnboardingRequest(t)
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(
 		newFakeOnboardingDriver(), inventory, store, owner,
 	)
@@ -391,19 +388,18 @@ func TestOnboarderReusesFundedTemplate(t *testing.T) {
 }
 
 // TestOnboarderFundingFailure keeps a wallet that cannot fund from reaching
-// tapd or the journal.
+// The asset backend or the journal.
 func TestOnboarderFundingFailure(t *testing.T) {
 	t.Parallel()
 
 	request, inventory, owner := testOnboardingRequest(t)
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 	funder := testFunder(t, onboarder)
 	funder.fundErr = errors.New("insufficient funds")
 
-	_, err = onboarder.Onboard(t.Context(), request)
+	_, err := onboarder.Onboard(t.Context(), request)
 	require.ErrorContains(t, err, "fund onboarding: insufficient funds")
 	require.Zero(t, driver.commits)
 
@@ -424,12 +420,11 @@ func TestOnboardingSpreadsAnchorCredit(t *testing.T) {
 		utxo.AmtSat = 2_500
 	}
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 	funder := testFunder(t, onboarder)
 
-	_, err = onboarder.Onboard(t.Context(), request)
+	_, err := onboarder.Onboard(t.Context(), request)
 	require.NoError(t, err)
 
 	// 5,000 sat of anchors less their 230 sat fee bring both outputs to
@@ -463,13 +458,12 @@ func TestOnboarderRenewsSealedLeases(t *testing.T) {
 
 	request, inventory, owner := testOnboardingRequest(t)
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 	funder := testFunder(t, onboarder)
 	funder.signErr = errors.New("wallet locked")
 
-	_, err = onboarder.Onboard(t.Context(), request)
+	_, err := onboarder.Onboard(t.Context(), request)
 	require.ErrorContains(t, err, "wallet locked")
 	require.Equal(t, 1, driver.commits)
 	require.Zero(t, funder.leaseCalls)
@@ -494,19 +488,18 @@ func TestOnboarderRenewsSealedLeases(t *testing.T) {
 }
 
 // TestOnboarderSignsOnlyFunderInputs has the funder sign its own inputs from
-// their journaled derivation info, while tapd's anchors reach publication
+// their journaled derivation info, while the asset anchors reach publication
 // unsigned even though the funder could derive their keys.
 func TestOnboarderSignsOnlyFunderInputs(t *testing.T) {
 	t.Parallel()
 
 	request, inventory, owner := testMultiUtxoOnboardingRequest(t, 40)
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 	funder := testFunder(t, onboarder)
 
-	_, err = onboarder.Onboard(t.Context(), request)
+	_, err := onboarder.Onboard(t.Context(), request)
 	require.NoError(t, err)
 	require.Equal(t, 1, funder.signs)
 
@@ -530,14 +523,13 @@ func TestOnboarderKeepsFundingAfterCancel(t *testing.T) {
 
 	request, inventory, owner := testOnboardingRequest(t)
 	driver := newFakeOnboardingDriver()
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 	funder := testFunder(t, onboarder)
 	ctx, cancel := context.WithCancel(t.Context())
 	funder.afterFund = cancel
 
-	_, err = onboarder.Onboard(ctx, request)
+	_, err := onboarder.Onboard(ctx, request)
 	require.ErrorIs(t, err, context.Canceled)
 	require.Zero(t, driver.commits)
 	require.Len(t, funder.leases, 1)
@@ -563,13 +555,12 @@ func TestOnboarderKeepsCoinsWhenReleaseFails(t *testing.T) {
 	request, inventory, owner := testOnboardingRequest(t)
 	driver := newFakeOnboardingDriver()
 	driver.commitErr = errors.New("commit rejected")
-	store, err := NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	store := newMemoryStore()
 	onboarder := testOnboarder(driver, inventory, store, owner)
 	funder := testFunder(t, onboarder)
 	funder.releaseErr = errors.New("wallet unavailable")
 
-	_, err = onboarder.Onboard(t.Context(), request)
+	_, err := onboarder.Onboard(t.Context(), request)
 	require.ErrorContains(t, err, "commit rejected")
 	require.ErrorContains(t, err, "wallet unavailable")
 

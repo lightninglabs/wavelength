@@ -12,8 +12,8 @@ import (
 	tapsdk "github.com/lightninglabs/tap-sdk"
 )
 
-// ErrOnboardedProofPending reports an onboarding transfer that tapd has not
-// seen confirm yet, so its proof file cannot be exported.
+// ErrOnboardedProofPending reports an onboarding transfer that the asset
+// backend has not seen confirm yet, so its proof file cannot be exported.
 var ErrOnboardedProofPending = errors.New("onboarded asset proof is not " +
 	"confirmed yet")
 
@@ -33,7 +33,7 @@ type onboardingProofClient interface {
 		*tapsdk.Outpoint) (*tapsdk.ProofFile, error)
 }
 
-// ownedAssetUtxo is one tapd anchor that can fund an onboarding: it holds a
+// ownedAssetUtxo is one asset anchor that can fund an onboarding: it holds a
 // single asset record of the requested asset.
 type ownedAssetUtxo struct {
 	outpoint   tapsdk.Outpoint
@@ -42,18 +42,18 @@ type ownedAssetUtxo struct {
 	amount     uint64
 }
 
-// SelectOnboardingProofs exports the proof files of the tapd UTXOs that fund
-// an onboarding of amount units of assetRef. An onboarding spends whole
-// anchors from one issuance, and any surplus returns to tapd as change.
+// SelectOnboardingProofs exports the proof files of the asset UTXOs that fund
+// an onboarding of amount units of assetRef. An onboarding spends whole anchors
+// from one issuance, and any surplus returns to the asset wallet as change.
 // Candidates hold one BIP-86 asset record and nothing else of any script key
-// type, since spending an anchor consumes every record on it. tapd omits
-// anchors under an active lease. tapd exports proofs only for confirmed
-// anchors, so the export enforces confirmation.
+// type, since spending an anchor consumes every record on it. The asset backend
+// omits anchors under an active lease. The asset backend exports proofs only
+// for confirmed anchors, so the export enforces confirmation.
 func SelectOnboardingProofs(ctx context.Context, client onboardingProofClient,
 	assetRef string, amount uint64) ([][]byte, error) {
 
 	if client == nil {
-		return nil, fmt.Errorf("tapd client is required")
+		return nil, fmt.Errorf("asset backend client is required")
 	}
 	ref, err := tapsdk.ParseAssetRef(assetRef)
 	if err != nil {
@@ -62,13 +62,13 @@ func SelectOnboardingProofs(ctx context.Context, client onboardingProofClient,
 
 	utxos, err := client.ListUtxos(ctx, &tapsdk.ListUtxosRequest{})
 	if err != nil {
-		return nil, fmt.Errorf("list tapd asset UTXOs: %w", err)
+		return nil, fmt.Errorf("list asset UTXOs: %w", err)
 	}
 	held, err := client.ListUtxos(ctx, &tapsdk.ListUtxosRequest{
 		ScriptKeyType: &tapsdk.ScriptKeyTypeQuery{AllTypes: true},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("list tapd asset UTXOs: %w", err)
+		return nil, fmt.Errorf("list asset UTXOs: %w", err)
 	}
 	records := make(map[tapsdk.Outpoint]int, len(held))
 	for _, utxo := range held {
@@ -98,8 +98,8 @@ func SelectOnboardingProofs(ctx context.Context, client onboardingProofClient,
 
 	selected, err := selectOwnedAssetUtxos(candidates, amount)
 	if err != nil {
-		return nil, fmt.Errorf("select tapd UTXOs holding %d units of "+
-			"%s: %w", amount, assetRef, err)
+		return nil, fmt.Errorf("select asset UTXOs holding %d units "+
+			"of %s: %w", amount, assetRef, err)
 	}
 
 	proofs := make([][]byte, 0, len(selected))
@@ -133,7 +133,7 @@ func selectOwnedAssetUtxos(candidates []ownedAssetUtxo,
 		return nil, fmt.Errorf("onboarding amount is required")
 	}
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no tapd UTXO holds the asset alone")
+		return nil, fmt.Errorf("no asset UTXO holds the asset alone")
 	}
 
 	ordered := slices.Clone(candidates)
@@ -230,16 +230,16 @@ func selectFromIssuance(ordered []ownedAssetUtxo, amount uint64) (
 	return nil, total, nil
 }
 
-// ExportOnboardedProof exports the confirmed proof file of an onboarding
-// output from the tapd that funded it, with its confirmation height. The
-// output's OP_TRUE script key is not tapd wallet inventory, so the proof is
+// ExportOnboardedProof exports the confirmed proof file of an onboarding output
+// from the asset backend that funded it, with its confirmation height. The
+// output's OP_TRUE script key is not asset wallet inventory, so the proof is
 // found through the transfer that created it. An unconfirmed transfer returns
 // ErrOnboardedProofPending.
 func ExportOnboardedProof(ctx context.Context, client onboardingProofClient,
 	outpoint wire.OutPoint) ([]byte, uint32, error) {
 
 	if client == nil {
-		return nil, 0, fmt.Errorf("tapd client is required")
+		return nil, 0, fmt.Errorf("asset backend client is required")
 	}
 
 	transfers, err := client.ListTransfers(
@@ -248,7 +248,7 @@ func ExportOnboardedProof(ctx context.Context, client onboardingProofClient,
 		},
 	)
 	if err != nil {
-		return nil, 0, fmt.Errorf("list tapd transfers: %w", err)
+		return nil, 0, fmt.Errorf("list asset transfers: %w", err)
 	}
 
 	target := sdkOutpoint(outpoint)
@@ -280,7 +280,7 @@ func ExportOnboardedProof(ctx context.Context, client onboardingProofClient,
 		}
 	}
 	if found == nil {
-		return nil, 0, fmt.Errorf("no tapd transfer creates %v",
+		return nil, 0, fmt.Errorf("no asset transfer creates %v",
 			outpoint)
 	}
 

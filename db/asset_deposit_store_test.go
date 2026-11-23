@@ -131,7 +131,7 @@ func TestAssetDepositStoreLifecycle(t *testing.T) {
 
 	require.NoError(
 		t, store.SetAssetDepositError(
-			ctx, req.RequestID, "tapd unavailable",
+			ctx, req.RequestID, "backend unavailable",
 		),
 	)
 	funding, err := store.ListAssetDepositsByStatus(
@@ -139,7 +139,7 @@ func TestAssetDepositStoreLifecycle(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Len(t, funding, 1)
-	require.Equal(t, "tapd unavailable", funding[0].LastError)
+	require.Equal(t, "backend unavailable", funding[0].LastError)
 
 	// Confirming before publishing is refused.
 	err = store.MarkAssetDepositConfirmed(ctx, req.RequestID, []byte{1}, 10)

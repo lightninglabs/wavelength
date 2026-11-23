@@ -509,8 +509,8 @@ same round would flow into the change VTXO and be booked as a transfer in.
 commitment leaf reproduce the deposit script, and sets
 `BoardingIntent.AuthSpend` to the composed exit spend, which join-round
 authorization uses in place of the plain exit leaf. Both VTXOs are booked as
-transfers in, because the deposit's satoshis come from the lnd
-wallet behind tapd, outside the daemon's ledger. For the same reason the
+transfers in, because the deposit's satoshis come from outside the
+daemon's ledger. For the same reason the
 deposit and those VTXOs stay out of `computeClientOperatorFee`, so the
 deposit's share of the round fee is not booked, and `roundOperatorFeeType`
 reports a boarding fee only for Bitcoin boarding inputs, whose fee comes out

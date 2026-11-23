@@ -45,9 +45,9 @@ type mobileConfig struct {
 	WalletBlockHeadersSource  string `json:"wallet_block_headers_source"`
 	WalletFilterHeadersSource string `json:"wallet_filter_headers_source"`
 
-	// Taproot Assets backend: "none", "tapd" or "embedded". Empty keeps
-	// the daemon default, which disables assets.
-	AssetsBackend  string   `json:"assets_backend"`
+	// AssetsEnabled turns on Taproot Assets. False keeps the daemon
+	// default, which disables assets.
+	AssetsEnabled  bool     `json:"assets_enabled"`
 	AssetGroupKeys []string `json:"asset_group_keys"`
 
 	// Swap server.
@@ -212,8 +212,8 @@ func applyMobileConfig(cfg *wavewalletdk.Config, mc mobileConfig) {
 		cfg.ServerInsecure = true
 	}
 
-	if mc.AssetsBackend != "" {
-		cfg.AssetsBackend = mc.AssetsBackend
+	if mc.AssetsEnabled {
+		cfg.AssetsEnabled = true
 	}
 	if len(mc.AssetGroupKeys) != 0 {
 		cfg.AssetGroupKeys = append(

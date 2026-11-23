@@ -197,8 +197,8 @@ type InsertAssetDepositParams struct {
 	CreatedAt          int64
 }
 
-// InsertAssetDeposit records a deposit request before tapd funds it. A
-// request ID already recorded inserts nothing.
+// InsertAssetDeposit records a deposit request before the asset backend
+// funds it. A request ID already recorded inserts nothing.
 func (q *Queries) InsertAssetDeposit(ctx context.Context, arg InsertAssetDepositParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, InsertAssetDeposit,
 		arg.RequestID,
@@ -431,7 +431,8 @@ type MarkAssetDepositClaimedParams struct {
 	UpdatedAt int64
 }
 
-// MarkAssetDepositClaimed records that tapd confirmed the claim.
+// MarkAssetDepositClaimed records that the asset backend confirmed the
+// claim.
 func (q *Queries) MarkAssetDepositClaimed(ctx context.Context, arg MarkAssetDepositClaimedParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, MarkAssetDepositClaimed, arg.RequestID, arg.UpdatedAt)
 	if err != nil {

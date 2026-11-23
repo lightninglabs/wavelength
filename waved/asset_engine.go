@@ -40,11 +40,11 @@ const (
 	assetConfUnregisterTimeout = 5 * time.Second
 )
 
-// errAssetWalletNotReady reports a call to the embedded asset backend that
+// errAssetWalletNotReady reports a call to the asset engine that
 // arrived before the daemon wallet was unlocked.
 var errAssetWalletNotReady = errors.New("wallet is not ready")
 
-// initEmbeddedAssets creates the embedded asset backend on the daemon's
+// initEmbeddedAssets creates the asset engine on the daemon's
 // database, wallet seed and chain backend, and installs its asset VTXO
 // verifier and its claimer. The wallet may still be locked, so the engine
 // reaches the wallet and the chain backend on each call, and follows the
@@ -53,8 +53,7 @@ var errAssetWalletNotReady = errors.New("wallet is not ready")
 func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 	func(), error) {
 
-	if s.cfg.Assets == nil ||
-		s.cfg.Assets.Backend != AssetBackendEmbedded {
+	if s.cfg.Assets == nil || !s.cfg.Assets.Enabled {
 		return func() {}, nil
 	}
 
@@ -75,7 +74,7 @@ func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 		Logger:    &assetEngineLogger{log: s.log},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create embedded asset backend: %w", err)
+		return nil, fmt.Errorf("create asset engine: %w", err)
 	}
 
 	chain, err := tapassets.NewLocalProofChainVerifier(client)
