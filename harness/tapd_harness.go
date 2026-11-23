@@ -469,7 +469,7 @@ func (th *TapdHarness) setupLNDPaths() {
 		_ = conn.Close()
 
 		return true
-	}, defaultTimeout, time.Second, th.Name+" LND TLS/gRPC not ready")
+	}, lndStartupTimeout, time.Second, th.Name+" LND TLS/gRPC not ready")
 }
 
 // setupTapdPaths sets up the tapd-related paths and ports for the harness.
@@ -526,7 +526,7 @@ func (th *TapdHarness) initAndWaitLND() {
 		}
 
 		return resp.State == lnrpc.WalletState_SERVER_ACTIVE
-	}, defaultTimeout, time.Second, th.Name+" LND not active")
+	}, lndStartupTimeout, time.Second, th.Name+" LND not active")
 
 	// Wait for macaroon file.
 	err := th.h.pool.Retry(func() error {
@@ -559,7 +559,7 @@ func (th *TapdHarness) initAndWaitLND() {
 		}
 
 		return sync.SyncedToChain
-	}, defaultTimeout, pollInterval, th.Name+" LND not synced")
+	}, lndStartupTimeout, pollInterval, th.Name+" LND not synced")
 }
 
 // waitForTapdReady waits until tapd is ready and synced to chain.
