@@ -86,14 +86,13 @@ type Config struct {
 	// startup.
 	WalletBtcwalletFilterHeadersSource string
 
-	// AssetsBackend selects the daemon's Taproot Assets backend, for
-	// example "embedded" to run the asset engine inside the daemon.
-	// Empty keeps the daemon configuration, which disables assets by
-	// default.
-	AssetsBackend string
+	// AssetsEnabled turns on Taproot Assets, which the daemon then holds
+	// and verifies itself. False keeps the daemon configuration, which
+	// disables assets by default.
+	AssetsEnabled bool
 
 	// AssetGroupKeys lists, as hex compressed public keys, the asset
-	// groups the embedded asset backend trusts.
+	// groups the daemon trusts.
 	AssetGroupKeys []string
 
 	// SwapServerAddress is the swap server address for the selected

@@ -53,8 +53,7 @@ var errAssetWalletNotReady = errors.New("wallet is not ready")
 func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 	func(), error) {
 
-	if s.cfg.Assets == nil ||
-		s.cfg.Assets.Backend != AssetBackendEmbedded {
+	if s.cfg.Assets == nil || !s.cfg.Assets.Enabled {
 		return func() {}, nil
 	}
 

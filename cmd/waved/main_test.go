@@ -137,7 +137,7 @@ func TestAssetFlags(t *testing.T) {
 		"03" + strings.Repeat("22", 32),
 	}
 	err := flags.Parse([]string{
-		"--assets.backend=embedded",
+		"--assets.enabled",
 		"--assets.groupkeys=" + strings.Join(groupKeys, ","),
 	})
 	if err != nil {
@@ -152,9 +152,8 @@ func TestAssetFlags(t *testing.T) {
 		t.Fatalf("unmarshal config: %v", err)
 	}
 
-	if cfg.Assets.Backend != waved.AssetBackendEmbedded {
-		t.Fatalf("expected the embedded backend, got %q",
-			cfg.Assets.Backend)
+	if !cfg.Assets.Enabled {
+		t.Fatal("expected assets to be enabled")
 	}
 	if strings.Join(cfg.Assets.GroupKeys, ",") !=
 		strings.Join(groupKeys, ",") {

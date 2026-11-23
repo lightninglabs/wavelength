@@ -10,9 +10,8 @@ import (
 const testGroupKeyHex = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959" +
 	"f2815b16f81798"
 
-// TestConfigValidateAssets checks that the asset backend selector accepts
-// only the implemented backends, and that the embedded backend runs on
-// regtest only, on any wallet.
+// TestConfigValidateAssets checks that Taproot Assets are off by default and
+// can be turned on only on regtest, on any wallet.
 func TestConfigValidateAssets(t *testing.T) {
 	t.Parallel()
 
@@ -21,51 +20,37 @@ func TestConfigValidateAssets(t *testing.T) {
 		assets      *AssetsConfig
 		network     string
 		walletType  string
-		wantBackend string
+		wantEnabled bool
 		wantErr     string
 	}{
 		{
-			name:        "default disables assets",
-			assets:      defaultAssetsConfig(),
-			wantBackend: AssetBackendNone,
+			name:   "default disables assets",
+			assets: defaultAssetsConfig(),
 		},
 		{
-			name:        "missing section disables assets",
-			wantBackend: AssetBackendNone,
+			name: "missing section disables assets",
 		},
 		{
-			name:        "empty backend disables assets",
-			assets:      &AssetsConfig{},
-			wantBackend: AssetBackendNone,
-		},
-		{
-			name: "unknown backend",
+			name: "enabled on the default wallet",
 			assets: &AssetsConfig{
-				Backend: "tapd",
+				Enabled: true,
 			},
-			wantErr: "unknown assets.backend",
+			wantEnabled: true,
 		},
 		{
-			name: "embedded on the default wallet",
+			name: "enabled with a trusted group",
 			assets: &AssetsConfig{
-				Backend: AssetBackendEmbedded,
-			},
-			wantBackend: AssetBackendEmbedded,
-		},
-		{
-			name: "embedded with a trusted group",
-			assets: &AssetsConfig{
-				Backend: AssetBackendEmbedded,
+				Enabled: true,
 				GroupKeys: []string{
 					testGroupKeyHex,
 				},
 			},
-			wantBackend: AssetBackendEmbedded,
+			wantEnabled: true,
 		},
 		{
-			name: "embedded with a malformed group key",
+			name: "enabled with a malformed group key",
 			assets: &AssetsConfig{
-				Backend: AssetBackendEmbedded,
+				Enabled: true,
 				GroupKeys: []string{
 					"02abcd",
 				},
@@ -73,17 +58,17 @@ func TestConfigValidateAssets(t *testing.T) {
 			wantErr: "assets.groupkeys",
 		},
 		{
-			name: "embedded on an lnd wallet",
+			name: "enabled on an lnd wallet",
 			assets: &AssetsConfig{
-				Backend: AssetBackendEmbedded,
+				Enabled: true,
 			},
 			walletType:  WalletTypeLnd,
-			wantBackend: AssetBackendEmbedded,
+			wantEnabled: true,
 		},
 		{
-			name: "embedded outside regtest",
+			name: "enabled outside regtest",
 			assets: &AssetsConfig{
-				Backend: AssetBackendEmbedded,
+				Enabled: true,
 			},
 			network: "signet",
 			wantErr: "available on regtest only",
@@ -112,14 +97,14 @@ func TestConfigValidateAssets(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			require.Equal(t, tc.wantBackend, cfg.Assets.Backend)
+			require.Equal(t, tc.wantEnabled, cfg.Assets.Enabled)
 		})
 	}
 }
 
-// TestAssetBackendNone checks that disabled assets install no verifier, so
+// TestAssetsDisabled checks that disabled assets install no verifier, so
 // rounds with asset requests fail before signing.
-func TestAssetBackendNone(t *testing.T) {
+func TestAssetsDisabled(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{cfg: DefaultConfig()}

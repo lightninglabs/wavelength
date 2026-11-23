@@ -415,17 +415,15 @@ func registerWalletFlags(f *pflag.FlagSet, cfg *waved.Config) {
 	)
 }
 
-// registerAssetFlags registers the flags of the daemon's Taproot Assets
-// backend.
+// registerAssetFlags registers the daemon's Taproot Assets flags.
 func registerAssetFlags(f *pflag.FlagSet, cfg *waved.Config) {
-	f.String(
-		"assets.backend", cfg.Assets.Backend,
-		"Taproot Assets backend (none, embedded)",
+	f.Bool(
+		"assets.enabled", cfg.Assets.Enabled,
+		"hold and verify Taproot Assets in the daemon (regtest only)",
 	)
 	f.StringSlice(
-		"assets.groupkeys", cfg.Assets.GroupKeys, "asset groups "+
-			"the embedded asset backend trusts, as hex "+
-			"compressed public keys",
+		"assets.groupkeys", cfg.Assets.GroupKeys,
+		"asset groups the daemon trusts, as hex compressed public keys",
 	)
 }
 

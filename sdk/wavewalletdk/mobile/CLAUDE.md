@@ -53,8 +53,8 @@ application-facing wallet API.
   `NewAssetFundingAddress`, `ImportAssetProof`, `ListOwnedAssets`,
   `DepositAsset`, `ListAssetDeposits`, `BoardAssetDeposit`) — the asset
   wallet and deposits of the daemon's asset backend.
-  `mobileConfig.AssetsBackend` (`assets_backend`) selects it, for example
-  `embedded`, and `asset_group_keys` lists trusted groups. Reads use
+  `mobileConfig.AssetsEnabled` (`assets_enabled`) turns it on, and
+  `asset_group_keys` lists trusted groups. Reads use
   `readContext`; the verbs that verify proofs or publish use the two-minute
   `assetWriteTimeout`.
 - Scalar conveniences (`ConfirmedBalanceSat`, `PendingInboundSat`,

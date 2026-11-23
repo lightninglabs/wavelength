@@ -10,66 +10,41 @@ import (
 	"github.com/lightninglabs/wavelength/tapassets"
 )
 
-const (
-	// AssetBackendNone disables Taproot Assets. Rounds that would create
-	// an asset VTXO for this daemon fail before signing.
-	AssetBackendNone = "none"
-
-	// AssetBackendEmbedded runs the asset engine inside the daemon, on
-	// the daemon wallet's keys, chain backend and database.
-	AssetBackendEmbedded = "embedded"
-
-	// DefaultAssetBackend is the asset backend used when none is set.
-	DefaultAssetBackend = AssetBackendNone
-)
-
-// AssetsConfig selects the backend that verifies Taproot Assets.
+// AssetsConfig configures Taproot Assets.
 type AssetsConfig struct {
-	// Backend selects the asset backend: "none" or "embedded".
-	Backend string `mapstructure:"backend"`
+	// Enabled turns on Taproot Assets. The daemon then holds and verifies
+	// assets itself, on its wallet's keys, chain backend and database.
+	// When it is off, a round that would create an asset VTXO for this
+	// daemon fails before signing.
+	Enabled bool `mapstructure:"enabled"`
 
 	// GroupKeys lists, as hex compressed public keys, the asset groups
-	// the "embedded" backend trusts beyond those of the assets a request
-	// names. A proof of a grouped asset verifies only for a trusted
-	// group.
+	// the daemon trusts beyond those of the assets a request names. A
+	// proof of a grouped asset verifies only for a trusted group.
 	GroupKeys []string `mapstructure:"groupkeys"`
 }
 
-// defaultAssetsConfig returns the asset configuration with no backend.
+// defaultAssetsConfig returns the asset configuration with assets off.
 func defaultAssetsConfig() *AssetsConfig {
-	return &AssetsConfig{Backend: DefaultAssetBackend}
+	return &AssetsConfig{}
 }
 
-// validateAssetsConfig checks the asset backend selection.
+// validateAssetsConfig checks the asset configuration.
 func (c *Config) validateAssetsConfig() error {
 	if c.Assets == nil {
 		c.Assets = defaultAssetsConfig()
 	}
-	if c.Assets.Backend == "" {
-		c.Assets.Backend = DefaultAssetBackend
+	if !c.Assets.Enabled {
+		return nil
 	}
 
-	switch c.Assets.Backend {
-	case AssetBackendNone:
-		return nil
-
-	case AssetBackendEmbedded:
-		if c.Network != "regtest" {
-			return fmt.Errorf("assets.backend embedded is "+
-				"available on regtest only: network is %s",
-				c.Network)
-		}
-		if _, err := c.Assets.groupKeys(); err != nil {
-			return err
-		}
-
-		return nil
-
-	default:
-		return fmt.Errorf("unknown assets.backend %q (want %s or %s)",
-			c.Assets.Backend, AssetBackendNone,
-			AssetBackendEmbedded)
+	if c.Network != "regtest" {
+		return fmt.Errorf("assets.enabled is available on regtest "+
+			"only: network is %s", c.Network)
 	}
+	_, err := c.Assets.groupKeys()
+
+	return err
 }
 
 // groupKeys parses the configured trusted asset group keys.

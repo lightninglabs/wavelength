@@ -141,8 +141,8 @@ waved \
 | `--lnd.macaroonpath` | | Path to lnd admin macaroon |
 | `--lnd.rpctimeout` | `30s` | Timeout for lnd RPC calls |
 | `--lnd.account` | _(empty)_ | lnd wallet account to spend from; empty uses lnd's default account. Set when sharing an lnd node with another daemon. The account must already exist and be taproot-scoped; a watch-only account is accepted only on a remote-signing lnd (one whose default account is itself watch-only) and must report an extended public key and derivation path |
-| `--assets.backend` | `none` | Taproot Assets backend: `none` refuses asset VTXOs, `embedded` holds and verifies assets inside the daemon (regtest only) |
-| `--assets.groupkeys` | | Asset groups the `embedded` backend trusts, as hex compressed public keys |
+| `--assets.enabled` | `false` | Hold and verify Taproot Assets inside the daemon (regtest only). When off, the daemon refuses asset VTXOs |
+| `--assets.groupkeys` | | Asset groups the daemon trusts, as hex compressed public keys |
 | `--server.host` | network default | Ark operator address override for the selected transport |
 | `--server.transport` | `grpc` | Ark operator transport: `grpc` or `rest` |
 | `--server.insecure` | `false` | Disable TLS for server connection |
@@ -466,7 +466,7 @@ wavecli dev daemon ListOwnedAssets
 ### `dev daemon deposit-asset` / `dev daemon list-asset-deposits`
 
 Fund a boarding output holding a Taproot Asset from the asset wallet, and list
-those deposits. Requires `--assets.backend=embedded`. The daemon signs its
+those deposits. Requires `--assets.enabled`. The daemon signs its
 asset inputs with keys from its seed. The units come from one issuance, and any
 surplus returns to the asset wallet as change. The daemon's own wallet pays and
 signs for the network fee, bounded by `--max-fee-sat`, and the Bitcoin value of

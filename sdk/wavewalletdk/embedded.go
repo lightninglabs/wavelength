@@ -295,12 +295,12 @@ func applyConfigOverrides(daemonCfg *waved.Config, cfg Config) {
 	if cfg.AllowMainnet {
 		daemonCfg.AllowMainnet = true
 	}
-	if cfg.AssetsBackend != "" || len(cfg.AssetGroupKeys) != 0 {
+	if cfg.AssetsEnabled || len(cfg.AssetGroupKeys) != 0 {
 		if daemonCfg.Assets == nil {
 			daemonCfg.Assets = &waved.AssetsConfig{}
 		}
-		if cfg.AssetsBackend != "" {
-			daemonCfg.Assets.Backend = cfg.AssetsBackend
+		if cfg.AssetsEnabled {
+			daemonCfg.Assets.Enabled = true
 		}
 		if len(cfg.AssetGroupKeys) != 0 {
 			daemonCfg.Assets.GroupKeys = append(

@@ -129,11 +129,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   returned cleanup is process-owned (the daemon context may already be
   cancelled): it cancels sampling, bounds HTTP shutdown by `healthTimeout`,
   and joins both goroutines.
-- `assets.backend` selects how asset VTXOs are verified. `none` (the
-  default) installs no verifier, so a round that would create an asset VTXO
-  for this daemon fails before signing. `embedded` runs tap-sdk's in-process
-  engine, with no tapd beside the daemon.
-- The embedded backend (`asset_engine.go`) is the engine on three daemon
+- `assets.enabled` turns on Taproot Assets: the daemon runs tap-sdk's
+  in-process engine, with no other daemon beside it. Off (the default), no
+  verifier is installed, so a round that would create an asset VTXO for this
+  daemon fails before signing.
+- The asset engine (`asset_engine.go`) runs on three daemon
   resources: `db.AssetEngineStore` for its keys, proofs and transfers,
   the daemon wallet for its keys and signatures, and the chain backend
   for headers and broadcast. `assetKeyRing` is both the engine's `KeyRing`

@@ -308,9 +308,7 @@ func startEmbeddedAssetDaemon(t *testing.T, h *SysTestHarness, dataDir string,
 	cfg.RPC.Gateway.ListenAddr = "127.0.0.1:0"
 	cfg.RPC.NoTLS = true
 	cfg.RPC.NoMacaroons = true
-	cfg.Assets = &waved.AssetsConfig{
-		Backend: waved.AssetBackendEmbedded,
-	}
+	cfg.Assets = &waved.AssetsConfig{Enabled: true}
 
 	server, err := waved.NewServer(cfg)
 	require.NoError(t, err)

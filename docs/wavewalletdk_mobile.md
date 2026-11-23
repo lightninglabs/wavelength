@@ -214,10 +214,10 @@ Set the fields explicitly when a mobile host needs a custom or local endpoint.
 
 (`10.0.2.2` is the Android emulator's alias for the host loopback.)
 
-`"assets_backend": "embedded"` runs the Taproot Assets engine inside the
-daemon, on the wallet's seed and database, so a phone or a browser tab holds
-assets with no tapd. `asset_group_keys` lists the asset groups it trusts as
-hex compressed public keys. Omitting `assets_backend` keeps assets disabled.
+`"assets_enabled": true` runs the Taproot Assets engine inside the daemon, on
+the wallet's seed and database, so a phone or a browser tab holds assets with
+no other daemon beside it. `asset_group_keys` lists the asset groups it trusts
+as hex compressed public keys. Omitting `assets_enabled` keeps assets disabled.
 The asset verbs take and return the `wavewalletdk` asset types
 (`AssetReceiveKeys`, `AssetFundingAddress`, `ImportAssetProofRequest`,
 `OwnedAsset`, `DepositAssetRequest`, `BoardAssetDepositRequest`,
