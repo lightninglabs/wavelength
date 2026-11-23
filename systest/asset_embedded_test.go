@@ -26,28 +26,28 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// TestEmbeddedAssetDeposit runs the asset lifecycle on the embedded asset
+// TestAssetDeposit runs the asset lifecycle on the embedded asset
 // backend, with no tapd or lnd beside the daemon: it receives an asset on
 // chain, deposits part of it with its own Bitcoin, keeps the surplus units as
 // change and boards the deposit into a round. A restart resumes from the
 // daemon's database.
-func TestEmbeddedAssetDeposit(t *testing.T) {
+func TestAssetDeposit(t *testing.T) {
 	ParallelN(t)
 
-	testEmbeddedAssetDeposit(t, waved.WalletTypeLwwallet)
+	testAssetDeposit(t, waved.WalletTypeLwwallet)
 }
 
-// TestEmbeddedAssetDepositLndWallet runs the embedded asset lifecycle on an
+// TestAssetDepositLndWallet runs the embedded asset lifecycle on an
 // lnd daemon wallet, which derives the engine's keys and signs for it.
-func TestEmbeddedAssetDepositLndWallet(t *testing.T) {
+func TestAssetDepositLndWallet(t *testing.T) {
 	ParallelN(t)
 
-	testEmbeddedAssetDeposit(t, waved.WalletTypeLnd)
+	testAssetDeposit(t, waved.WalletTypeLnd)
 }
 
-// testEmbeddedAssetDeposit runs the embedded asset lifecycle on a daemon
+// testAssetDeposit runs the embedded asset lifecycle on a daemon
 // wallet of the given type.
-func testEmbeddedAssetDeposit(t *testing.T, walletType string) {
+func testAssetDeposit(t *testing.T, walletType string) {
 	h := NewSysTestHarness(t, func(opts *harness.Options) {
 		opts.StartTapd = true
 	})
@@ -72,12 +72,20 @@ func testEmbeddedAssetDeposit(t *testing.T, walletType string) {
 
 	// Esplora has no fee estimates on regtest, so the deposit names its
 	// fee rate.
-	_, deposit := confirmAssetTestDeposit(t, h, client, ref, 2)
+	req, deposit := confirmAssetTestDeposit(t, h, client, ref, 2)
 	outpoint, err := wire.NewOutPointFromString(deposit.Outpoint)
 	require.NoError(t, err)
 	output := h.Harness.GetRawTransaction(
 		outpoint.Hash.String(),
 	).TxOut[outpoint.Index]
+
+	// A retry under the request ID returns the confirmed deposit and
+	// publishes nothing.
+	retried, err := client.DepositAsset(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, deposit.Outpoint, retried.Outpoint)
+	require.Equal(t, deposit.Status, retried.Status)
+	require.Empty(t, h.Harness.MempoolTxIDs())
 
 	// The 400 surplus units return to the daemon's asset wallet once the
 	// deposit confirms.
@@ -142,12 +150,12 @@ func testEmbeddedAssetDeposit(t *testing.T, walletType string) {
 	require.EqualValues(t, 600, join.VtxoRequests[0].AssetAmount)
 }
 
-// TestEmbeddedClaimAssetDeposit claims a confirmed deposit that no round took
+// TestClaimAssetDeposit claims a confirmed deposit that no round took
 // on the embedded asset backend. The claim spends the deposit through its
 // owner's exit leaf once the exit delay passes, and returns the asset to the
 // daemon's asset wallet. The claim confirms while the daemon is down, and a
 // restart finishes it from the daemon's database.
-func TestEmbeddedClaimAssetDeposit(t *testing.T) {
+func TestClaimAssetDeposit(t *testing.T) {
 	ParallelN(t)
 
 	h := NewSysTestHarness(t, func(opts *harness.Options) {
