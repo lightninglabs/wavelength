@@ -21,6 +21,9 @@ http:
     - selector: wavewalletrpc.WalletService.LookupRecv
       post: /v1/wallet/lookup-recv
       body: "*"
+    - selector: wavewalletrpc.WalletService.RecvOnActiveChannel
+      post: /v1/wallet/recv-on-active-channel
+      body: "*"
     - selector: wavewalletrpc.WalletService.List
       post: /v1/wallet/list
       body: "*"
