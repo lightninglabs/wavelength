@@ -19,26 +19,27 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WalletService_Create_FullMethodName          = "/wavewalletrpc.WalletService/Create"
-	WalletService_Unlock_FullMethodName          = "/wavewalletrpc.WalletService/Unlock"
-	WalletService_PrepareSend_FullMethodName     = "/wavewalletrpc.WalletService/PrepareSend"
-	WalletService_Send_FullMethodName            = "/wavewalletrpc.WalletService/Send"
-	WalletService_Recv_FullMethodName            = "/wavewalletrpc.WalletService/Recv"
-	WalletService_LookupRecv_FullMethodName      = "/wavewalletrpc.WalletService/LookupRecv"
-	WalletService_List_FullMethodName            = "/wavewalletrpc.WalletService/List"
-	WalletService_Deposit_FullMethodName         = "/wavewalletrpc.WalletService/Deposit"
-	WalletService_Balance_FullMethodName         = "/wavewalletrpc.WalletService/Balance"
-	WalletService_Status_FullMethodName          = "/wavewalletrpc.WalletService/Status"
-	WalletService_Refresh_FullMethodName         = "/wavewalletrpc.WalletService/Refresh"
-	WalletService_GetExitPlan_FullMethodName     = "/wavewalletrpc.WalletService/GetExitPlan"
-	WalletService_ExportExit_FullMethodName      = "/wavewalletrpc.WalletService/ExportExit"
-	WalletService_ExportExits_FullMethodName     = "/wavewalletrpc.WalletService/ExportExits"
-	WalletService_SweepWallet_FullMethodName     = "/wavewalletrpc.WalletService/SweepWallet"
-	WalletService_Exit_FullMethodName            = "/wavewalletrpc.WalletService/Exit"
-	WalletService_ExitBatch_FullMethodName       = "/wavewalletrpc.WalletService/ExitBatch"
-	WalletService_ExitStatus_FullMethodName      = "/wavewalletrpc.WalletService/ExitStatus"
-	WalletService_ExitSummary_FullMethodName     = "/wavewalletrpc.WalletService/ExitSummary"
-	WalletService_SubscribeWallet_FullMethodName = "/wavewalletrpc.WalletService/SubscribeWallet"
+	WalletService_Create_FullMethodName              = "/wavewalletrpc.WalletService/Create"
+	WalletService_Unlock_FullMethodName              = "/wavewalletrpc.WalletService/Unlock"
+	WalletService_PrepareSend_FullMethodName         = "/wavewalletrpc.WalletService/PrepareSend"
+	WalletService_Send_FullMethodName                = "/wavewalletrpc.WalletService/Send"
+	WalletService_Recv_FullMethodName                = "/wavewalletrpc.WalletService/Recv"
+	WalletService_LookupRecv_FullMethodName          = "/wavewalletrpc.WalletService/LookupRecv"
+	WalletService_RecvOnActiveChannel_FullMethodName = "/wavewalletrpc.WalletService/RecvOnActiveChannel"
+	WalletService_List_FullMethodName                = "/wavewalletrpc.WalletService/List"
+	WalletService_Deposit_FullMethodName             = "/wavewalletrpc.WalletService/Deposit"
+	WalletService_Balance_FullMethodName             = "/wavewalletrpc.WalletService/Balance"
+	WalletService_Status_FullMethodName              = "/wavewalletrpc.WalletService/Status"
+	WalletService_Refresh_FullMethodName             = "/wavewalletrpc.WalletService/Refresh"
+	WalletService_GetExitPlan_FullMethodName         = "/wavewalletrpc.WalletService/GetExitPlan"
+	WalletService_ExportExit_FullMethodName          = "/wavewalletrpc.WalletService/ExportExit"
+	WalletService_ExportExits_FullMethodName         = "/wavewalletrpc.WalletService/ExportExits"
+	WalletService_SweepWallet_FullMethodName         = "/wavewalletrpc.WalletService/SweepWallet"
+	WalletService_Exit_FullMethodName                = "/wavewalletrpc.WalletService/Exit"
+	WalletService_ExitBatch_FullMethodName           = "/wavewalletrpc.WalletService/ExitBatch"
+	WalletService_ExitStatus_FullMethodName          = "/wavewalletrpc.WalletService/ExitStatus"
+	WalletService_ExitSummary_FullMethodName         = "/wavewalletrpc.WalletService/ExitSummary"
+	WalletService_SubscribeWallet_FullMethodName     = "/wavewalletrpc.WalletService/SubscribeWallet"
 )
 
 // WalletServiceClient is the client API for WalletService service.
@@ -89,6 +90,9 @@ type WalletServiceClient interface {
 	// also reads as NotFound, and a Recv retried under its ID may fail, so
 	// start any new receive under a fresh request_id.
 	LookupRecv(ctx context.Context, in *LookupRecvRequest, opts ...grpc.CallOption) (*RecvResponse, error)
+	// RecvOnActiveChannel requires an existing Ark channel with inbound
+	// liquidity. Never creates a channel or falls back to a swap or credit.
+	RecvOnActiveChannel(ctx context.Context, in *RecvRequest, opts ...grpc.CallOption) (*RecvResponse, error)
 	// List returns the unified wallet view selected by ListRequest.view:
 	// ACTIVITY (default) is the merged WalletEntry stream; VTXOS is the
 	// live VTXO inventory; ONCHAIN is the boarding-plus-sweep on-chain
@@ -218,6 +222,16 @@ func (c *walletServiceClient) LookupRecv(ctx context.Context, in *LookupRecvRequ
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RecvResponse)
 	err := c.cc.Invoke(ctx, WalletService_LookupRecv_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletServiceClient) RecvOnActiveChannel(ctx context.Context, in *RecvRequest, opts ...grpc.CallOption) (*RecvResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RecvResponse)
+	err := c.cc.Invoke(ctx, WalletService_RecvOnActiveChannel_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -421,6 +435,9 @@ type WalletServiceServer interface {
 	// also reads as NotFound, and a Recv retried under its ID may fail, so
 	// start any new receive under a fresh request_id.
 	LookupRecv(context.Context, *LookupRecvRequest) (*RecvResponse, error)
+	// RecvOnActiveChannel requires an existing Ark channel with inbound
+	// liquidity. Never creates a channel or falls back to a swap or credit.
+	RecvOnActiveChannel(context.Context, *RecvRequest) (*RecvResponse, error)
 	// List returns the unified wallet view selected by ListRequest.view:
 	// ACTIVITY (default) is the merged WalletEntry stream; VTXOS is the
 	// live VTXO inventory; ONCHAIN is the boarding-plus-sweep on-chain
@@ -513,6 +530,9 @@ func (UnimplementedWalletServiceServer) Recv(context.Context, *RecvRequest) (*Re
 }
 func (UnimplementedWalletServiceServer) LookupRecv(context.Context, *LookupRecvRequest) (*RecvResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method LookupRecv not implemented")
+}
+func (UnimplementedWalletServiceServer) RecvOnActiveChannel(context.Context, *RecvRequest) (*RecvResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RecvOnActiveChannel not implemented")
 }
 func (UnimplementedWalletServiceServer) List(context.Context, *ListRequest) (*ListResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method List not implemented")
@@ -681,6 +701,24 @@ func _WalletService_LookupRecv_Handler(srv interface{}, ctx context.Context, dec
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(WalletServiceServer).LookupRecv(ctx, req.(*LookupRecvRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletService_RecvOnActiveChannel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RecvRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).RecvOnActiveChannel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_RecvOnActiveChannel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).RecvOnActiveChannel(ctx, req.(*RecvRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -960,6 +998,10 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "LookupRecv",
 			Handler:    _WalletService_LookupRecv_Handler,
+		},
+		{
+			MethodName: "RecvOnActiveChannel",
+			Handler:    _WalletService_RecvOnActiveChannel_Handler,
 		},
 		{
 			MethodName: "List",

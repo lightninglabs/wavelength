@@ -2759,7 +2759,11 @@ type ActivitySwapTrace struct {
 	// preimage is the hex-encoded Lightning payment preimage once the swap
 	// revealed it. For a completed pay swap this is the proof of payment for
 	// the paid invoice; it is empty until the preimage is durably known.
-	Preimage      string `protobuf:"bytes,20,opt,name=preimage,proto3" json:"preimage,omitempty"`
+	Preimage string `protobuf:"bytes,20,opt,name=preimage,proto3" json:"preimage,omitempty"`
+	// Active channel selected for this receive; empty for vHTLC swaps.
+	ChannelId []byte `protobuf:"bytes,21,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
+	// Virtual short channel ID advertised in the receive invoice.
+	ReservedScid  uint64 `protobuf:"varint,22,opt,name=reserved_scid,json=reservedScid,proto3" json:"reserved_scid,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2932,6 +2936,20 @@ func (x *ActivitySwapTrace) GetPreimage() string {
 		return x.Preimage
 	}
 	return ""
+}
+
+func (x *ActivitySwapTrace) GetChannelId() []byte {
+	if x != nil {
+		return x.ChannelId
+	}
+	return nil
+}
+
+func (x *ActivitySwapTrace) GetReservedScid() uint64 {
+	if x != nil {
+		return x.ReservedScid
+	}
+	return 0
 }
 
 // ActivityVTXOTrace describes one VTXO movement correlated to a wallet activity
@@ -7197,7 +7215,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\x05vtxos\x18\x03 \x03(\v2 .wavewalletrpc.ActivityVTXOTraceR\x05vtxos\x12C\n" +
 	"\vledger_rows\x18\x04 \x03(\v2\".wavewalletrpc.ActivityLedgerTraceR\n" +
 	"ledgerRows\x12\x14\n" +
-	"\x05notes\x18\x05 \x03(\tR\x05notes\"\xdc\x05\n" +
+	"\x05notes\x18\x05 \x03(\tR\x05notes\"\xbf\x06\n" +
 	"\x11ActivitySwapTrace\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\tR\vpaymentHash\x12\x1c\n" +
 	"\tdirection\x18\x02 \x01(\tR\tdirection\x12\x14\n" +
@@ -7220,7 +7238,10 @@ const file_wallet_proto_rawDesc = "" +
 	"\x0frefund_locktime\x18\x11 \x01(\rR\x0erefundLocktime\x12'\n" +
 	"\x0fsettlement_type\x18\x12 \x01(\tR\x0esettlementType\x12#\n" +
 	"\rsender_pubkey\x18\x13 \x01(\tR\fsenderPubkey\x12\x1a\n" +
-	"\bpreimage\x18\x14 \x01(\tR\bpreimage\"\xc4\x01\n" +
+	"\bpreimage\x18\x14 \x01(\tR\bpreimage\x12\x1d\n" +
+	"\n" +
+	"channel_id\x18\x15 \x01(\fR\tchannelId\x12#\n" +
+	"\rreserved_scid\x18\x16 \x01(\x04R\freservedScidJ\x04\b\x17\x10\x18R\x17channel_backing_fee_sat\"\xc4\x01\n" +
 	"\x11ActivityVTXOTrace\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
@@ -7596,7 +7617,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\x1aENTRY_FAILURE_CODE_EXPIRED\x10\x02\x12\x1f\n" +
 	"\x1bENTRY_FAILURE_CODE_REFUNDED\x10\x03\x12)\n" +
 	"%ENTRY_FAILURE_CODE_NEEDS_INTERVENTION\x10\x04\x12\x1d\n" +
-	"\x19ENTRY_FAILURE_CODE_FAILED\x10\x052\x9b\f\n" +
+	"\x19ENTRY_FAILURE_CODE_FAILED\x10\x052\xeb\f\n" +
 	"\rWalletService\x12E\n" +
 	"\x06Create\x12\x1c.wavewalletrpc.CreateRequest\x1a\x1d.wavewalletrpc.CreateResponse\x12E\n" +
 	"\x06Unlock\x12\x1c.wavewalletrpc.UnlockRequest\x1a\x1d.wavewalletrpc.UnlockResponse\x12T\n" +
@@ -7604,7 +7625,8 @@ const file_wallet_proto_rawDesc = "" +
 	"\x04Send\x12\x1a.wavewalletrpc.SendRequest\x1a\x1b.wavewalletrpc.SendResponse\x12?\n" +
 	"\x04Recv\x12\x1a.wavewalletrpc.RecvRequest\x1a\x1b.wavewalletrpc.RecvResponse\x12K\n" +
 	"\n" +
-	"LookupRecv\x12 .wavewalletrpc.LookupRecvRequest\x1a\x1b.wavewalletrpc.RecvResponse\x12?\n" +
+	"LookupRecv\x12 .wavewalletrpc.LookupRecvRequest\x1a\x1b.wavewalletrpc.RecvResponse\x12N\n" +
+	"\x13RecvOnActiveChannel\x12\x1a.wavewalletrpc.RecvRequest\x1a\x1b.wavewalletrpc.RecvResponse\x12?\n" +
 	"\x04List\x12\x1a.wavewalletrpc.ListRequest\x1a\x1b.wavewalletrpc.ListResponse\x12H\n" +
 	"\aDeposit\x12\x1d.wavewalletrpc.DepositRequest\x1a\x1e.wavewalletrpc.DepositResponse\x12H\n" +
 	"\aBalance\x12\x1d.wavewalletrpc.BalanceRequest\x1a\x1e.wavewalletrpc.BalanceResponse\x12E\n" +
@@ -7786,44 +7808,46 @@ var file_wallet_proto_depIdxs = []int32{
 	17, // 59: wavewalletrpc.WalletService.Send:input_type -> wavewalletrpc.SendRequest
 	19, // 60: wavewalletrpc.WalletService.Recv:input_type -> wavewalletrpc.RecvRequest
 	20, // 61: wavewalletrpc.WalletService.LookupRecv:input_type -> wavewalletrpc.LookupRecvRequest
-	24, // 62: wavewalletrpc.WalletService.List:input_type -> wavewalletrpc.ListRequest
-	36, // 63: wavewalletrpc.WalletService.Deposit:input_type -> wavewalletrpc.DepositRequest
-	38, // 64: wavewalletrpc.WalletService.Balance:input_type -> wavewalletrpc.BalanceRequest
-	40, // 65: wavewalletrpc.WalletService.Status:input_type -> wavewalletrpc.StatusRequest
-	51, // 66: wavewalletrpc.WalletService.Refresh:input_type -> wavewalletrpc.RefreshRequest
-	54, // 67: wavewalletrpc.WalletService.GetExitPlan:input_type -> wavewalletrpc.GetExitPlanRequest
-	42, // 68: wavewalletrpc.WalletService.ExportExit:input_type -> wavewalletrpc.ExportExitRequest
-	44, // 69: wavewalletrpc.WalletService.ExportExits:input_type -> wavewalletrpc.ExportExitsRequest
-	57, // 70: wavewalletrpc.WalletService.SweepWallet:input_type -> wavewalletrpc.SweepWalletRequest
-	60, // 71: wavewalletrpc.WalletService.Exit:input_type -> wavewalletrpc.ExitRequest
-	62, // 72: wavewalletrpc.WalletService.ExitBatch:input_type -> wavewalletrpc.ExitBatchRequest
-	65, // 73: wavewalletrpc.WalletService.ExitStatus:input_type -> wavewalletrpc.ExitStatusRequest
-	70, // 74: wavewalletrpc.WalletService.ExitSummary:input_type -> wavewalletrpc.ExitSummaryRequest
-	73, // 75: wavewalletrpc.WalletService.SubscribeWallet:input_type -> wavewalletrpc.SubscribeWalletRequest
-	31, // 76: wavewalletrpc.WalletInspectionService.InspectActivity:input_type -> wavewalletrpc.InspectActivityRequest
-	12, // 77: wavewalletrpc.WalletService.Create:output_type -> wavewalletrpc.CreateResponse
-	14, // 78: wavewalletrpc.WalletService.Unlock:output_type -> wavewalletrpc.UnlockResponse
-	16, // 79: wavewalletrpc.WalletService.PrepareSend:output_type -> wavewalletrpc.PrepareSendResponse
-	18, // 80: wavewalletrpc.WalletService.Send:output_type -> wavewalletrpc.SendResponse
-	21, // 81: wavewalletrpc.WalletService.Recv:output_type -> wavewalletrpc.RecvResponse
-	21, // 82: wavewalletrpc.WalletService.LookupRecv:output_type -> wavewalletrpc.RecvResponse
-	25, // 83: wavewalletrpc.WalletService.List:output_type -> wavewalletrpc.ListResponse
-	37, // 84: wavewalletrpc.WalletService.Deposit:output_type -> wavewalletrpc.DepositResponse
-	39, // 85: wavewalletrpc.WalletService.Balance:output_type -> wavewalletrpc.BalanceResponse
-	41, // 86: wavewalletrpc.WalletService.Status:output_type -> wavewalletrpc.StatusResponse
-	52, // 87: wavewalletrpc.WalletService.Refresh:output_type -> wavewalletrpc.RefreshResponse
-	56, // 88: wavewalletrpc.WalletService.GetExitPlan:output_type -> wavewalletrpc.GetExitPlanResponse
-	43, // 89: wavewalletrpc.WalletService.ExportExit:output_type -> wavewalletrpc.ExportExitResponse
-	45, // 90: wavewalletrpc.WalletService.ExportExits:output_type -> wavewalletrpc.ExportExitsResponse
-	59, // 91: wavewalletrpc.WalletService.SweepWallet:output_type -> wavewalletrpc.SweepWalletResponse
-	61, // 92: wavewalletrpc.WalletService.Exit:output_type -> wavewalletrpc.ExitResponse
-	64, // 93: wavewalletrpc.WalletService.ExitBatch:output_type -> wavewalletrpc.ExitBatchResponse
-	69, // 94: wavewalletrpc.WalletService.ExitStatus:output_type -> wavewalletrpc.ExitStatusResponse
-	72, // 95: wavewalletrpc.WalletService.ExitSummary:output_type -> wavewalletrpc.ExitSummaryResponse
-	74, // 96: wavewalletrpc.WalletService.SubscribeWallet:output_type -> wavewalletrpc.SubscribeWalletResponse
-	32, // 97: wavewalletrpc.WalletInspectionService.InspectActivity:output_type -> wavewalletrpc.InspectActivityResponse
-	77, // [77:98] is the sub-list for method output_type
-	56, // [56:77] is the sub-list for method input_type
+	19, // 62: wavewalletrpc.WalletService.RecvOnActiveChannel:input_type -> wavewalletrpc.RecvRequest
+	24, // 63: wavewalletrpc.WalletService.List:input_type -> wavewalletrpc.ListRequest
+	36, // 64: wavewalletrpc.WalletService.Deposit:input_type -> wavewalletrpc.DepositRequest
+	38, // 65: wavewalletrpc.WalletService.Balance:input_type -> wavewalletrpc.BalanceRequest
+	40, // 66: wavewalletrpc.WalletService.Status:input_type -> wavewalletrpc.StatusRequest
+	51, // 67: wavewalletrpc.WalletService.Refresh:input_type -> wavewalletrpc.RefreshRequest
+	54, // 68: wavewalletrpc.WalletService.GetExitPlan:input_type -> wavewalletrpc.GetExitPlanRequest
+	42, // 69: wavewalletrpc.WalletService.ExportExit:input_type -> wavewalletrpc.ExportExitRequest
+	44, // 70: wavewalletrpc.WalletService.ExportExits:input_type -> wavewalletrpc.ExportExitsRequest
+	57, // 71: wavewalletrpc.WalletService.SweepWallet:input_type -> wavewalletrpc.SweepWalletRequest
+	60, // 72: wavewalletrpc.WalletService.Exit:input_type -> wavewalletrpc.ExitRequest
+	62, // 73: wavewalletrpc.WalletService.ExitBatch:input_type -> wavewalletrpc.ExitBatchRequest
+	65, // 74: wavewalletrpc.WalletService.ExitStatus:input_type -> wavewalletrpc.ExitStatusRequest
+	70, // 75: wavewalletrpc.WalletService.ExitSummary:input_type -> wavewalletrpc.ExitSummaryRequest
+	73, // 76: wavewalletrpc.WalletService.SubscribeWallet:input_type -> wavewalletrpc.SubscribeWalletRequest
+	31, // 77: wavewalletrpc.WalletInspectionService.InspectActivity:input_type -> wavewalletrpc.InspectActivityRequest
+	12, // 78: wavewalletrpc.WalletService.Create:output_type -> wavewalletrpc.CreateResponse
+	14, // 79: wavewalletrpc.WalletService.Unlock:output_type -> wavewalletrpc.UnlockResponse
+	16, // 80: wavewalletrpc.WalletService.PrepareSend:output_type -> wavewalletrpc.PrepareSendResponse
+	18, // 81: wavewalletrpc.WalletService.Send:output_type -> wavewalletrpc.SendResponse
+	21, // 82: wavewalletrpc.WalletService.Recv:output_type -> wavewalletrpc.RecvResponse
+	21, // 83: wavewalletrpc.WalletService.LookupRecv:output_type -> wavewalletrpc.RecvResponse
+	21, // 84: wavewalletrpc.WalletService.RecvOnActiveChannel:output_type -> wavewalletrpc.RecvResponse
+	25, // 85: wavewalletrpc.WalletService.List:output_type -> wavewalletrpc.ListResponse
+	37, // 86: wavewalletrpc.WalletService.Deposit:output_type -> wavewalletrpc.DepositResponse
+	39, // 87: wavewalletrpc.WalletService.Balance:output_type -> wavewalletrpc.BalanceResponse
+	41, // 88: wavewalletrpc.WalletService.Status:output_type -> wavewalletrpc.StatusResponse
+	52, // 89: wavewalletrpc.WalletService.Refresh:output_type -> wavewalletrpc.RefreshResponse
+	56, // 90: wavewalletrpc.WalletService.GetExitPlan:output_type -> wavewalletrpc.GetExitPlanResponse
+	43, // 91: wavewalletrpc.WalletService.ExportExit:output_type -> wavewalletrpc.ExportExitResponse
+	45, // 92: wavewalletrpc.WalletService.ExportExits:output_type -> wavewalletrpc.ExportExitsResponse
+	59, // 93: wavewalletrpc.WalletService.SweepWallet:output_type -> wavewalletrpc.SweepWalletResponse
+	61, // 94: wavewalletrpc.WalletService.Exit:output_type -> wavewalletrpc.ExitResponse
+	64, // 95: wavewalletrpc.WalletService.ExitBatch:output_type -> wavewalletrpc.ExitBatchResponse
+	69, // 96: wavewalletrpc.WalletService.ExitStatus:output_type -> wavewalletrpc.ExitStatusResponse
+	72, // 97: wavewalletrpc.WalletService.ExitSummary:output_type -> wavewalletrpc.ExitSummaryResponse
+	74, // 98: wavewalletrpc.WalletService.SubscribeWallet:output_type -> wavewalletrpc.SubscribeWalletResponse
+	32, // 99: wavewalletrpc.WalletInspectionService.InspectActivity:output_type -> wavewalletrpc.InspectActivityResponse
+	78, // [78:100] is the sub-list for method output_type
+	56, // [56:78] is the sub-list for method input_type
 	56, // [56:56] is the sub-list for extension type_name
 	56, // [56:56] is the sub-list for extension extendee
 	0,  // [0:56] is the sub-list for field type_name

@@ -36,6 +36,8 @@ type WalletServiceMailboxServer interface {
 	Recv(ctx context.Context, req *RecvRequest) (*RecvResponse, error)
 	// LookupRecv handles LookupRecv.
 	LookupRecv(ctx context.Context, req *LookupRecvRequest) (*RecvResponse, error)
+	// RecvOnActiveChannel handles RecvOnActiveChannel.
+	RecvOnActiveChannel(ctx context.Context, req *RecvRequest) (*RecvResponse, error)
 	// List handles List.
 	List(ctx context.Context, req *ListRequest) (*ListResponse, error)
 	// Deposit handles Deposit.
@@ -127,6 +129,16 @@ func RegisterWalletServiceMailboxServer(r rpc.Router, impl WalletServiceMailboxS
 		}
 
 		return impl.LookupRecv(ctx, req)
+	})
+	r.Handle("wavewalletrpc.WalletService", "RecvOnActiveChannel", func() proto.Message {
+		return &RecvRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*RecvRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.RecvOnActiveChannel(ctx, req)
 	})
 	r.Handle("wavewalletrpc.WalletService", "List", func() proto.Message {
 		return &ListRequest{}
@@ -395,6 +407,29 @@ func (c *WalletServiceMailboxClient) LookupRecv(ctx context.Context, req *Lookup
 	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
 		Service: "wavewalletrpc.WalletService",
 		Method:  "LookupRecv",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(RecvResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// RecvOnActiveChannel calls the RecvOnActiveChannel RPC.
+func (c *WalletServiceMailboxClient) RecvOnActiveChannel(ctx context.Context, req *RecvRequest, opts ...rpc.RPCOptions) (*RecvResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "wavewalletrpc.WalletService",
+		Method:  "RecvOnActiveChannel",
 	}, req, opt)
 	if err != nil {
 		return nil, err

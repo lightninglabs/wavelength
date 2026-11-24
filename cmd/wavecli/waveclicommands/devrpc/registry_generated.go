@@ -551,6 +551,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "",
 				},
 				{
+					Name:     "RecvOnActiveChannel",
+					Aliases:  []string{"recv-on-active-channel"},
+					Input:    "wavewalletrpc.RecvRequest",
+					Output:   "wavewalletrpc.RecvResponse",
+					Comments: "",
+				},
+				{
 					Name:     "List",
 					Aliases:  []string{"list"},
 					Input:    "wavewalletrpc.ListRequest",
