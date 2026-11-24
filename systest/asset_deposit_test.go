@@ -143,8 +143,10 @@ func mintAssetTestAsset(t *testing.T, h *SysTestHarness, tapd *tapgrpc.Client,
 }
 
 // startAssetTestOperator runs a fake operator mailbox that quotes the test
-// round fee, and returns its address.
-func startAssetTestOperator(t *testing.T) (string, *fakeMailboxServer) {
+// round fee and admits ref into rounds, and returns its address.
+func startAssetTestOperator(t *testing.T,
+	ref tapsdk.AssetRef) (string, *fakeMailboxServer) {
+
 	t.Helper()
 
 	operatorPriv, err := btcec.NewPrivateKey()
@@ -161,6 +163,9 @@ func startAssetTestOperator(t *testing.T) (string, *fakeMailboxServer) {
 		ArkVersionPolicies: []*arkrpc.ArkVersionPolicy{{
 			Version: arkrpc.ArkProtocolVersionV1,
 			State:   arkrpc.ArkVersionPolicy_STATE_ACTIVE,
+		}},
+		Assets: []*arkrpc.AssetPolicy{{
+			AssetRef: ref.String(),
 		}},
 	}
 	mailboxAddr, mailbox, stopMailbox := startFakeMailboxServer(

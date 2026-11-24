@@ -168,7 +168,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `NewWalletAddress`. A deposit spends the daemon wallet's coins, and a
   wallet SDK host has no other way to learn an address of that wallet.
 - `DepositAsset` needs an asset backend; without one the RPC returns
-  `FailedPrecondition`. The engine signs its anchor inputs with keys of the
+  `FailedPrecondition`. It also refuses, before recording anything, an
+  asset the operator does not list in `GetInfo`'s `assets`
+  (`types.OperatorTerms.AssetRefs`), since no round would admit it. The engine signs its anchor inputs with keys of the
   daemon's seed, and its deposit journal lives in the database, since a
   browser has no files. A backend that tap-sdk does not
   report as signing them fails the deposit with `FailedPrecondition` before

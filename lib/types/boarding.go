@@ -97,6 +97,10 @@ type OperatorTerms struct {
 	// operator does not enforce a cap (the client should fall back to
 	// its own conservative default before submitting).
 	MaxOORLineageVBytes uint32
+
+	// AssetRefs are the Taproot Assets the operator admits into rounds,
+	// in tap-sdk's asset reference format. Empty means none.
+	AssetRefs []string
 }
 
 // MinVTXOAmountFloor returns the effective minimum for a VTXO output. The

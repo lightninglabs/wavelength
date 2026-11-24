@@ -149,6 +149,17 @@ message GetInfoResponse {
     // absent when it uses event-driven registration. A scheduled operator
     // rejects any join that does not select one of the published slots.
     BatchSchedule batch_schedule = 25;
+
+    // assets lists the Taproot Assets the operator admits into rounds. It is
+    // empty when the operator serves no assets.
+    repeated AssetPolicy assets = 26;
+}
+
+// AssetPolicy describes one Taproot Asset the operator admits into rounds.
+message AssetPolicy {
+    // asset_ref identifies the asset in tap-sdk's asset reference format: its
+    // group key for a grouped asset, its asset ID otherwise.
+    string asset_ref = 1;
 }
 
 // BatchSchedule lists an operator's upcoming scheduled-batch registration
