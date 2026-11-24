@@ -87,6 +87,12 @@ var (
 	ErrBalanceLimitExceeded = errors.New("amount would exceed the " +
 		"maximum allowed wallet balance")
 
+	// ErrInsufficientFunds reports that a prepared send's quoted wallet
+	// outflow cannot be funded by the wallet's live VTXOs under the
+	// minimum-change rule — the prepare-time form of the dispatch
+	// insufficient-funds rejection.
+	ErrInsufficientFunds = errors.New("insufficient spendable funds")
+
 	// ErrCreditReceiveUnavailable reports that a sub-dust receive was
 	// routed to the operator's credit subsystem but the swap server did not
 	// complete the credit request (it timed out or errored). It is distinct

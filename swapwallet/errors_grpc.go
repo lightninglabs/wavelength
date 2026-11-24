@@ -70,6 +70,14 @@ var sentinelMappings = []sentinelMapping{
 		ErrBalanceLimitExceeded, codes.FailedPrecondition,
 		wavewalletrpc.ReasonBalanceLimitExceeded,
 	},
+	{
+		// Insufficient funds at prepare is FailedPrecondition: the
+		// amount is well-formed, the wallet's current VTXO set simply
+		// cannot cover it — a state the caller can fix by funding the
+		// wallet or lowering the amount, not a malformed request.
+		ErrInsufficientFunds, codes.FailedPrecondition,
+		wavewalletrpc.ReasonInsufficientFunds,
+	},
 
 	// A sub-dust receive whose credit request the swap server never
 	// completes is Unavailable (a function of operator/server state, not a

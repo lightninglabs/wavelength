@@ -381,36 +381,9 @@ func maxQuoteFundable(coins []btcutil.Amount, floor btcutil.Amount,
 			req.MaxCreditSat-cp.GetCreditAppliedSat() {
 		return false
 	}
-	remaining := append([]btcutil.Amount(nil), coins...)
-	sort.Slice(
-		remaining,
-		func(i, j int) bool { return remaining[i] > remaining[j] },
-	)
-	for _, target := range []uint64{
-		cp.GetCreditTopupSat(),
-		q.GetAmountSat(),
-	} {
-		if target == 0 {
-			continue
-		}
-		res, err := coinselect.LargestFirst(remaining,
-			func(v btcutil.Amount) btcutil.Amount { return v },
-			coinselect.Request{
-				Target:    btcutil.Amount(target),
-				MinChange: floor,
-			},
-		)
-		if err != nil {
-			return false
-		}
-		remaining = remaining[len(res.Selected):]
-		if res.Change > 0 {
-			remaining = append(remaining, res.Change)
-			sort.Slice(remaining, func(i, j int) bool {
-				return remaining[i] > remaining[j]
-			})
-		}
-	}
-
-	return true
+	return coinselect.SelectSequential(
+		coins, floor,
+		btcutil.Amount(cp.GetCreditTopupSat()),
+		btcutil.Amount(q.GetAmountSat()),
+	) == nil
 }

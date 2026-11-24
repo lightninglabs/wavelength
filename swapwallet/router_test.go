@@ -161,6 +161,12 @@ func TestRouterPrepareSendInvoiceReturnsRemoteQuote(t *testing.T) {
 			SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING,
 		ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
 	}
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{{
+			Outpoint:  "funding:0",
+			AmountSat: 30_000,
+		}},
+	}
 
 	resp, err := r.PrepareSend(
 		t.Context(), &wavewalletrpc.PrepareSendRequest{
@@ -282,7 +288,7 @@ func TestRouterPrepareSendInvoiceFallsBackWhenQuoteUnavailable(t *testing.T) {
 func TestRouterPrepareSendInvoiceMapsUnknownQuoteRail(t *testing.T) {
 	t.Parallel()
 
-	r, swap, _ := newRouterFixture(t)
+	r, swap, rpc := newRouterFixture(t)
 	invoice, paymentHash := testPreparedInvoice(t, 12_345, "future rail")
 	swap.quotePayResp = &swapclientrpc.QuotePayResponse{
 		PaymentHash:      paymentHash,
@@ -292,6 +298,12 @@ func TestRouterPrepareSendInvoiceMapsUnknownQuoteRail(t *testing.T) {
 		SettlementType: swapclientrpc.
 			SwapSettlementType_SWAP_SETTLEMENT_TYPE_UNSPECIFIED,
 		ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
+	}
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{{
+			Outpoint:  "funding:0",
+			AmountSat: 30_000,
+		}},
 	}
 
 	resp, err := r.PrepareSend(
@@ -331,6 +343,12 @@ func TestRouterPrepareSendInvoiceQuotesInArk(t *testing.T) {
 			SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK,
 		ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
 	}
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{{
+			Outpoint:  "funding:0",
+			AmountSat: 30_000,
+		}},
+	}
 
 	resp, err := r.PrepareSend(
 		t.Context(), &wavewalletrpc.PrepareSendRequest{
@@ -356,7 +374,7 @@ func TestRouterPrepareSendInvoiceQuotesInArk(t *testing.T) {
 func TestRouterPrepareSendInvoiceWarnsWhenQuoteExceedsMaxFee(t *testing.T) {
 	t.Parallel()
 
-	r, swap, _ := newRouterFixture(t)
+	r, swap, rpc := newRouterFixture(t)
 	invoice, paymentHash := testPreparedInvoice(t, 12_345, "fee cap")
 	swap.quotePayResp = &swapclientrpc.QuotePayResponse{
 		PaymentHash:      paymentHash,
@@ -367,6 +385,12 @@ func TestRouterPrepareSendInvoiceWarnsWhenQuoteExceedsMaxFee(t *testing.T) {
 			SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING,
 		ExceedsMaxFee: true,
 		ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
+	}
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{{
+			Outpoint:  "funding:0",
+			AmountSat: 30_000,
+		}},
 	}
 
 	resp, err := r.PrepareSend(
@@ -480,6 +504,12 @@ func TestRouterSendInvoiceHandsCreditPayToRegistry(t *testing.T) {
 			CreditTopupSat:     1_000,
 		},
 		ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
+	}
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{{
+			Outpoint:  "funding:0",
+			AmountSat: 30_000,
+		}},
 	}
 
 	prepareResp, err := r.PrepareSend(
@@ -1070,7 +1100,7 @@ func TestRouterSendInvoicePreservesStartPayStatusCode(t *testing.T) {
 // TestRouterAmountlessBindsQuoteAndSend verifies prepare and dispatch use the
 // same caller amount, and consuming the intent still forbids duplicate sends.
 func TestRouterAmountlessBindsQuoteAndSend(t *testing.T) {
-	r, swap, _ := newRouterFixture(t)
+	r, swap, rpc := newRouterFixture(t)
 	invoice, hash := testPreparedInvoice(t, -1, "Coffee with Alex")
 	swap.quotePayResp = &swapclientrpc.QuotePayResponse{
 		PaymentHash:      hash,
@@ -1079,6 +1109,12 @@ func TestRouterAmountlessBindsQuoteAndSend(t *testing.T) {
 		FeeSat:           12,
 		SettlementType: swapclientrpc.
 			SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING,
+	}
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{{
+			Outpoint:  "funding:0",
+			AmountSat: 30_000,
+		}},
 	}
 	swap.startPayResp = &swapclientrpc.StartPayResponse{
 		Swap: &swapclientrpc.SwapSummary{

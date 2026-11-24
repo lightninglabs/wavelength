@@ -59,6 +59,13 @@ var (
 	ErrBalanceLimitExceeded = errors.New("amount would exceed the " +
 		"maximum allowed wallet balance")
 
+	// ErrInsufficientFunds is returned when the wallet's live VTXOs
+	// cannot fund a prepared send's quoted wallet outflow (the credit
+	// top-up leg and the Ark funding leg, under the minimum-change
+	// rule). The wrapped message carries the required and available
+	// amounts.
+	ErrInsufficientFunds = errors.New("insufficient spendable funds")
+
 	// ErrCreditReceiveUnavailable is returned when a sub-dust receive is
 	// routed to the operator's credit subsystem but the swap server does
 	// not complete the credit request (it times out or errors). It maps to

@@ -10,6 +10,7 @@ import (
 
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -64,7 +65,7 @@ func TestPrepareSendRejectsUnstorableCreditCap(t *testing.T) {
 func TestPrepareSendAllowsBoundedRoundedTopup(t *testing.T) {
 	t.Parallel()
 
-	r, swap, _ := newRouterFixture(t)
+	r, swap, rpc := newRouterFixture(t)
 	reg := &fakeCreditRegistry{}
 	r.deps.CreditRegistry = reg
 
@@ -72,6 +73,12 @@ func TestPrepareSendAllowsBoundedRoundedTopup(t *testing.T) {
 	swap.quotePayResp = creditOnlyQuote(
 		paymentHash, 500, 267, 233, 1_000,
 	)
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{{
+			Outpoint:  "funding:0",
+			AmountSat: 2_000,
+		}},
+	}
 
 	resp, err := r.PrepareSend(
 		t.Context(), &wavewalletrpc.PrepareSendRequest{
@@ -102,11 +109,17 @@ func TestPrepareSendAllowsBoundedRoundedTopup(t *testing.T) {
 func TestPrepareSendEarmarksExactCreditRequirement(t *testing.T) {
 	t.Parallel()
 
-	r, swap, _ := newRouterFixture(t)
+	r, swap, rpc := newRouterFixture(t)
 	invoice, paymentHash := testPreparedInvoice(t, 500, "tiny")
 	swap.quotePayResp = creditOnlyQuote(
 		paymentHash, 500, 267, 233, 1_000,
 	)
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{{
+			Outpoint:  "funding:0",
+			AmountSat: 2_000,
+		}},
+	}
 
 	_, err := r.PrepareSend(
 		t.Context(), &wavewalletrpc.PrepareSendRequest{
@@ -152,7 +165,7 @@ func TestPrepareSendEarmarksFallbackCreditCap(t *testing.T) {
 	t.Run("complete without credit", func(t *testing.T) {
 		t.Parallel()
 
-		r, swap, _ := newRouterFixture(t)
+		r, swap, rpc := newRouterFixture(t)
 		invoice, paymentHash := testPreparedInvoice(t, 500, "remote")
 		swap.quotePayResp = &swapclientrpc.QuotePayResponse{
 			PaymentHash:      paymentHash,
@@ -163,6 +176,12 @@ func TestPrepareSendEarmarksFallbackCreditCap(t *testing.T) {
 				SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING,
 			ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
 			CreditQuote:   &swapclientrpc.CreditQuote{},
+		}
+		rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+			Vtxos: []*waverpc.VTXO{{
+				Outpoint:  "funding:0",
+				AmountSat: 2_000,
+			}},
 		}
 
 		_, err := r.PrepareSend(
