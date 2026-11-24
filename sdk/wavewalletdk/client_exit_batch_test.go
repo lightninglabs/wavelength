@@ -116,3 +116,24 @@ func TestClientExitBatchRejectsEmptySelection(t *testing.T) {
 	require.ErrorContains(t, err, "outpoints list is empty")
 	require.Zero(t, wallet.calls)
 }
+
+// SubmitExitBatch simulates a daemon that predates keyed cooperative exits.
+func (s *batchWalletClient) SubmitExitBatch(_ context.Context,
+	_ *wavewalletrpc.SubmitExitBatchRequest, _ ...grpc.CallOption) (
+	*wavewalletrpc.ExitBatchResponse, error) {
+
+	return nil, status.Error(codes.Unimplemented, "keyed exits unavailable")
+}
+
+// TestClientExitBatchKeyNeverFallsBack proves a keyed submit fails closed
+// against an old daemon rather than creating a withdrawal without a receipt.
+func TestClientExitBatchKeyNeverFallsBack(t *testing.T) {
+	t.Parallel()
+	wallet := &batchWalletClient{}
+	client := newExitTestClient(wallet)
+	_, err := client.ExitBatch(t.Context(), ExitBatchRequest{
+		RequestID: "one", Outpoints: []string{"a:0"},
+	})
+	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Zero(t, wallet.calls)
+}

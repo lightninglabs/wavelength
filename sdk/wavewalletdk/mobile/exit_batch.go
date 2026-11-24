@@ -5,10 +5,11 @@ package mobile
 import "github.com/lightninglabs/wavelength/sdk/wavewalletdk"
 
 // ExitBatch submits exactly one cooperative selection. The JSON request is
-// wavewalletdk.ExitBatchRequest (Outpoints, Destination); the response is
-// ExitBatchResult (Results, Destination). Inspect every input's Outcome, even
-// on nil error. Unknown outcomes and transport errors require reconciliation,
-// never an automatic retry. This call does not support unilateral exit.
+// wavewalletdk.ExitBatchRequest (Outpoints, Destination, optional RequestID);
+// the response is ExitBatchResult (Results, Destination). Inspect every input's
+// Outcome, even on nil error. Unknown outcomes and transport errors require
+// reconciliation, never an automatic retry. This call does not support
+// unilateral exit.
 func ExitBatch(reqJSON []byte) ([]byte, error) {
 	client, ctx, err := activeClient()
 	if err != nil {
@@ -26,4 +27,26 @@ func ExitBatch(reqJSON []byte) ([]byte, error) {
 	}
 
 	return marshal(result)
+}
+
+// ResolveExitBatch closes an unused request ID or returns its original
+// admission. Only a successful Closed response releases inputs.
+func ResolveExitBatch(reqJSON []byte) ([]byte, error) {
+	client, ctx, err := activeClient()
+	if err != nil {
+		return nil, err
+	}
+	var req struct{ RequestID string }
+	if err := decode(reqJSON, &req); err != nil {
+		return nil, err
+	}
+	result, err := client.ResolveExitBatch(ctx, req.RequestID)
+	if err != nil {
+		return nil, err
+	}
+
+	return marshal(struct {
+		Closed    bool
+		Admission *wavewalletdk.ExitBatchResult
+	}{result == nil, result})
 }

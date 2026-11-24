@@ -9,8 +9,9 @@ import (
 
 // ExitBatchRequest selects exact inputs for one cooperative leave request.
 // Destination is common to all inputs; empty allocates one wallet-owned
-// address. There is no unilateral option or replay key.
+// address. RequestID opts into single-use durable admission.
 type ExitBatchRequest struct {
+	RequestID   string
 	Outpoints   []string
 	Destination string
 }
@@ -62,16 +63,56 @@ func (c *Client) ExitBatch(ctx context.Context, req ExitBatchRequest) (
 		return nil, fmt.Errorf("outpoints list is empty")
 	}
 
-	response, err := c.wallet.ExitBatch(ctx,
-		&wavewalletrpc.ExitBatchRequest{
-			Outpoints:      req.Outpoints,
-			OnchainAddress: req.Destination,
-		},
-	)
+	selection := &wavewalletrpc.ExitBatchRequest{
+		Outpoints:      req.Outpoints,
+		OnchainAddress: req.Destination,
+	}
+	var response *wavewalletrpc.ExitBatchResponse
+	var err error
+	if req.RequestID != "" {
+		response, err = c.wallet.SubmitExitBatch(
+			ctx, &wavewalletrpc.SubmitExitBatchRequest{
+				RequestId: req.RequestID,
+				Selection: selection,
+			},
+		)
+	} else {
+		response, err = c.wallet.ExitBatch(ctx, selection)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("exit batch (do not retry without "+
 			"reconciling admission): %w", err)
 	}
+
+	return exitBatchResult(response), nil
+}
+
+// ResolveExitBatch recovers an admitted request or closes its ID permanently.
+// A nil result with no error is authoritative permission to review a new exit.
+func (c *Client) ResolveExitBatch(ctx context.Context, requestID string) (
+	*ExitBatchResult, error) {
+
+	if err := c.requireWalletRPC(); err != nil {
+		return nil, err
+	}
+	response, err := c.wallet.ResolveExitBatch(
+		ctx, &wavewalletrpc.ResolveExitBatchRequest{
+			RequestId: requestID,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if response.GetAdmission() == nil {
+		return nil, nil
+	}
+
+	return exitBatchResult(response.GetAdmission()), nil
+}
+
+// exitBatchResult decodes the original per-input admission in request order.
+func exitBatchResult(
+	response *wavewalletrpc.ExitBatchResponse) *ExitBatchResult {
 
 	result := &ExitBatchResult{
 		Destination: response.GetOnchainAddress(),
@@ -96,5 +137,5 @@ func (c *Client) ExitBatch(ctx context.Context, req ExitBatchRequest) (
 		})
 	}
 
-	return result, nil
+	return result
 }

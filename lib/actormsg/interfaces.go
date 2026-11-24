@@ -65,6 +65,11 @@ type VTXOManagerResp interface {
 type RegisterIntentMsg struct {
 	actor.BaseMessage
 
+	// ExitRequestID and ExitReceipt bind a keyed cooperative leave to its
+	// successful round turn. Other intent producers leave both empty.
+	ExitRequestID string
+	ExitReceipt   []byte
+
 	// Forfeits contains the VTXOs being forfeited as inputs.
 	Forfeits []types.ForfeitRequest
 

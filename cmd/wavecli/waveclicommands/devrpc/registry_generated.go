@@ -621,6 +621,20 @@ func generatedRegistry() []serviceSpec {
 					Comments: "",
 				},
 				{
+					Name:     "SubmitExitBatch",
+					Aliases:  []string{"submit-exit-batch"},
+					Input:    "wavewalletrpc.SubmitExitBatchRequest",
+					Output:   "wavewalletrpc.ExitBatchResponse",
+					Comments: "",
+				},
+				{
+					Name:     "ResolveExitBatch",
+					Aliases:  []string{"resolve-exit-batch"},
+					Input:    "wavewalletrpc.ResolveExitBatchRequest",
+					Output:   "wavewalletrpc.ResolveExitBatchResponse",
+					Comments: "",
+				},
+				{
 					Name:     "ExitStatus",
 					Aliases:  []string{"exit-status"},
 					Input:    "wavewalletrpc.ExitStatusRequest",

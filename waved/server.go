@@ -4764,9 +4764,10 @@ func (s *Server) initRoundActor(ctx context.Context,
 		SigningExecutor: round.NewSigningExecutor(
 			signingWorkers,
 		),
-		RoundStore:    roundStore,
-		VTXOStore:     roundStore,
-		OperatorTerms: operatorTerms,
+		RoundStore:        roundStore,
+		CommitExitReceipt: roundStore.CommitExitBatch,
+		VTXOStore:         roundStore,
+		OperatorTerms:     operatorTerms,
 		OperatorTermsSource: &roundTermsSource{
 			server: s,
 		},

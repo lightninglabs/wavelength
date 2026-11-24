@@ -514,6 +514,11 @@ CREATE TABLE dead_letters (
     created_at BIGINT NOT NULL
 );
 
+CREATE TABLE exit_batch_receipts (
+    request_id TEXT PRIMARY KEY NOT NULL,
+    receipt BLOB
+);
+
 CREATE TABLE exit_funding_addresses (
     -- target_outpoint_hash identifies the target VTXO transaction.
     target_outpoint_hash BLOB NOT NULL,

@@ -13,6 +13,7 @@ type Querier interface {
 	AbandonRoundAdmissionDeadlines(ctx context.Context) error
 	// ActivityEventHighWater captures the current end of the transition log.
 	ActivityEventHighWater(ctx context.Context) (int64, error)
+	AdmitExitBatchRequest(ctx context.Context, arg AdmitExitBatchRequestParams) (int64, error)
 	// AppendActivityEvent records one immutable lifecycle-transition row and
 	// returns the event_seq the database assigned (monotonic, not necessarily
 	// contiguous). Callers use it as the resumable-subscribe cursor for the update.
@@ -22,6 +23,7 @@ type Querier interface {
 	// round_uuid IS NULL guard makes re-running the backfill (e.g. after a crash
 	// mid-migration) a no-op for already-converted rows.
 	BackfillLedgerRoundUuid(ctx context.Context, arg BackfillLedgerRoundUuidParams) error
+	BeginExitBatchRequest(ctx context.Context, requestID string) (int64, error)
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
 	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
 	CloseRoundAdmissionDeadline(ctx context.Context, roundID string) error
@@ -583,6 +585,7 @@ type Querier interface {
 	// Repair only the creation height against the authenticated expiry and the
 	// observed old height. Accept the replacement height too for idempotent retry.
 	RepairVTXOCreatedHeight(ctx context.Context, arg RepairVTXOCreatedHeightParams) (int64, error)
+	ResolveExitBatchRequest(ctx context.Context, arg ResolveExitBatchRequestParams) ([]byte, error)
 	// Returns every boarding intent adopted by one dead round to 'confirmed'. The
 	// commitment never broadcast, so the UTXO is exactly as it was before the
 	// round: re-boardable, and sweepable again.

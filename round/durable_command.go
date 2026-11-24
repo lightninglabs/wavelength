@@ -33,6 +33,7 @@ const (
 	clientCommandTrigger      uint64 = 12
 	clientCommandBoardReply   uint64 = 13
 	clientCommandRegistration uint64 = 14
+	clientCommandKeyedExit    uint64 = 15
 )
 
 // durableClientCommand owns the data required to redeliver one local command.
@@ -79,7 +80,7 @@ func (m *durableClientCommand) stream() (*tlv.Stream, error) {
 
 // validate rejects unsupported command tags and unknown presence flags.
 func (m *durableClientCommand) validate() error {
-	if m.Kind < clientCommandIntent || m.Kind > clientCommandRegistration {
+	if m.Kind < clientCommandIntent || m.Kind > clientCommandKeyedExit {
 		return fmt.Errorf("unknown durable client command: %d", m.Kind)
 	}
 	if m.Flags > 1 {
@@ -142,6 +143,17 @@ func newDurableClientCommand(msg actormsg.RoundReceivable) (
 
 	case *actormsg.RegisterIntentMsg:
 		m.Kind = clientCommandIntent
+		if req.ExitRequestID != "" {
+			m.Kind = clientCommandKeyedExit
+			id := []byte(req.ExitRequestID)
+			m.Key, err = encodeDurableFields(
+				tlv.MakePrimitiveRecord(1, &id),
+				tlv.MakePrimitiveRecord(3, &req.ExitReceipt),
+			)
+			if err != nil {
+				return nil, err
+			}
+		}
 		m.Payload, err = encodeDurableIntents(Intents{
 			Forfeits: req.Forfeits,
 			VTXOs:    req.VTXOs, Leaves: req.Leaves,
@@ -220,7 +232,7 @@ func (m *durableClientCommand) message(params *chaincfg.Params) (
 	case clientCommandBoardReply:
 		return decodeBoardingReply(m.Payload, string(m.Key), params)
 
-	case clientCommandIntent:
+	case clientCommandIntent, clientCommandKeyedExit:
 		intents, err := decodeDurableIntents(m.Payload, params)
 		if err != nil {
 			return nil, err

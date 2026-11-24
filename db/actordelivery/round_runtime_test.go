@@ -132,7 +132,9 @@ func testRoundRuntimeRestart(t *testing.T, rollback bool) {
 	]{response: &chainsource.BestHeightResponse{
 		Height: 100,
 	}}
+	exitStore := domain.NewRoundStore(&chaincfg.MainNetParams, clk)
 	cfg := &round.RoundClientConfig{
+		CommitExitReceipt: exitStore.CommitExitBatch,
 		// Match the daemon identity so typed and outbox registration
 		// exercise the production namespace collision.
 		Name: "round-client", Logger: btclog.Disabled,
@@ -214,16 +216,52 @@ func testRoundRuntimeRestart(t *testing.T, rollback bool) {
 	require.ErrorIs(t, err, round.ErrNoPendingRound)
 	baseline, err := store.LoadCheckpoint(ctx, cfg.Name)
 	require.NoError(t, err)
-	_, err = first.Ref().Ask(ctx, &round.RegisterIntentRequest{
-		Package: &round.IntentPackage{Intents: round.Intents{
-			Forfeits: []types.ForfeitRequest{{
-				VTXOOutpoint: &wire.OutPoint{Index: 7},
-			}},
-			VTXOs: []types.VTXORequest{{
-				Amount: 321, FixedAmount: true,
-			}},
-		}},
-	}).Await(ctx).Unpack()
+	intent := &actormsg.RegisterIntentMsg{
+		Forfeits: []types.ForfeitRequest{
+			{
+				VTXOOutpoint: &wire.OutPoint{
+					Index: 7,
+				},
+			},
+		},
+		VTXOs: []types.VTXORequest{
+			{
+				Amount:      321,
+				FixedAmount: true,
+			},
+		},
+	}
+	if !rollback {
+		// Recovery that wins before delivery fences even a valid
+		// intent.
+		_, err := exitStore.ResolveExitBatch(ctx, "closed")
+		require.NoError(t, err)
+		intent.ExitRequestID, intent.ExitReceipt = "closed", []byte(
+			"original",
+		)
+		require.ErrorIs(
+			t, first.Ref().Ask(ctx, intent).Await(ctx).Err(),
+			db.ErrExitBatchIDUsed,
+		)
+
+		// An FSM rejection leaves no receipt or effects, even though
+		// the command reached the durable inbox and its Ask returned an
+		// error.
+		require.NoError(t, exitStore.BeginExitBatch(ctx, "rejected"))
+		rejected := &actormsg.RegisterIntentMsg{
+			ExitRequestID: "rejected",
+			ExitReceipt:   []byte("never accepted"),
+		}
+		require.Error(
+			t, first.Ref().Ask(ctx, rejected).Await(ctx).Err(),
+		)
+		missing, err := exitStore.ResolveExitBatch(ctx, "rejected")
+		require.NoError(t, err)
+		require.Empty(t, missing)
+		require.NoError(t, exitStore.BeginExitBatch(ctx, "accepted"))
+		intent.ExitRequestID = "accepted"
+	}
+	_, err = first.Ref().Ask(ctx, intent).Await(ctx).Unpack()
 	require.NoError(t, err)
 	if rollback {
 		baseline, err = store.LoadCheckpoint(ctx, cfg.Name)
@@ -271,6 +309,11 @@ func testRoundRuntimeRestart(t *testing.T, rollback bool) {
 	require.Empty(t, effects)
 
 	second := start()
+	if !rollback {
+		receipt, err := exitStore.ResolveExitBatch(ctx, "accepted")
+		require.NoError(t, err)
+		require.Equal(t, []byte("original"), receipt)
+	}
 	var state *round.GetClientStateResponse
 	require.EventuallyWithT(t, func(collect *assert.CollectT) {
 		after, err := second.Ref().Ask(
