@@ -43,14 +43,16 @@ func TestRescanRetainsLiveChangeWatch(t *testing.T) {
 	start := stub.hashFor(100)
 	require.NoError(t, service.Rescan(&start, addresses, nil))
 
-	// Drain the historical scan before driving the next live block.
-	for range 2 {
-		select {
-		case <-service.Notifications():
-		case <-time.After(time.Second):
-			t.Fatal("missing historical rescan notification")
-		}
-	}
+	// Rescan flushes asynchronously. Validate the historical block pair
+	// and terminal event before driving the next live block.
+	historical := readSpendWatchBlock(t, service)
+	finished := requireNotification[*chain.RescanFinished](
+		t, service.Notifications(),
+	)
+	require.Equal(t, historical.Block.Height, finished.Height)
+	require.Equal(t, historical.Block.Hash, *finished.Hash)
+	require.Equal(t, historical.Block.Time, finished.Time)
+
 	script, err := txscript.PayToAddrScript(addresses[1])
 	require.NoError(t, err)
 	funding := wire.OutPoint{Hash: chainhash.Hash{1}, Index: 0}
@@ -75,19 +77,12 @@ func TestRescanRetainsLiveChangeWatch(t *testing.T) {
 	stub.tipHeight = 101
 	stub.mu.Unlock()
 	service.processTipEvent(t.Context(), tipEventFor(stub, 101))
-	select {
-	case notification := <-service.Notifications():
-		filtered, ok := notification.(chain.FilteredBlockConnected)
-		require.True(t, ok)
-		require.EqualValues(t, 101, filtered.Block.Height)
-		require.Len(t, filtered.RelevantTxs, 1)
-		require.Equal(t, spend.TxHash(), filtered.RelevantTxs[0].Hash)
-		require.Equal(
-			t, funding,
-			filtered.RelevantTxs[0].MsgTx.TxIn[0].PreviousOutPoint,
-		)
-
-	case <-time.After(time.Second):
-		t.Fatal("rescan change address missing from live notifications")
-	}
+	filtered := readSpendWatchBlock(t, service)
+	require.EqualValues(t, 101, filtered.Block.Height)
+	require.Len(t, filtered.RelevantTxs, 1)
+	require.Equal(t, spend.TxHash(), filtered.RelevantTxs[0].Hash)
+	require.Equal(
+		t, funding,
+		filtered.RelevantTxs[0].MsgTx.TxIn[0].PreviousOutPoint,
+	)
 }

@@ -50,10 +50,14 @@ func readSpendWatchBlock(t *testing.T,
 			if i == 0 {
 				var ok bool
 				filtered, ok = n.(chain.FilteredBlockConnected)
-				require.True(t, ok)
+				require.True(
+					t, ok, "unexpected notification %T", n,
+				)
 			} else {
 				_, ok := n.(chain.BlockConnected)
-				require.True(t, ok)
+				require.True(
+					t, ok, "unexpected notification %T", n,
+				)
 			}
 
 		case <-time.After(time.Second):
@@ -114,7 +118,20 @@ func TestLiveWatchesIncludeInputOnlySpends(t *testing.T) {
 			require.NoError(
 				t, service.Rescan(&start, addresses, coins),
 			)
-			readSpendWatchBlock(t, service)
+			historical := readSpendWatchBlock(t, service)
+
+			// Rescan flushes asynchronously. Observe its terminal
+			// event before delivering a live block to the same
+			// notification queue.
+			finished := requireNotification[*chain.RescanFinished](
+				t, service.Notifications(),
+			)
+			require.Equal(
+				t, historical.Block.Height, finished.Height,
+			)
+			require.Equal(t, historical.Block.Hash, *finished.Hash)
+			require.Equal(t, historical.Block.Time, finished.Time)
+
 			height := int32(101)
 			if mode == "live output" {
 				installSpendWatchBlock(stub, height, funding)
