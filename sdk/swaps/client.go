@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/arkchannel"
 	sdkark "github.com/lightninglabs/wavelength/sdk/ark"
 	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -52,6 +53,10 @@ const (
 	// SettlementTypeMixed means the invoice is funded by both a vHTLC and
 	// a reserved credit balance.
 	SettlementTypeMixed SettlementType = "mixed"
+
+	// SettlementTypeArkChannel means the receive settled directly into an
+	// active Ark-backed native Lightning channel.
+	SettlementTypeArkChannel SettlementType = "ark_channel"
 )
 
 // CreditQuote describes how a pay quote uses wallet credits.
@@ -224,6 +229,12 @@ type SwapSummary struct {
 	// or as a same-Ark payment when that detail is durably known.
 	SettlementType SettlementType
 
+	// ChannelID identifies the existing channel reserved for this invoice.
+	ChannelID [32]byte
+
+	// ReservedSCID is the virtual route advertised by the receive invoice.
+	ReservedSCID uint64
+
 	// CreditQuote records the credit component of a pay quote when the
 	// server selected a credit or mixed rail.
 	CreditQuote *CreditQuote
@@ -286,8 +297,15 @@ type ReceiveResult struct {
 	// "txid:vout" format.
 	VTXOOutpoint string
 
-	// AmountSat is the value of the claimed VTXO in satoshis.
+	// AmountSat is the amount received into the wallet or active channel.
 	AmountSat int64
+
+	// ChannelID identifies the existing channel used for direct settlement.
+	ChannelID [32]byte
+
+	// SettlementType reports whether the result used a channel or ordinary
+	// vHTLC claim.
+	SettlementType SettlementType
 }
 
 // ReceiveVHTLCInfo holds the script details for one prepared
@@ -765,6 +783,27 @@ type OORSessionWaiter interface {
 		wait time.Duration) (*waverpc.OORSessionInfo, bool, error)
 }
 
+// ArkChannelPaymentBridge is the narrow daemon-owned channel boundary used by
+// the swap SDK. lnd remains authoritative for invoices and payments.
+type ArkChannelPaymentBridge interface {
+	PrepareIncomingPayment(context.Context, lntypes.Preimage,
+		btcutil.Amount) error
+
+	// RegisterIncomingPayment reserves an active channel and returns its ID
+	// and the minimum CLTV delta for the public invoice's final hop.
+	RegisterIncomingPayment(context.Context, lntypes.Hash, btcutil.Amount,
+		uint64) (arkchannel.ID, uint32, error)
+
+	// WaitIncomingPayment identifies the native channel that accepted the
+	// HTLC.
+	WaitIncomingPayment(context.Context,
+		lntypes.Hash) (arkchannel.ID, error)
+
+	SettleIncomingPayment(context.Context, lntypes.Preimage) error
+
+	CancelIncomingPayment(context.Context, lntypes.Hash, string) error
+}
+
 // DaemonConn abstracts the connection to the client's own daemon for wallet
 // operations such as OOR sends and indexed VTXO lookups.
 //
@@ -945,12 +984,14 @@ type SwapClient struct {
 	// their own cancellation deadlines rather than wait on a mutex.
 	restoreGate chan struct{}
 
-	server     SwapServerConn
-	daemon     DaemonConn
-	invoiceGen InvoiceCreator
-	outEvents  OutSwapEventReceiver
-	store      *Store
-	log        btclog.Logger
+	server           SwapServerConn
+	daemon           DaemonConn
+	invoiceGen       InvoiceCreator
+	outEvents        OutSwapEventReceiver
+	store            *Store
+	log              btclog.Logger
+	channelBridge    ArkChannelPaymentBridge
+	channelAdmission bool
 
 	waitPollInterval         time.Duration
 	overdueReceivePollWindow time.Duration
@@ -964,6 +1005,15 @@ type SwapClient struct {
 	decodeOutSwapOnion       outSwapOnionDecoder
 	chainParams              *chaincfg.Params
 	now                      func() time.Time
+}
+
+// SetArkChannelPaymentBridge wires recovery independently of whether this
+// process may admit new channel invoices.
+func (c *SwapClient) SetArkChannelPaymentBridge(bridge ArkChannelPaymentBridge,
+	admit bool) {
+
+	c.channelBridge = bridge
+	c.channelAdmission = admit
 }
 
 // SetOutSwapEventReceiver sets the mailbox event receiver used by
