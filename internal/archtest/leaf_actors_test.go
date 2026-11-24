@@ -44,6 +44,7 @@ var actorPackages = []string{
 	"credit",
 	"fraud",
 	"ledger",
+	"lnruntime",
 	"metrics",
 	"oor",
 	"round",
