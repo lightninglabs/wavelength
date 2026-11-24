@@ -23,19 +23,26 @@ var appAttestRoot []byte
 // Config holds publisher-controlled relay policy. Applications are copied at
 // construction. Logger receives metadata only, never proof bodies or tokens.
 type Config struct {
+	// Applications defines the immutable publisher policy for each app
+	// alias.
 	Applications []AppConfig
 	// Authenticator defaults to App Attest; custom modules are trusted
 	// publisher code selected at construction, never by HTTP clients.
 	Authenticator DeviceAuthenticator
-	Logger        *slog.Logger
+	// Android selects publisher-configured tester or emulator admission.
+	Android *AndroidAuthenticator
+	// FCM delivers data-only messages for configured Android applications.
+	FCM *FCMProvider
+	// Logger receives relay diagnostics. A nil value discards them.
+	Logger *slog.Logger
 }
 
 // Server owns bounded HTTP admission and a durable delivery worker. The caller
 // owns the SQL database and must join HTTP shutdown and Run before closing it.
 type Server struct {
 	store          managementStore
-	provider       Provider
-	verifier       DeviceAuthenticator
+	providers      map[string]Provider
+	verifiers      map[string]DeviceAuthenticator
 	apps           map[string]AppConfig
 	log            *slog.Logger
 	now            func() time.Time
@@ -75,33 +82,47 @@ func newAuthenticatedServer(cfg Config, store managementStore,
 	provider Provider, verifier DeviceAuthenticator,
 	now func() time.Time) (*Server, error) {
 
-	if store == nil || provider == nil || verifier == nil ||
+	if store == nil || verifier == nil ||
 		now == nil || len(cfg.Applications) == 0 {
 		return nil, errors.New("relay dependencies and apps required")
 	}
 	apps := make(map[string]AppConfig, len(cfg.Applications))
+	providers := make(map[string]Provider)
+	verifiers := make(map[string]DeviceAuthenticator)
 	for _, app := range cfg.Applications {
+		appVerifier, appProvider := verifier, provider
+		if app.IsAndroid() {
+			if cfg.Android == nil || cfg.FCM == nil {
+				return nil, errors.New("missing Android " +
+					"publisher modules")
+			}
+			appVerifier, appProvider = cfg.Android, cfg.FCM
+		}
+		if appProvider == nil {
+			return nil, errors.New("missing publisher provider")
+		}
 		if !validIdentifier(app.ID, 100) {
 			return nil, errors.New("invalid relay app alias")
 		}
-		if err := verifier.ValidateApplication(app); err != nil {
+		if err := appVerifier.ValidateApplication(app); err != nil {
 			return nil, err
 		}
-		if err := provider.ValidateApplication(app); err != nil {
+		if err := appProvider.ValidateApplication(app); err != nil {
 			return nil, err
 		}
 		if _, duplicate := apps[app.ID]; duplicate {
 			return nil, errors.New("duplicate relay app alias")
 		}
 		apps[app.ID] = app
+		providers[app.ID], verifiers[app.ID] = appProvider, appVerifier
 	}
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	s := &Server{
-		store: store, provider: provider,
-		verifier: verifier, apps: apps,
+		store: store, providers: providers,
+		verifiers: verifiers, apps: apps,
 		log: logger, now: now, wake: make(chan struct{}, 1),
 		slots: make(chan struct{}, 64),
 	}
@@ -232,7 +253,7 @@ func (s *Server) DeliverOnce(ctx context.Context) (bool, error) {
 	result := ProviderResult{Outcome: OutcomeRejected}
 	if supported && app == delivery.policy {
 		sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		result, err = s.provider.Send(sendCtx, *delivery)
+		result, err = s.providers[app.ID].Send(sendCtx, *delivery)
 		cancel()
 		if err != nil {
 			// The provider classifies permanent failures separately

@@ -17,11 +17,32 @@ import (
 // AppleAppID, Topic and separate attestation/provider environments. Custom
 // publisher modules validate their own audience and destination fields.
 type AppConfig struct {
-	ID                string `json:"id"`
-	AppleAppID        string `json:"apple_app_id"`
-	Topic             string `json:"topic"`
+	// AndroidSigner is the unpadded base64url SHA-256 digest of the APK
+	// signing certificate. Paired emulator aliases leave it empty.
+	AndroidSigner string `json:"android_signer,omitempty"`
+	// AndroidPackage is the Android application ID checked at enrollment
+	// and delivery.
+	AndroidPackage string `json:"android_package,omitempty"`
+	// FirebaseProject is the Firebase project ID used in the FCM send URL.
+	FirebaseProject string `json:"firebase_project,omitempty"`
+	// ID is the publisher alias clients use to select this application.
+	ID string `json:"id"`
+	// AppleAppID is the Apple team ID and bundle ID joined by a period.
+	AppleAppID string `json:"apple_app_id"`
+	// Topic is the bundle ID targeted by APNs.
+	Topic string `json:"topic"`
+	// AttestEnvironment selects the development or production App Attest
+	// audience.
 	AttestEnvironment string `json:"attest_environment"`
-	APNSEnvironment   string `json:"apns_environment"`
+	// APNSEnvironment selects the APNs sandbox or production endpoint.
+	APNSEnvironment string `json:"apns_environment"`
+}
+
+// IsAndroid reports whether an entry configures any Android policy field.
+// It also identifies incomplete Android entries for startup validation.
+func (a AppConfig) IsAndroid() bool {
+	return a.AndroidPackage != "" || a.FirebaseProject != "" ||
+		a.AndroidSigner != ""
 }
 
 // validateAttestation checks only the default Apple admission module's policy.

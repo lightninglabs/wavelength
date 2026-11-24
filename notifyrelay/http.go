@@ -85,7 +85,9 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-	token, err := s.provider.NormalizeDeviceToken(payload.DeviceToken)
+	token, err := s.providers[app.ID].NormalizeDeviceToken(
+		payload.DeviceToken,
+	)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_payload")
 
@@ -98,7 +100,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-	key, err := s.verifier.Attest(
+	key, err := s.verifiers[app.ID].Attest(
 		r.Context(), app, proof.Proof, proof.KeyID,
 		ClientData(challenge, proof.Payload),
 	)
@@ -207,7 +209,7 @@ func (s *Server) manage(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-	counter, err := s.verifier.Assert(
+	counter, err := s.verifiers[app.ID].Assert(
 		r.Context(), app, owner.PublicKey, owner.Counter, challenge,
 		proof.Payload, proof.Proof,
 	)
@@ -217,7 +219,7 @@ func (s *Server) manage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if action.Action == "rotate_token" {
-		token, err := s.provider.NormalizeDeviceToken(
+		token, err := s.providers[app.ID].NormalizeDeviceToken(
 			action.DeviceToken,
 		)
 		if err != nil {

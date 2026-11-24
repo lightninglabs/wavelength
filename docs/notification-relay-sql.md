@@ -252,3 +252,44 @@ job. It leaves the cutoff marker unchanged and retries after that claim settles.
 Once both the old job and its lease expire, it may remove that expired row and
 queue the future window. Claim tokens fence any delayed completion, which cannot
 retire or reschedule the new job. This preserves the next slot's opening time.
+
+## Android enrollment and Firebase Cloud Messaging
+
+Add an Android app to the same applications file and keep the existing source
+policy and database. Set `id`, `android_package`, `firebase_project` and
+`android_signer`. The signer is the URL-safe, unpadded base64 SHA-256 digest
+of the DER certificate used to sign the distributed APK. Use a stable publisher
+signing key for tester builds. Every tester who installs that APK on a device
+that meets Play Integrity device requirements can enroll independently.
+
+During enrollment the app creates a P-256 Android Keystore key and signs the
+relay's exact enrollment transcript. It requests a classic Play Integrity token
+with the unpadded URL-base64 SHA-256 of the standard-base64 key ID, a newline,
+and that same transcript. Google must report the configured package, signer,
+nonce, fresh timestamp and device integrity. A sideloaded build can have an
+evaluated signing certificate even when Play does not recognize its version.
+Management signatures cover the four-byte big-endian counter followed by the
+canonical relay transcript. Challenges, installation ownership, wallet-signed
+feed grants, token revisions and durable delivery keep their SQL boundaries.
+
+A Google APIs emulator cannot provide a certified physical-device verdict.
+Give it a separate app alias ending in `.emulator`, omit `android_signer`,
+and pass `--android-pairings` a publisher-owned JSON object mapping that alias
+to approved installation fingerprints. Verify the installed APK's signer and
+read the public fingerprint directly from that installation. Never pair a key
+received in an unauthenticated enrollment request. Pairings and Play Integrity
+are mutually exclusive for each alias.
+
+Enable the Firebase Cloud Messaging and Play Integrity APIs for the project.
+Provide Application Default Credentials for a server-side service identity in
+that project with the `cloudmessaging.messages.create` permission. The Android
+client configuration contains no sender credential. The relay sends
+normal-priority, data-only messages to a Firebase installation ID. Android Doze
+can delay a round-signing wake past its producer deadline (`wake_deadline_unix`).
+An explicit FCM UNREGISTERED response invalidates only the destination
+revision used for that send.
+Provider acceptance and device execution are distinct events.
+
+Deploy the relay before distributing the configured APK. Existing Apple app
+entries continue to select App Attest and APNs. A relay without Android policy
+rejects Android enrollment. No SQL migration is required.
