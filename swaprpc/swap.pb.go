@@ -3090,8 +3090,17 @@ type AuthorizeInSwapRefundRequest struct {
 	RefundSpendPath []byte `protobuf:"bytes,5,opt,name=refund_spend_path,json=refundSpendPath,proto3" json:"refund_spend_path,omitempty"`
 	// checkpoint_psbt is the prepared custom OOR checkpoint PSBT to sign.
 	CheckpointPsbt []byte `protobuf:"bytes,6,opt,name=checkpoint_psbt,json=checkpointPsbt,proto3" json:"checkpoint_psbt,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// ark_psbt spends the checkpoint and commits to the complete refund.
+	// A client that supplies this packet needs both signatures before submit.
+	ArkPsbt []byte `protobuf:"bytes,7,opt,name=ark_psbt,json=arkPsbt,proto3" json:"ark_psbt,omitempty"`
+	// owner_proof binds the wallet's chosen refund destination to this swap
+	// by authorizing the hash, checkpoint PSBT, Ark PSBT, and refund pubkey.
+	OwnerProof *SwapOwnerProof `protobuf:"bytes,8,opt,name=owner_proof,json=ownerProof,proto3" json:"owner_proof,omitempty"`
+	// refund_pubkey is the wallet's fresh x-only receive key. The signer
+	// rebuilds the full-value destination from this authorized key.
+	RefundPubkey  []byte `protobuf:"bytes,9,opt,name=refund_pubkey,json=refundPubkey,proto3" json:"refund_pubkey,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AuthorizeInSwapRefundRequest) Reset() {
@@ -3166,6 +3175,27 @@ func (x *AuthorizeInSwapRefundRequest) GetCheckpointPsbt() []byte {
 	return nil
 }
 
+func (x *AuthorizeInSwapRefundRequest) GetArkPsbt() []byte {
+	if x != nil {
+		return x.ArkPsbt
+	}
+	return nil
+}
+
+func (x *AuthorizeInSwapRefundRequest) GetOwnerProof() *SwapOwnerProof {
+	if x != nil {
+		return x.OwnerProof
+	}
+	return nil
+}
+
+func (x *AuthorizeInSwapRefundRequest) GetRefundPubkey() []byte {
+	if x != nil {
+		return x.RefundPubkey
+	}
+	return nil
+}
+
 type AuthorizeInSwapRefundResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// signature is the swap server receiver key's tapscript signature.
@@ -3173,8 +3203,11 @@ type AuthorizeInSwapRefundResponse struct {
 	// failure_reason is the terminal Lightning payment failure that made the
 	// refund safe to authorize.
 	FailureReason string `protobuf:"bytes,2,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// payout_signature authorizes the Ark input spending the checkpoint.
+	// It cannot be substituted for the signature spending the source vHTLC.
+	PayoutSignature *TaprootScriptSignature `protobuf:"bytes,3,opt,name=payout_signature,json=payoutSignature,proto3" json:"payout_signature,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *AuthorizeInSwapRefundResponse) Reset() {
@@ -3219,6 +3252,13 @@ func (x *AuthorizeInSwapRefundResponse) GetFailureReason() string {
 		return x.FailureReason
 	}
 	return ""
+}
+
+func (x *AuthorizeInSwapRefundResponse) GetPayoutSignature() *TaprootScriptSignature {
+	if x != nil {
+		return x.PayoutSignature
+	}
+	return nil
 }
 
 // ForfeitSignaturePayload is the exact transcript one vHTLC refresh
@@ -3966,17 +4006,22 @@ const file_swap_proto_rawDesc = "" +
 	"\n" +
 	"amount_sat\x18\x04 \x01(\x04R\tamountSat\x129\n" +
 	"\n" +
-	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\x9b\x02\n" +
+	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\x95\x03\n" +
 	"\x1cAuthorizeInSwapRefundRequest\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12%\n" +
 	"\x0evhtlc_outpoint\x18\x02 \x01(\tR\rvhtlcOutpoint\x12(\n" +
 	"\x10vhtlc_amount_sat\x18\x03 \x01(\x04R\x0evhtlcAmountSat\x122\n" +
 	"\x15vhtlc_policy_template\x18\x04 \x01(\fR\x13vhtlcPolicyTemplate\x12*\n" +
 	"\x11refund_spend_path\x18\x05 \x01(\fR\x0frefundSpendPath\x12'\n" +
-	"\x0fcheckpoint_psbt\x18\x06 \x01(\fR\x0echeckpointPsbt\"\x85\x01\n" +
+	"\x0fcheckpoint_psbt\x18\x06 \x01(\fR\x0echeckpointPsbt\x12\x19\n" +
+	"\bark_psbt\x18\a \x01(\fR\aarkPsbt\x128\n" +
+	"\vowner_proof\x18\b \x01(\v2\x17.swaprpc.SwapOwnerProofR\n" +
+	"ownerProof\x12#\n" +
+	"\rrefund_pubkey\x18\t \x01(\fR\frefundPubkey\"\xd1\x01\n" +
 	"\x1dAuthorizeInSwapRefundResponse\x12=\n" +
 	"\tsignature\x18\x01 \x01(\v2\x1f.swaprpc.TaprootScriptSignatureR\tsignature\x12%\n" +
-	"\x0efailure_reason\x18\x02 \x01(\tR\rfailureReason\"\xb0\x04\n" +
+	"\x0efailure_reason\x18\x02 \x01(\tR\rfailureReason\x12J\n" +
+	"\x10payout_signature\x18\x03 \x01(\v2\x1f.swaprpc.TaprootScriptSignatureR\x0fpayoutSignature\"\xb0\x04\n" +
 	"\x17ForfeitSignaturePayload\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\fR\trequestId\x12!\n" +
@@ -4162,41 +4207,43 @@ var file_swap_proto_depIdxs = []int32{
 	46, // 37: swaprpc.CreditOperation.updated_at:type_name -> google.protobuf.Timestamp
 	46, // 38: swaprpc.CreditOperation.completed_at:type_name -> google.protobuf.Timestamp
 	46, // 39: swaprpc.CreditLedgerEntry.created_at:type_name -> google.protobuf.Timestamp
-	45, // 40: swaprpc.AuthorizeInSwapRefundResponse.signature:type_name -> swaprpc.TaprootScriptSignature
-	38, // 41: swaprpc.SignInSwapForfeitRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
-	39, // 42: swaprpc.SignInSwapForfeitResponse.signature:type_name -> swaprpc.ForfeitParticipantSignature
-	38, // 43: swaprpc.OutSwapForfeitSignatureRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
-	38, // 44: swaprpc.SubmitOutSwapForfeitSignatureRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
-	39, // 45: swaprpc.SubmitOutSwapForfeitSignatureRequest.signature:type_name -> swaprpc.ForfeitParticipantSignature
-	6,  // 46: swaprpc.SwapService.RequestChannelId:input_type -> swaprpc.RequestChannelIdRequest
-	17, // 47: swaprpc.SwapService.CreateInSwap:input_type -> swaprpc.CreateInSwapRequest
-	24, // 48: swaprpc.SwapService.QuoteInSwap:input_type -> swaprpc.QuoteInSwapRequest
-	28, // 49: swaprpc.SwapService.CreateCredit:input_type -> swaprpc.CreateCreditRequest
-	30, // 50: swaprpc.SwapService.RedeemCredit:input_type -> swaprpc.RedeemCreditRequest
-	32, // 51: swaprpc.SwapService.ListCredits:input_type -> swaprpc.ListCreditsRequest
-	36, // 52: swaprpc.SwapService.AuthorizeInSwapRefund:input_type -> swaprpc.AuthorizeInSwapRefundRequest
-	8,  // 53: swaprpc.SwapService.AcknowledgeOutSwapHtlc:input_type -> swaprpc.AcknowledgeOutSwapHtlcRequest
-	40, // 54: swaprpc.SwapService.SignInSwapForfeit:input_type -> swaprpc.SignInSwapForfeitRequest
-	43, // 55: swaprpc.SwapService.SubmitOutSwapForfeitSignature:input_type -> swaprpc.SubmitOutSwapForfeitSignatureRequest
-	18, // 56: swaprpc.SwapService.ListRecoverableSwaps:input_type -> swaprpc.ListRecoverableSwapsRequest
-	20, // 57: swaprpc.SwapService.GetSwapRecoveryInfo:input_type -> swaprpc.GetSwapRecoveryInfoRequest
-	7,  // 58: swaprpc.SwapService.RequestChannelId:output_type -> swaprpc.RequestChannelIdResponse
-	23, // 59: swaprpc.SwapService.CreateInSwap:output_type -> swaprpc.CreateInSwapResponse
-	25, // 60: swaprpc.SwapService.QuoteInSwap:output_type -> swaprpc.QuoteInSwapResponse
-	29, // 61: swaprpc.SwapService.CreateCredit:output_type -> swaprpc.CreateCreditResponse
-	31, // 62: swaprpc.SwapService.RedeemCredit:output_type -> swaprpc.RedeemCreditResponse
-	33, // 63: swaprpc.SwapService.ListCredits:output_type -> swaprpc.ListCreditsResponse
-	37, // 64: swaprpc.SwapService.AuthorizeInSwapRefund:output_type -> swaprpc.AuthorizeInSwapRefundResponse
-	9,  // 65: swaprpc.SwapService.AcknowledgeOutSwapHtlc:output_type -> swaprpc.AcknowledgeOutSwapHtlcResponse
-	41, // 66: swaprpc.SwapService.SignInSwapForfeit:output_type -> swaprpc.SignInSwapForfeitResponse
-	44, // 67: swaprpc.SwapService.SubmitOutSwapForfeitSignature:output_type -> swaprpc.SubmitOutSwapForfeitSignatureResponse
-	19, // 68: swaprpc.SwapService.ListRecoverableSwaps:output_type -> swaprpc.ListRecoverableSwapsResponse
-	21, // 69: swaprpc.SwapService.GetSwapRecoveryInfo:output_type -> swaprpc.GetSwapRecoveryInfoResponse
-	58, // [58:70] is the sub-list for method output_type
-	46, // [46:58] is the sub-list for method input_type
-	46, // [46:46] is the sub-list for extension type_name
-	46, // [46:46] is the sub-list for extension extendee
-	0,  // [0:46] is the sub-list for field type_name
+	5,  // 40: swaprpc.AuthorizeInSwapRefundRequest.owner_proof:type_name -> swaprpc.SwapOwnerProof
+	45, // 41: swaprpc.AuthorizeInSwapRefundResponse.signature:type_name -> swaprpc.TaprootScriptSignature
+	45, // 42: swaprpc.AuthorizeInSwapRefundResponse.payout_signature:type_name -> swaprpc.TaprootScriptSignature
+	38, // 43: swaprpc.SignInSwapForfeitRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
+	39, // 44: swaprpc.SignInSwapForfeitResponse.signature:type_name -> swaprpc.ForfeitParticipantSignature
+	38, // 45: swaprpc.OutSwapForfeitSignatureRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
+	38, // 46: swaprpc.SubmitOutSwapForfeitSignatureRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
+	39, // 47: swaprpc.SubmitOutSwapForfeitSignatureRequest.signature:type_name -> swaprpc.ForfeitParticipantSignature
+	6,  // 48: swaprpc.SwapService.RequestChannelId:input_type -> swaprpc.RequestChannelIdRequest
+	17, // 49: swaprpc.SwapService.CreateInSwap:input_type -> swaprpc.CreateInSwapRequest
+	24, // 50: swaprpc.SwapService.QuoteInSwap:input_type -> swaprpc.QuoteInSwapRequest
+	28, // 51: swaprpc.SwapService.CreateCredit:input_type -> swaprpc.CreateCreditRequest
+	30, // 52: swaprpc.SwapService.RedeemCredit:input_type -> swaprpc.RedeemCreditRequest
+	32, // 53: swaprpc.SwapService.ListCredits:input_type -> swaprpc.ListCreditsRequest
+	36, // 54: swaprpc.SwapService.AuthorizeInSwapRefund:input_type -> swaprpc.AuthorizeInSwapRefundRequest
+	8,  // 55: swaprpc.SwapService.AcknowledgeOutSwapHtlc:input_type -> swaprpc.AcknowledgeOutSwapHtlcRequest
+	40, // 56: swaprpc.SwapService.SignInSwapForfeit:input_type -> swaprpc.SignInSwapForfeitRequest
+	43, // 57: swaprpc.SwapService.SubmitOutSwapForfeitSignature:input_type -> swaprpc.SubmitOutSwapForfeitSignatureRequest
+	18, // 58: swaprpc.SwapService.ListRecoverableSwaps:input_type -> swaprpc.ListRecoverableSwapsRequest
+	20, // 59: swaprpc.SwapService.GetSwapRecoveryInfo:input_type -> swaprpc.GetSwapRecoveryInfoRequest
+	7,  // 60: swaprpc.SwapService.RequestChannelId:output_type -> swaprpc.RequestChannelIdResponse
+	23, // 61: swaprpc.SwapService.CreateInSwap:output_type -> swaprpc.CreateInSwapResponse
+	25, // 62: swaprpc.SwapService.QuoteInSwap:output_type -> swaprpc.QuoteInSwapResponse
+	29, // 63: swaprpc.SwapService.CreateCredit:output_type -> swaprpc.CreateCreditResponse
+	31, // 64: swaprpc.SwapService.RedeemCredit:output_type -> swaprpc.RedeemCreditResponse
+	33, // 65: swaprpc.SwapService.ListCredits:output_type -> swaprpc.ListCreditsResponse
+	37, // 66: swaprpc.SwapService.AuthorizeInSwapRefund:output_type -> swaprpc.AuthorizeInSwapRefundResponse
+	9,  // 67: swaprpc.SwapService.AcknowledgeOutSwapHtlc:output_type -> swaprpc.AcknowledgeOutSwapHtlcResponse
+	41, // 68: swaprpc.SwapService.SignInSwapForfeit:output_type -> swaprpc.SignInSwapForfeitResponse
+	44, // 69: swaprpc.SwapService.SubmitOutSwapForfeitSignature:output_type -> swaprpc.SubmitOutSwapForfeitSignatureResponse
+	19, // 70: swaprpc.SwapService.ListRecoverableSwaps:output_type -> swaprpc.ListRecoverableSwapsResponse
+	21, // 71: swaprpc.SwapService.GetSwapRecoveryInfo:output_type -> swaprpc.GetSwapRecoveryInfoResponse
+	60, // [60:72] is the sub-list for method output_type
+	48, // [48:60] is the sub-list for method input_type
+	48, // [48:48] is the sub-list for extension type_name
+	48, // [48:48] is the sub-list for extension extendee
+	0,  // [0:48] is the sub-list for field type_name
 }
 
 func init() { file_swap_proto_init() }
