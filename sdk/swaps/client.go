@@ -984,13 +984,14 @@ type SwapClient struct {
 	// their own cancellation deadlines rather than wait on a mutex.
 	restoreGate chan struct{}
 
-	server        SwapServerConn
-	daemon        DaemonConn
-	invoiceGen    InvoiceCreator
-	outEvents     OutSwapEventReceiver
-	store         *Store
-	log           btclog.Logger
-	channelBridge ArkChannelPaymentBridge
+	server           SwapServerConn
+	daemon           DaemonConn
+	invoiceGen       InvoiceCreator
+	outEvents        OutSwapEventReceiver
+	store            *Store
+	log              btclog.Logger
+	channelBridge    ArkChannelPaymentBridge
+	channelAdmission bool
 
 	waitPollInterval         time.Duration
 	overdueReceivePollWindow time.Duration
@@ -1006,11 +1007,13 @@ type SwapClient struct {
 	now                      func() time.Time
 }
 
-// SetArkChannelPaymentBridge enables explicit active-channel receives.
-func (c *SwapClient) SetArkChannelPaymentBridge(
-	bridge ArkChannelPaymentBridge) {
+// SetArkChannelPaymentBridge wires recovery independently of whether this
+// process may admit new channel invoices.
+func (c *SwapClient) SetArkChannelPaymentBridge(bridge ArkChannelPaymentBridge,
+	admit bool) {
 
 	c.channelBridge = bridge
+	c.channelAdmission = admit
 }
 
 // SetOutSwapEventReceiver sets the mailbox event receiver used by

@@ -223,7 +223,7 @@ func TestReceiveChannelRailOwnershipPersists(t *testing.T) {
 		waitChannelID: channelID,
 		settleErr:     lostResponseErr,
 	}
-	client.SetArkChannelPaymentBridge(bridge)
+	client.SetArkChannelPaymentBridge(bridge, true)
 	err = resumed.waitForHTLCEvent(ctx)
 	require.ErrorIs(t, err, lostResponseErr)
 	require.Equal(t, 1, bridge.settleCalls)
@@ -236,7 +236,9 @@ func TestReceiveChannelRailOwnershipPersists(t *testing.T) {
 	)
 	require.NoError(t, err)
 	bridge = &testArkChannelPaymentBridge{}
-	client.SetArkChannelPaymentBridge(bridge)
+	client.SetArkChannelPaymentBridge(bridge, false)
+	_, err = client.StartReceiveViaArkChannel(ctx, 1_000)
+	require.ErrorContains(t, err, "not enabled")
 	client.SetOutSwapEventReceiver(nil)
 	require.NoError(t, reconciled.waitForHTLCEvent(ctx))
 	require.Equal(t, ReceiveStateCompleted, reconciled.State())

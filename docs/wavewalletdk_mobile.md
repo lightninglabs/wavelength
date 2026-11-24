@@ -83,6 +83,32 @@ for `StartExternalSeedWallet`). Use `"wallet_type": "lwwallet"` and leave
 in production; the browser cannot pin PEM files. Keep the wallet running
 while serving invoices.
 
+The host sets this flag at wallet startup, not on an ordinary invoice.
+Mobile and WASM both decode it into `wavewalletdk.Config.ArkChannelsEnabled`;
+an embedded Go host may set that field directly. Omitted or false leaves
+new channel operations disabled. Even with it set, only an explicit open
+creates a channel. Existing obligations in the same data directory restore
+without opting in again.
+
+**Downstream dependency gate.** A runtime flag cannot change the packages
+compiled into a binary. For integration tests only, the main module building
+a daemon, mobile binding, or WASM wallet must select both replacements:
+
+```go
+replace github.com/lightningnetwork/lnd => github.com/sputn1ck/lnd v0.4.2-beta.0.20261124151740-0cc0299da78b
+replace github.com/lightningnetwork/lnd/kvdb => github.com/sputn1ck/lnd/kvdb v0.0.0-20261124151740-0cc0299da78b
+```
+
+Go ignores replacements in dependencies. A client using an already-built RPC
+service does not need either replacement. Neither does an application that
+only imports the Wavelength policy parser. Do not ship either personal
+replacement on a supported main branch. First land the required recovery
+behavior upstream, select official versions of **both modules**, then build
+native, mobile and WASM from an external module with no replacements and
+`GOWORK=off`. Run both default mixed-version directions and the enabled
+daemon suite on those versions. A fork-pinned pass or the original upstream
+runtime proposal alone does not satisfy the release gate.
+
 | Go mobile binding | WASM worker method | Request JSON |
 | --- | --- | --- |
 | `PromoteVTXO` | `promoteVTXO` | `{"AmountSat":50000,"IdempotencyKey":"order-17-channel"}` |

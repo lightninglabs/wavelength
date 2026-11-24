@@ -33,6 +33,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 const arkChannelPeerIngressPrefix = "arkchannel-peer-ingress-"
@@ -187,11 +188,9 @@ func (s *arkChannelRPCServer) PromoteVTXO(ctx context.Context,
 			"key exceeds %d bytes",
 			maxArkChannelIdempotencyKeyLength)
 	}
-	controller := s.server.getArkChannelController()
-	if controller == nil {
-		return nil, status.Error(
-			codes.Unavailable, "Ark channel runtime is not ready",
-		)
+	controller, err := s.server.channelActionController(ctx, true)
+	if err != nil {
+		return nil, err
 	}
 	record, err := controller.PromoteVTXO(
 		ctx, amount, req.GetIdempotencyKey(),
@@ -235,11 +234,9 @@ func (s *arkChannelRPCServer) PayLightningInvoice(ctx context.Context,
 			"maximum fee exceeds maximum money",
 		)
 	}
-	controller := s.server.getArkChannelController()
-	if controller == nil {
-		return nil, status.Error(
-			codes.Unavailable, "Ark channel runtime is not ready",
-		)
+	controller, err := s.server.channelActionController(ctx, false)
+	if err != nil {
+		return nil, err
 	}
 	result, err := controller.PayLightningInvoice(
 		ctx, req.GetPaymentRequest(),
@@ -327,14 +324,24 @@ func (s *arkChannelRPCServer) GetChannel(ctx context.Context,
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	controller := s.server.getArkChannelController()
-	if controller == nil {
+	var record arkchannel.Record
+	switch {
+	case controller != nil:
+		record, err = controller.GetChannel(ctx, id)
+
+	case s.server.arkChannelStore != nil:
+		record, err = s.server.arkChannelStore.Get(ctx, id)
+
+	default:
 		return nil, status.Error(
 			codes.Unavailable, "Ark channel runtime is not ready",
 		)
 	}
-	record, err := controller.GetChannel(ctx, id)
+	if errors.Is(err, arkchannel.ErrNotFound) {
+		return nil, status.Error(codes.NotFound, err.Error())
+	}
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "get Ark channel: %v",
+		return nil, status.Errorf(codes.Internal, "get Ark channel: %v",
 			err)
 	}
 
@@ -350,12 +357,20 @@ func (s *arkChannelRPCServer) ListChannels(ctx context.Context,
 	*arkchannelrpc.ListChannelsResponse, error) {
 
 	controller := s.server.getArkChannelController()
-	if controller == nil {
+	var records []arkchannel.Record
+	var err error
+	switch {
+	case controller != nil:
+		records, err = controller.ListChannels(ctx)
+
+	case s.server.arkChannelStore != nil:
+		records, err = s.server.arkChannelStore.ListNonTerminal(ctx)
+
+	default:
 		return nil, status.Error(
 			codes.Unavailable, "Ark channel runtime is not ready",
 		)
 	}
-	records, err := controller.ListChannels(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list Ark "+
 			"channels: %v", err)
@@ -377,7 +392,8 @@ func arkChannelRecordToRPC(ctx context.Context, controller ArkChannelController,
 	record arkchannel.Record) *arkchannelrpc.ArkChannel {
 
 	channel := lnruntime.ArkChannelRecordToRPC(record)
-	if record.Snapshot.Phase != arkchannel.PhaseActive {
+	if controller == nil ||
+		record.Snapshot.Phase != arkchannel.PhaseActive {
 		return channel
 	}
 	local, remote, err := controller.ChannelBalance(
@@ -395,13 +411,97 @@ func arkChannelRecordToRPC(ctx context.Context, controller ArkChannelController,
 	return channel
 }
 
-// initArkChannelProcess builds the client channel runtime whenever the swap
-// runtime has installed its authenticated mailbox edge.
-func (s *Server) initArkChannelProcess(ctx context.Context) error {
-	if s.cfg.Swap == nil || s.cfg.Swap.ArkChannelMailbox == nil {
+// channelPeerTransport resolves the negotiated mailbox on each call. The
+// native node can therefore restore chain protection before either remote
+// service is reachable, without inventing a protocol version or accepting
+// outgoing work into an unbound mailbox.
+type channelPeerTransport struct {
+	server *Server
+}
+
+// runtime returns only the fully attached transport.
+func (p channelPeerTransport) runtime() (*serverconn.Runtime, error) {
+	p.server.arkChannelMu.RLock()
+	defer p.server.arkChannelMu.RUnlock()
+	if p.server.arkChannelMailboxRuntime == nil {
+		return nil, status.Error(
+			codes.Unavailable, "Ark channel peer is offline",
+		)
+	}
+
+	return p.server.arkChannelMailboxRuntime, nil
+}
+
+// SendRPC forwards a request only after the peer transport is online.
+func (p channelPeerTransport) SendRPC(ctx context.Context,
+	method mailboxrpc.ServiceMethod, req proto.Message,
+	opts mailboxrpc.RPCOptions) (mailboxrpc.SendResult, error) {
+
+	rt, err := p.runtime()
+	if err != nil {
+		return mailboxrpc.SendResult{}, err
+	}
+
+	return rt.Unary().SendRPC(ctx, method, req, opts)
+}
+
+// AwaitRPC waits on the same daemon-owned unary response store.
+func (p channelPeerTransport) AwaitRPC(ctx context.Context, id string,
+	resp proto.Message) error {
+
+	rt, err := p.runtime()
+	if err != nil {
+		return err
+	}
+
+	return rt.Unary().AwaitRPC(ctx, id, resp)
+}
+
+// SendPeerEvent hands native traffic to the attached durable sender.
+func (p channelPeerTransport) SendPeerEvent(ctx context.Context,
+	event lnruntime.PeerEvent) error {
+
+	rt, err := p.runtime()
+	if err != nil {
+		return err
+	}
+	sender, err := lnruntime.NewServerConnPeerSender(rt.TellRef())
+	if err != nil {
+		return err
+	}
+
+	return sender.SendPeerEvent(ctx, event)
+}
+
+// initLocalChannelController installs local chain recovery without a remote
+// call. Startup and transport attachment have a single lifecycle owner.
+func (s *Server) initLocalChannelController(ctx context.Context) error {
+	if s.getArkChannelController() != nil {
 		return nil
 	}
-	if s.getArkChannelController() != nil {
+	edge := channelPeerTransport{server: s}
+	peer, err := lnruntime.NewMailboxCooperativeClosePeer(edge)
+	if err != nil {
+		return err
+	}
+	controller, err := s.newClientArkChannelController(
+		ctx, s.loadClientKeyDesc(), peer, edge, edge,
+	)
+	if err != nil {
+		return err
+	}
+	s.arkChannelMu.Lock()
+	s.arkChannelController = controller
+	s.arkChannelMu.Unlock()
+	//nolint:contextcheck // controller owns its process-lifetime context
+	controller.Start()
+
+	return nil
+}
+
+// initArkChannelProcess attaches the client node to its negotiated transport.
+func (s *Server) initArkChannelProcess(ctx context.Context) error {
+	if s.cfg.Swap == nil || s.cfg.Swap.ArkChannelMailbox == nil {
 		return nil
 	}
 	identityDesc := s.loadClientKeyDesc()
@@ -412,6 +512,10 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 	if s.arkChannelStore == nil {
 		return fmt.Errorf("Ark channel store is not initialized")
 	}
+	if err := s.initLocalChannelController(ctx); err != nil {
+		return err
+	}
+	controller := s.getArkChannelController()
 
 	localMailbox := serverconn.PubKeyMailboxID(identityDesc.PubKey)
 	connCfg := s.arkChannelConnectorConfig(localMailbox)
@@ -420,26 +524,6 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 	runtime, err := serverconn.NewRuntime(connCfg)
 	if err != nil {
 		return fmt.Errorf("create Ark channel mailbox runtime: %w", err)
-	}
-	peer, err := lnruntime.NewMailboxCooperativeClosePeer(runtime.Unary())
-	if err != nil {
-		runtime.Stop()
-
-		return err
-	}
-	peerSender, err := lnruntime.NewServerConnPeerSender(runtime.TellRef())
-	if err != nil {
-		runtime.Stop()
-
-		return err
-	}
-	controller, err := s.newClientArkChannelController(
-		ctx, identityDesc, peer, runtime.Unary(), peerSender,
-	)
-	if err != nil {
-		runtime.Stop()
-
-		return err
 	}
 	// The actor owns a process-lifetime context and is stopped by
 	// Server.Stop.
@@ -453,7 +537,6 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 		},
 	)
 	if err != nil {
-		_ = controller.Stop()
 		runtime.Stop()
 
 		return fmt.Errorf("create Ark channel peer ingress: %w", err)
@@ -470,14 +553,11 @@ func (s *Server) initArkChannelProcess(ctx context.Context) error {
 			fmt.Errorf("start Ark channel mailbox ingress: %w",
 				err),
 			peerIngress.StopAndWait(joinCtx),
-			controller.Stop(),
 			runtime.StopAndWait(joinCtx),
 		)
 	}
 
 	s.setArkChannelProcess(runtime, controller, peerIngress)
-	//nolint:contextcheck // controller owns its process-lifetime context
-	controller.Start()
 
 	return nil
 }
@@ -500,6 +580,93 @@ func (s *Server) arkChannelConnectorConfig(
 	return cfg
 }
 
+// channelRecoveryRequired reads inventory even when the caller disables the
+// runtime: unreadable state must never be treated as an empty wallet.
+func channelRecoveryRequired(ctx context.Context, cfg *SwapConfig,
+	list func(context.Context) ([]arkchannel.Record, error)) (bool, error) {
+
+	records, err := list(ctx)
+	if err != nil {
+		return false, fmt.Errorf("read recoverable Ark channels: %w",
+			err)
+	}
+	if len(records) == 0 {
+		return false, nil
+	}
+	if cfg != nil && cfg.SuppressArkChannelRuntime {
+		return false, fmt.Errorf("cannot disable Ark channel " +
+			"recovery with recoverable channels")
+	}
+
+	return true, nil
+}
+
+// armArkChannelStartup creates no workers for a fresh wallet, even if it
+// permits explicit operations. Only recovery or an explicit open consumes
+// the one-shot starter. Its workers belong to the daemon, not an RPC.
+func (s *Server) armArkChannelStartup(ctx context.Context) {
+	if s.cfg.Swap == nil || s.cfg.Swap.SuppressArkChannelRuntime ||
+		s.cfg.Swap.ArkChannelMailbox == nil {
+		return
+	}
+
+	s.arkChannelMu.Lock()
+	defer s.arkChannelMu.Unlock()
+	s.arkChannelReady = make(chan struct{})
+	s.arkChannelDone = ctx.Done()
+	if s.arkChannelRecoveryNeeded {
+		s.startArkChannelProcessSupervisor(ctx)
+
+		return
+	}
+	s.arkChannelStart = func() {
+		s.startArkChannelProcessSupervisor(ctx)
+	}
+}
+
+// channelActionController checks admission independently of recovery.
+// Paying an invoice never creates a channel or initializes an empty wallet.
+func (s *Server) channelActionController(ctx context.Context, open bool) (
+	ArkChannelController, error) {
+
+	if s.cfg == nil || s.cfg.Swap == nil ||
+		!s.cfg.Swap.ArkChannelsEnabled ||
+		s.cfg.Swap.SuppressArkChannelRuntime {
+		return nil, status.Error(
+			codes.FailedPrecondition,
+			"explicit Ark channel operations are disabled",
+		)
+	}
+	s.arkChannelMu.Lock()
+	if open && s.arkChannelStart != nil {
+		s.arkChannelStart()
+		s.arkChannelStart = nil
+	}
+	controller := s.arkChannelController
+	if s.arkChannelMailboxRuntime == nil {
+		controller = nil
+	}
+	ready, done := s.arkChannelReady, s.arkChannelDone
+	s.arkChannelMu.Unlock()
+	if controller == nil && open && ready != nil {
+		select {
+		case <-ready:
+			controller = s.getArkChannelController()
+
+		case <-done:
+		case <-ctx.Done():
+			return nil, status.FromContextError(ctx.Err()).Err()
+		}
+	}
+	if controller == nil {
+		return nil, status.Error(
+			codes.Unavailable, "Ark channel runtime is not ready",
+		)
+	}
+
+	return controller, nil
+}
+
 // startArkChannelProcessSupervisor starts the optional channel subsystem
 // independently from ordinary wallet-ready services. A transient channel or
 // indexer failure therefore cannot strand unrelated actors until restart.
@@ -514,7 +681,7 @@ func (s *Server) startArkChannelProcessSupervisor(ctx context.Context) {
 
 		runRetriedArkChannelStartup(
 			ctx, arkChannelStartupRetryInterval,
-			s.ensureArkChannelProcessStarted,
+			s.initArkChannelProcess,
 			func(err error) {
 				s.log.WarnS(
 					ctx,
@@ -525,16 +692,6 @@ func (s *Server) startArkChannelProcessSupervisor(ctx context.Context) {
 			},
 		)
 	}()
-}
-
-// ensureArkChannelProcessStarted advances the independently retryable channel
-// startup stages without rebuilding a controller that is already online.
-func (s *Server) ensureArkChannelProcessStarted(ctx context.Context) error {
-	if err := s.initArkChannelProcess(ctx); err != nil {
-		return err
-	}
-
-	return s.ensureConfiguredArkChannelRefreshDelivery(ctx)
 }
 
 // runRetriedArkChannelStartup retries an idempotent channel startup function
@@ -652,20 +809,6 @@ func (s *Server) newClientArkChannelController(ctx context.Context,
 	return controller, nil
 }
 
-// ensureConfiguredArkChannelRefreshDelivery registers the refresh destination
-// once the main mailbox ingress is running. Registration is an indexer RPC and
-// therefore cannot run while wallet-dependent actors are still being built.
-func (s *Server) ensureConfiguredArkChannelRefreshDelivery(
-	ctx context.Context) error {
-
-	if s.cfg.Swap == nil || s.cfg.Swap.ArkChannelMailbox == nil {
-		return nil
-	}
-	_, err := s.registerRefreshPolicy(ctx)
-
-	return err
-}
-
 // registerRefreshPolicy returns exactly the operator policy used
 // for registration, not the policy that originally funded the channel.
 func (s *Server) registerRefreshPolicy(ctx context.Context) (
@@ -733,6 +876,10 @@ func (s *Server) setArkChannelProcess(runtime *serverconn.Runtime,
 	s.arkChannelMailboxRuntime = runtime
 	s.arkChannelController = controller
 	s.arkChannelPeerIngress = peerIngress
+	if s.arkChannelReady != nil {
+		close(s.arkChannelReady)
+		s.arkChannelReady = nil
+	}
 }
 
 // getArkChannelController returns the initialized local controller.
@@ -774,7 +921,7 @@ func (s *Server) stopArkChannelProcess(ctx context.Context) error {
 func (r *RPCServer) PrepareArkChannelIncomingPayment(ctx context.Context,
 	preimage lntypes.Preimage, amount btcutil.Amount) error {
 
-	controller, err := r.waitArkChannelController(ctx)
+	controller, err := r.server.channelActionController(ctx, false)
 	if err != nil {
 		return err
 	}
@@ -790,7 +937,7 @@ func (r *RPCServer) RegisterArkChannelIncomingPayment(ctx context.Context,
 	hash lntypes.Hash, amount btcutil.Amount, reservedSCID uint64) (
 	arkchannel.ID, uint32, error) {
 
-	controller, err := r.waitArkChannelController(ctx)
+	controller, err := r.server.channelActionController(ctx, false)
 	if err != nil {
 		return arkchannel.ID{}, 0, err
 	}

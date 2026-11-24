@@ -93,7 +93,7 @@ func TestArkChannelReceiveFlagIsOptIn(t *testing.T) {
 			}
 			if test.flagValue != "" {
 				if err := flags.Set(
-					"swap.arkchannelreceiveenabled",
+					"swap.arkchannelsenabled",
 					test.flagValue,
 				); err != nil {
 
@@ -104,10 +104,10 @@ func TestArkChannelReceiveFlagIsOptIn(t *testing.T) {
 			if err := v.Unmarshal(cfg); err != nil {
 				t.Fatalf("unmarshal config: %v", err)
 			}
-			if cfg.Swap.ArkChannelReceiveEnabled != test.want {
+			if cfg.Swap.ArkChannelsEnabled != test.want {
 				t.Fatalf("want channel receive "+
 					"enabled=%v, got %v", test.want,
-					cfg.Swap.ArkChannelReceiveEnabled)
+					cfg.Swap.ArkChannelsEnabled)
 			}
 		})
 	}

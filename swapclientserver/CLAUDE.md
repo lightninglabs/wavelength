@@ -50,8 +50,8 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   `MailboxOutSwapEventReceiver` (empty mailbox ID — receiver derives the
   per-swap mailbox from client identity + payment hash) on the
   `SwapClient` so out-swap HTLC events flow over the mailbox transport,
-  conditionally installs the `arkChannelPaymentBridge` when
-  `SwapConfig.ArkChannelReceiveEnabled` is true, and publishes the
+  installs the channel bridge for durable settlement but admits new channel
+  invoices only when `SwapConfig.ArkChannelsEnabled` is true, and publishes the
   authenticated swap-server mailbox as `cfg.Swap.ArkChannelMailbox` for the
   daemon-owned channel process. Cleanup clears that mailbox handle,
   publishes `cfg.Swap.Backend`/`CreditServer`/`CreditDaemon` bridges,

@@ -437,6 +437,10 @@ type Server struct {
 	arkChannelMailboxRuntime *serverconn.Runtime
 	arkChannelPeerIngress    *lnruntime.PeerMessageIngress
 	arkChannelStartupWg      sync.WaitGroup
+	arkChannelStart          func()
+	arkChannelReady          chan struct{}
+	arkChannelDone           <-chan struct{}
+	arkChannelRecoveryNeeded bool
 	vhtlcRecovery            *coordinator.Service
 	vhtlcRecoveryTarget      *vhtlcRecoveryTargetMaterializer
 	vhtlcPreimages           *unrollpolicy.PreimageResolverRegistry
@@ -524,7 +528,8 @@ type Server struct {
 	// lightningReceiptMu owns the optional local wallet-layer adapter.
 	lightningReceiptMu     sync.RWMutex
 	lightningReceiptLookup LightningReceiptLookup
-	lightningReceiptResume func(context.Context, LightningReceiptReference) error
+	lightningReceiptResume func(context.Context,
+		LightningReceiptReference) error
 
 	// hostControllerMu publishes the one ingress mode owner after
 	// bootstrap.
@@ -1606,6 +1611,13 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 		s.subLogger(db.Subsystem),
 	)
 	s.vtxoStore = dbStore.NewVTXOStore(s.clk)
+	s.arkChannelStore = dbStore.NewArkChannelStore(s.clk)
+	s.arkChannelRecoveryNeeded, err = channelRecoveryRequired(
+		ctx, s.cfg.Swap, s.arkChannelStore.ListNonTerminal,
+	)
+	if err != nil {
+		return err
+	}
 
 	// Build the activity-log store for the wavewalletrpc subserver.
 	s.activityStore = dbStore.NewActivityStore(s.clk)
@@ -1716,6 +1728,9 @@ func (s *Server) runInner(ctx context.Context, shutdownFn func()) error {
 	// transport. Register this defer after registrar cleanup defers so it
 	// runs first.
 	defer func() {
+		s.arkChannelMu.Lock()
+		s.arkChannelStart = nil
+		s.arkChannelMu.Unlock()
 		s.arkChannelStartupWg.Wait()
 		joinCtx := context.WithoutCancel(ctx)
 		if err := s.stopArkChannelProcess(joinCtx); err != nil {
@@ -1931,6 +1946,21 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	], timeoutRef actor.TellOnlyRef[timeout.Msg]) error {
 
+	if err := s.deriveIdentityKeyEarly(ctx); err != nil {
+		s.markWalletServicesReady(err)
+
+		return fmt.Errorf("derive identity key: %w", err)
+	}
+	if s.arkChannelRecoveryNeeded {
+		if err := s.startOfflineChannelRecovery(
+			ctx, chainSourceRef,
+		); err != nil {
+
+			s.markWalletServicesReady(err)
+
+			return err
+		}
+	}
 	if err := s.connectAndBootstrapMailbox(ctx); err != nil {
 		s.markWalletServicesReady(err)
 
@@ -1959,12 +1989,12 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 // finishWalletStartup starts local recovery even when host intake is paused.
 // Ordinary daemons preserve authenticated policy/replay before subserver hooks.
 func (s *Server) finishWalletStartup(ctx context.Context) error {
+	s.armArkChannelStartup(ctx)
 	if !s.cfg.HostDrivenIngress {
 		if err := s.finishWalletOnlineStartup(ctx); err != nil {
 			return err
 		}
 	}
-	s.startArkChannelProcessSupervisor(ctx)
 
 	if err := s.runWalletReadyHooks(ctx); err != nil {
 		return err
@@ -2888,10 +2918,6 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	],
 	timeoutRef actor.TellOnlyRef[timeout.Msg]) error {
 
-	s.expiryAuthenticator = NewBatchExpiryAuthenticator(
-		chainSourceRef, s.cfg.legacyProofScanFloor(),
-	)
-
 	// -------------------------------------------------------
 	// 9. Register the wallet (boarding) actor.
 	// -------------------------------------------------------
@@ -2906,14 +2932,10 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	//     the manager ref can be passed directly in the round
 	//     config, avoiding a post-Start mutation.
 	// -------------------------------------------------------
-	s.lazyChainResolver = vtxo.NewLazyChainResolver()
-	vtxoManagerRef, err := s.initVTXOManager(
-		ctx, chainSourceRef, s.lazyChainResolver,
-	)
-	if err != nil {
+	if err := s.ensureLocalVTXOManager(ctx, chainSourceRef); err != nil {
 		return err
 	}
-	s.vtxoMgrRef = fn.Some(vtxoManagerRef)
+	vtxoManagerRef := s.vtxoMgrRef.UnsafeFromSome()
 
 	roundVTXOManager := actor.NewMapInputRef(
 		vtxoManagerRef, mapRoundVTXOManagerMsg,
@@ -2940,10 +2962,12 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	// -------------------------------------------------------
 	// 12. Register the unilateral-exit subsystem.
 	// -------------------------------------------------------
-	if err := s.initUnrollSubsystem(
-		ctx, chainSourceRef,
-	); err != nil {
-		return err
+	if s.unrollRegistry == nil {
+		if err := s.initUnrollSubsystem(
+			ctx, chainSourceRef,
+		); err != nil {
+			return err
+		}
 	}
 
 	// -------------------------------------------------------
@@ -4384,11 +4408,6 @@ func (s *Server) connectAndNegotiate(ctx context.Context) (
 //
 //nolint:contextcheck // mailbox runtime owns lifecycle after bootstrap
 func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
-	// Derive the identity key from the now-ready wallet.
-	if err := s.deriveIdentityKeyEarly(ctx); err != nil {
-		return fmt.Errorf("derive identity key: %w", err)
-	}
-
 	negotiation, err := s.connectAndNegotiateWithRetry(ctx)
 	if err != nil {
 		return err
@@ -4885,6 +4904,50 @@ func (s *Server) dropCustomForfeitSigningContexts(_ context.Context,
 	s.forfeitSignatures.deleteContexts(outpoints)
 
 	return nil
+}
+
+// ensureLocalVTXOManager starts the wallet inventory once, including when
+// channel protection needs it before the operator becomes reachable.
+func (s *Server) ensureLocalVTXOManager(ctx context.Context,
+	chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]) error {
+
+	if s.vtxoMgrRef.IsSome() {
+		return nil
+	}
+	s.expiryAuthenticator = NewBatchExpiryAuthenticator(
+		chainSourceRef, s.cfg.legacyProofScanFloor(),
+	)
+	s.lazyChainResolver = vtxo.NewLazyChainResolver()
+	ref, err := s.initVTXOManager(ctx, chainSourceRef, s.lazyChainResolver)
+	if err != nil {
+		return err
+	}
+	s.vtxoMgrRef = fn.Some(ref)
+
+	return nil
+}
+
+// startOfflineChannelRecovery restores local signing, chain observation and
+// unroll workers before the first network negotiation can block. Recovery
+// uses durable channel terms; only online operations require a live peer.
+func (s *Server) startOfflineChannelRecovery(ctx context.Context,
+	chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]) error {
+
+	if err := s.ensureLocalVTXOManager(ctx, chainSourceRef); err != nil {
+		return err
+	}
+	if err := s.initUnrollSubsystem(ctx, chainSourceRef); err != nil {
+		return err
+	}
+	if err := s.unrollRegistry.RestoreNonTerminal(ctx); err != nil {
+		return fmt.Errorf("restore offline unroll jobs: %w", err)
+	}
+
+	return s.initLocalChannelController(ctx)
 }
 
 // initVTXOManager creates, registers, and starts the VTXO manager actor.
@@ -6369,8 +6432,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	s.ueStore = ueStore
 	recoveryStore := dbStore.NewVHTLCRecoveryStore(s.clk)
 	s.vhtlcRecoveryStore = recoveryStore
-	channelStore := dbStore.NewArkChannelStore(s.clk)
-	s.arkChannelStore = channelStore
+	channelStore := s.arkChannelStore
 	preimages := s.vhtlcPreimages
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 

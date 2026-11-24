@@ -40,7 +40,7 @@ func DefaultConfig() Config {
 		WalletBtcwalletFilterHeadersSource: cfg.Wallet.
 			BtcwFilterSource,
 		SwapServerAddress:      cfg.Swap.ServerAddress,
-		ArkChannelsEnabled:     cfg.Swap.ArkChannelReceiveEnabled,
+		ArkChannelsEnabled:     cfg.Swap.ArkChannelsEnabled,
 		SwapNotificationIssuer: cfg.Swap.NotificationIssuer,
 		SwapServerTransport:    Transport(cfg.Swap.ServerTransport),
 		SwapServerTLSCertPath:  cfg.Swap.ServerTLSCertPath,
@@ -384,7 +384,7 @@ func applyConfigOverrides(daemonCfg *waved.Config, cfg Config) {
 		daemonCfg.Swap = &waved.SwapConfig{}
 	}
 	if cfg.ArkChannelsEnabled {
-		daemonCfg.Swap.ArkChannelReceiveEnabled = true
+		daemonCfg.Swap.ArkChannelsEnabled = true
 	}
 	if cfg.SwapNotificationIssuer != "" {
 		daemonCfg.Swap.NotificationIssuer = cfg.SwapNotificationIssuer

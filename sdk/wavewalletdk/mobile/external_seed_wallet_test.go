@@ -48,6 +48,7 @@ func TestParseExternalSeedWalletStartRequest(t *testing.T) {
 	require.Equal(t, "/tmp/wavelength-wallet", cfg.DataDir)
 	require.Equal(t, "regtest", cfg.Network)
 	require.Equal(t, "btcwallet", cfg.WalletType)
+	require.False(t, cfg.ArkChannelsEnabled)
 	require.Equal(t, []byte{
 		0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
 		0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
@@ -55,6 +56,19 @@ func TestParseExternalSeedWalletStartRequest(t *testing.T) {
 	require.Equal(t, "02abcdef", req.ExpectedIdentityPubKey)
 	require.True(t, req.RecoverState)
 	require.Equal(t, uint32(144), req.RecoveryWindow)
+}
+
+// TestExternalSeedChannelOptIn checks the nested config used by mobile and
+// JS external-seed wallets, independent of the flat Start configuration.
+func TestExternalSeedChannelOptIn(t *testing.T) {
+	cfg, req, err := parseExternalSeedWalletStartRequest([]byte(`{
+		"config":{"data_dir":"/wallet","wallet_type":"lwwallet",
+			"ark_channels_enabled":true},
+		"seed_entropy":"ABEiM0RVZneImaq7zN3u/w=="
+	}`))
+	require.NoError(t, err)
+	defer clear(req.SeedEntropy)
+	require.True(t, cfg.ArkChannelsEnabled)
 }
 
 // TestParseExternalSeedWalletStartRequestRejectsInvalid tests its wire shape.

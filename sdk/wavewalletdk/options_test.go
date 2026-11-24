@@ -45,8 +45,8 @@ func TestEmbeddedArkChannelRegistrarLifecycle(t *testing.T) {
 		t.Cleanup(func() { _ = client.Stop() })
 		running := <-registered
 		require.NotNil(t, running.Swap.Backend)
-		require.Equal(t, enabled, running.Swap.ArkChannelMailbox != nil)
-		require.Equal(t, enabled, running.Swap.ArkChannelReceiveEnabled)
+		require.NotNil(t, running.Swap.ArkChannelMailbox)
+		require.Equal(t, enabled, running.Swap.ArkChannelsEnabled)
 		require.NoError(t, client.Stop())
 		require.Nil(t, running.Swap.ArkChannelMailbox)
 		require.Nil(t, base.Swap.ArkChannelMailbox)

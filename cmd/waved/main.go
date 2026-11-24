@@ -479,9 +479,13 @@ func registerSwapRuntimeFlags(f *pflag.FlagSet, cfg *waved.Config) {
 		"maximum accumulated receive workers in swapruntime builds",
 	)
 	f.Bool(
-		"swap.arkchannelreceiveenabled",
-		cfg.Swap.ArkChannelReceiveEnabled,
-		"enable explicit receives on existing active Ark channels",
+		"swap.arkchannelsenabled", cfg.Swap.ArkChannelsEnabled,
+		"permit explicit Ark channel open, pay and receive operations",
+	)
+	f.Bool(
+		"swap.disablearkchannelruntime",
+		cfg.Swap.SuppressArkChannelRuntime,
+		"disable Ark channel recovery (requires an empty inventory)",
 	)
 	f.Bool(
 		"swap.vhtlcrecovery.autoescalate",

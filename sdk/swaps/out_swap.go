@@ -453,7 +453,7 @@ func (c *SwapClient) StartReceiveWithRequestID(ctx context.Context,
 func (c *SwapClient) StartReceiveViaArkChannel(ctx context.Context,
 	amountSat btcutil.Amount, memo ...string) (*ReceiveSession, error) {
 
-	if c.channelBridge == nil {
+	if !c.channelAdmission || c.channelBridge == nil {
 		return nil, fmt.Errorf("active-channel receive is not enabled")
 	}
 

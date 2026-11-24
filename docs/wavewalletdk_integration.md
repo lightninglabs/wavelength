@@ -253,7 +253,9 @@ fmt.Println("actual outflow:", send.ActualAmountSat)
 
 Set `cfg.ArkChannelsEnabled = true` **before** `Start`. This mode needs
 `lwwallet`, continuous mailbox ingress (not `HostDrivenIngress`), and a
-channel-capable SwapDK hub. Create or unlock the wallet and wait for
+channel-capable swap hub. For runtime builds, see the
+[downstream dependency gate](wavewalletdk_mobile.md#ark-channel-operations).
+Create or unlock the wallet and wait for
 readiness. The daemon authenticates its operator and swap mailbox requests
 with wallet-owned keys; the application does not supply a channel signer.
 

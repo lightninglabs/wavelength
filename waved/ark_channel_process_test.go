@@ -12,7 +12,10 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/lnruntime"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
+	"github.com/lightninglabs/wavelength/serverconn"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
@@ -263,7 +266,13 @@ func TestArkChannelRPCPreservesRetryablePromotionStatus(t *testing.T) {
 		err: status.Error(codes.Unavailable, "operator offline"),
 	}
 	rpcServer := &arkChannelRPCServer{server: &Server{
-		arkChannelController: controller,
+		cfg: &Config{
+			Swap: &SwapConfig{
+				ArkChannelsEnabled: true,
+			},
+		},
+		arkChannelMailboxRuntime: &serverconn.Runtime{},
+		arkChannelController:     controller,
 	}}
 	_, err := rpcServer.PromoteVTXO(
 		t.Context(), &arkchannelrpc.PromoteVTXORequest{
@@ -271,6 +280,112 @@ func TestArkChannelRPCPreservesRetryablePromotionStatus(t *testing.T) {
 		},
 	)
 	require.Equal(t, codes.Unavailable, status.Code(err))
+}
+
+// TestChannelAdmissionDoesNotStartRecovery verifies that permission alone,
+// rejected opens and all pay attempts leave an empty wallet dormant.
+func TestChannelAdmissionDoesNotStartRecovery(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		s := &Server{cfg: &Config{Swap: &SwapConfig{
+			ArkChannelsEnabled: enabled,
+			ArkChannelMailbox: mailboxpb.NewMailboxServiceClient(
+				nil,
+			),
+		}}}
+		s.armArkChannelStartup(t.Context())
+		require.NotNil(t, s.arkChannelStart)
+		require.Nil(t, s.arkChannelController)
+		calls := 0
+		s.arkChannelStart = func() {
+			calls++
+			s.arkChannelController = &arkChannelControllerStub{}
+			s.arkChannelMailboxRuntime = &serverconn.Runtime{}
+		}
+		_, err := s.channelActionController(t.Context(), false)
+		require.Error(t, err)
+		require.Zero(t, calls)
+		for range 2 {
+			_, err = s.channelActionController(t.Context(), true)
+			if enabled {
+				require.NoError(t, err)
+				require.Equal(t, 1, calls)
+			} else {
+				require.Equal(
+					t, codes.FailedPrecondition,
+					status.Code(err),
+				)
+				require.Zero(t, calls)
+			}
+		}
+	}
+}
+
+// TestChannelRecoveryInventory verifies that a read failure is not an empty
+// inventory, and admission is irrelevant to protecting persisted channels.
+func TestChannelRecoveryInventory(t *testing.T) {
+	readErr := errors.New("unreadable channel inventory")
+	for _, disabled := range []bool{false, true} {
+		cfg := &SwapConfig{SuppressArkChannelRuntime: disabled}
+		for _, live := range []bool{false, true} {
+			list := func(context.Context) ([]arkchannel.Record,
+				error) {
+
+				if live {
+					return []arkchannel.Record{{}}, nil
+				}
+
+				return nil, nil
+			}
+			needed, err := channelRecoveryRequired(
+				t.Context(), cfg, list,
+			)
+			if live && disabled {
+				require.ErrorContains(t, err, "cannot disable")
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, live, needed)
+			}
+		}
+		_, err := channelRecoveryRequired(t.Context(), cfg,
+			func(context.Context) ([]arkchannel.Record, error) {
+				return nil, readErr
+			})
+		require.ErrorIs(t, err, readErr)
+	}
+}
+
+// TestArkChannelInventoryWithoutController uses only durable storage, even
+// after reopening the wallet with admission off and no peer transport.
+func TestArkChannelInventoryWithoutController(t *testing.T) {
+	dir := t.TempDir()
+	raw, coordinator := testArkChannelResumeStore(t, dir)
+	record := testArkChannelResumeRecord(t, coordinator, false)
+	require.NoError(t, raw.Close())
+
+	raw, _ = testArkChannelResumeStore(t, dir)
+	store := raw.NewArkChannelStore(clock.NewDefaultClock())
+	cfg := &SwapConfig{SuppressArkChannelRuntime: true}
+	_, err := channelRecoveryRequired(
+		t.Context(), cfg, store.ListNonTerminal,
+	)
+	require.ErrorContains(t, err, "cannot disable")
+
+	s := &Server{arkChannelStore: store}
+	rpc := &arkChannelRPCServer{server: s}
+	id := record.Snapshot.Terms.ID
+	req := &arkchannelrpc.GetChannelRequest{ChannelId: id[:]}
+	resp, err := rpc.GetChannel(t.Context(), req)
+	require.NoError(t, err)
+	require.Equal(t, id[:], resp.GetChannel().GetChannelId())
+	require.Nil(t, s.getArkChannelController())
+
+	require.NoError(t, raw.Close())
+	_, err = channelRecoveryRequired(
+		t.Context(), cfg, store.ListNonTerminal,
+	)
+	require.ErrorContains(t, err, "read recoverable Ark channels")
+	_, err = rpc.GetChannel(t.Context(), req)
+	require.Equal(t, codes.Internal, status.Code(err))
 }
 
 // TestRunRetriedArkChannelStartupRecovers verifies a transient optional

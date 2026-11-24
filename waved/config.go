@@ -774,14 +774,13 @@ type SwapConfig struct {
 	// DefaultMaxActiveReceiveSwaps.
 	MaxActiveReceiveSwaps int `mapstructure:"maxactivereceiveswaps"`
 
-	// ArkChannelReceiveEnabled permits explicit receives on existing active
-	// channels. Ordinary swap invoices are unaffected.
-	ArkChannelReceiveEnabled bool `mapstructure:"arkchannelreceiveenabled"`
+	// ArkChannelsEnabled admits explicit open, pay and receive requests.
+	// It neither starts the peer nor redirects ordinary swaps.
+	ArkChannelsEnabled bool `mapstructure:"arkchannelsenabled"`
 
-	// SuppressArkChannelRuntime keeps embedded wallets off the peer mailbox
-	// unless they explicitly enable channels. Standalone daemons retain
-	// channel management independently of their receive policy.
-	SuppressArkChannelRuntime bool `mapstructure:"-"`
+	// SuppressArkChannelRuntime disables the recovery runtime. Startup
+	// rejects this override while the database contains recoverable state.
+	SuppressArkChannelRuntime bool `mapstructure:"disablearkchannelruntime"`
 
 	// VHTLCRecovery controls when the daemon-owned swap runtime escalates
 	// an already-armed vHTLC recovery row from cooperative retry into

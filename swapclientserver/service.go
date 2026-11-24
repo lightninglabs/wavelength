@@ -654,7 +654,7 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 	)
 	swapClient.SetChainParams(chainParams)
 	configureArkChannelReceiveBridge(
-		swapClient, rpcServer, cfg.ArkChannelReceiveEnabled,
+		swapClient, rpcServer, cfg,
 	)
 	recoveryCfg := cfg.VHTLCRecovery
 	swapClient.SetRecoveryPolicy(swaps.RecoveryPolicy{
@@ -753,22 +753,17 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 // arkChannelPaymentBridgeSetter is the narrow SDK wiring surface needed by the
 // direct receive opt-in.
 type arkChannelPaymentBridgeSetter interface {
-	SetArkChannelPaymentBridge(swaps.ArkChannelPaymentBridge)
+	SetArkChannelPaymentBridge(swaps.ArkChannelPaymentBridge, bool)
 }
 
-// configureArkChannelReceiveBridge installs the direct receive bridge only
-// after an explicit opt-in. Leaving the bridge unset keeps invoice creation on
-// the ordinary vHTLC path without channel preparation calls.
+// configureArkChannelReceiveBridge keeps the bridge available for recovery
+// while new invoices require an explicit opt-in.
 func configureArkChannelReceiveBridge(client arkChannelPaymentBridgeSetter,
-	rpcServer *waved.RPCServer, enabled bool) {
-
-	if !enabled {
-		return
-	}
+	rpcServer *waved.RPCServer, cfg *waved.SwapConfig) {
 
 	client.SetArkChannelPaymentBridge(&arkChannelPaymentBridge{
 		rpc: rpcServer,
-	})
+	}, cfg.ArkChannelsEnabled && !cfg.SuppressArkChannelRuntime)
 }
 
 // bindArkChannelMailbox publishes the authenticated swap-server transport for

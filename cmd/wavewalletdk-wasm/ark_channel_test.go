@@ -44,7 +44,7 @@ func callWalletJS(method string, body map[string]any) (js.Value, error) {
 func TestWASMArkChannelDispatch(t *testing.T) {
 	call := installWalletCall()
 	defer call.Release()
-	_, err := callWalletJS("start", map[string]any{
+	cfg := map[string]any{
 		"data_dir":              t.TempDir(),
 		"network":               "regtest",
 		"wallet_type":           "lwwallet",
@@ -55,8 +55,21 @@ func TestWASMArkChannelDispatch(t *testing.T) {
 		"swap_server_address":   "http://127.0.0.1:1",
 		"swap_server_transport": "rest",
 		"swap_server_insecure":  true,
-		"ark_channels_enabled":  true,
+	}
+	_, err := callWalletJS("start", cfg)
+	require.NoError(t, err)
+	_, err = callWalletJS("promoteVTXO", map[string]any{
+		"AmountSat": 5000, "IdempotencyKey": "not-admitted",
 	})
+	require.ErrorContains(t, err, "operations are disabled")
+	_, err = callWalletJS("payOnActiveChannel", map[string]any{
+		"Invoice": "ln-pay",
+	})
+	require.ErrorContains(t, err, "operations are disabled")
+	_, err = callWalletJS("stop", nil)
+	require.NoError(t, err)
+	cfg["ark_channels_enabled"] = true
+	_, err = callWalletJS("start", cfg)
 	require.NoError(t, err)
 	defer func() {
 		_, err := callWalletJS("stop", nil)

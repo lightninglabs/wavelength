@@ -20,7 +20,7 @@ import (
 // the same contract and keeps the public Client method set identical across
 // both build flavors.
 func configureSwapRuntime(cfg *waved.Config) error {
-	if cfg.Swap.ArkChannelReceiveEnabled {
+	if cfg.Swap.ArkChannelsEnabled {
 		if cfg.Wallet == nil ||
 			cfg.Wallet.Type != waved.WalletTypeLwwallet {
 			return fmt.Errorf("ark_channels_enabled requires " +
@@ -45,7 +45,6 @@ func configureSwapRuntime(cfg *waved.Config) error {
 			}
 		}
 	}
-	cfg.Swap.SuppressArkChannelRuntime = !cfg.Swap.ArkChannelReceiveEnabled
 
 	cfg.RPCServiceRegistrars = append(
 		cfg.RPCServiceRegistrars, swapclientserver.Register,

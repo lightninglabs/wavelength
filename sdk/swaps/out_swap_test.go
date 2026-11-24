@@ -246,7 +246,7 @@ func TestArkChannelReceiveSettlesDirectly(t *testing.T) {
 			),
 		}, nil, creator,
 	)
-	client.SetArkChannelPaymentBridge(bridge)
+	client.SetArkChannelPaymentBridge(bridge, true)
 	client.SetOutSwapEventReceiver(nil)
 
 	session, err := client.StartReceiveViaArkChannel(
@@ -317,7 +317,7 @@ func TestArkChannelReceiveInvoiceFailureCancelsRegistration(t *testing.T) {
 			operatorKey: operatorPriv.PubKey(),
 		}, nil, creator,
 	)
-	client.SetArkChannelPaymentBridge(bridge)
+	client.SetArkChannelPaymentBridge(bridge, true)
 
 	_, err = client.StartReceiveViaArkChannel(
 		t.Context(), btcutil.Amount(42_000),
@@ -430,7 +430,7 @@ func TestArkChannelReceiveSetupFailsClosed(t *testing.T) {
 					operatorKey: operatorPriv.PubKey(),
 				}, nil, creator,
 			)
-			client.SetArkChannelPaymentBridge(bridge)
+			client.SetArkChannelPaymentBridge(bridge, true)
 
 			session, err := client.StartReceiveViaArkChannel(
 				t.Context(), btcutil.Amount(42_000),
@@ -470,7 +470,7 @@ func TestArkChannelReceiveTerminalFailureCancelsPrivateRail(t *testing.T) {
 
 	bridge := &testArkChannelPaymentBridge{}
 	client := NewSwapClient(nil, nil, nil, nil)
-	client.SetArkChannelPaymentBridge(bridge)
+	client.SetArkChannelPaymentBridge(bridge, true)
 	session := &ReceiveSession{
 		client: client,
 		PaymentHash: lntypes.Hash{
@@ -500,7 +500,7 @@ func TestArkChannelReceiveTerminalFailureCancelsPrivateRail(t *testing.T) {
 func TestArkChannelReceiveExpiryCancelsRegistration(t *testing.T) {
 	bridge := &testArkChannelPaymentBridge{wait: make(chan struct{})}
 	client := NewSwapClient(nil, nil, nil, nil)
-	client.SetArkChannelPaymentBridge(bridge)
+	client.SetArkChannelPaymentBridge(bridge, true)
 	client.overdueReceivePollWindow = time.Millisecond
 	session := &ReceiveSession{
 		client: client, channelID: arkchannel.ID{

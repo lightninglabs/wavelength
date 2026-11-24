@@ -1388,34 +1388,52 @@ func TestBindArkChannelMailbox(t *testing.T) {
 // optional direct receive bridge to the swap SDK.
 type recordingArkChannelBridgeSetter struct {
 	bridge swaps.ArkChannelPaymentBridge
+	admit  bool
 	calls  int
 }
 
 // SetArkChannelPaymentBridge records one bridge installation.
 func (s *recordingArkChannelBridgeSetter) SetArkChannelPaymentBridge(
-	bridge swaps.ArkChannelPaymentBridge) {
+	bridge swaps.ArkChannelPaymentBridge, admit bool) {
 
 	s.bridge = bridge
+	s.admit = admit
 	s.calls++
 }
 
-// TestConfigureArkChannelReceiveBridgeRequiresOptIn verifies disabled receive
-// mode leaves the SDK bridge unset while the explicit opt-in installs it.
+// TestConfigureArkChannelReceiveBridgeRequiresOptIn keeps the recovery
+// bridge available without admitting new invoices on a disabled runtime.
 func TestConfigureArkChannelReceiveBridgeRequiresOptIn(t *testing.T) {
 	t.Parallel()
 
 	rpcServer := waved.NewRPCServer(nil)
 	disabled := &recordingArkChannelBridgeSetter{}
-	configureArkChannelReceiveBridge(disabled, rpcServer, false)
-	require.Zero(t, disabled.calls)
-	require.Nil(t, disabled.bridge)
+	configureArkChannelReceiveBridge(
+		disabled, rpcServer, &waved.SwapConfig{},
+	)
+	require.Equal(t, 1, disabled.calls)
+	require.NotNil(t, disabled.bridge)
+	require.False(t, disabled.admit)
 
 	enabled := &recordingArkChannelBridgeSetter{}
-	configureArkChannelReceiveBridge(enabled, rpcServer, true)
+	configureArkChannelReceiveBridge(enabled, rpcServer, &waved.SwapConfig{
+		ArkChannelsEnabled: true,
+	})
 	require.Equal(t, 1, enabled.calls)
+	require.True(t, enabled.admit)
 	bridge, ok := enabled.bridge.(*arkChannelPaymentBridge)
 	require.True(t, ok)
 	require.Same(t, rpcServer, bridge.rpc)
+
+	suppressed := &recordingArkChannelBridgeSetter{}
+	configureArkChannelReceiveBridge(
+		suppressed, rpcServer, &waved.SwapConfig{
+			ArkChannelsEnabled:        true,
+			SuppressArkChannelRuntime: true,
+		},
+	)
+	require.NotNil(t, suppressed.bridge)
+	require.False(t, suppressed.admit)
 }
 
 // TestDaemonWithLiveOperatorKeyUsesLiveFetcher verifies the daemon-hosted swap

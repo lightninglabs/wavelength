@@ -17,8 +17,8 @@ func TestEmbeddedArkChannelConfig(t *testing.T) {
 	cfg := Config{DaemonConfig: base}
 	resolved, err := resolveDaemonConfig(cfg)
 	require.NoError(t, err)
-	require.True(t, resolved.Swap.SuppressArkChannelRuntime)
-	require.False(t, resolved.Swap.ArkChannelReceiveEnabled)
+	require.False(t, resolved.Swap.SuppressArkChannelRuntime)
+	require.False(t, resolved.Swap.ArkChannelsEnabled)
 
 	cfg.ArkChannelsEnabled = true
 	cfg.ServerTransport = TransportREST
@@ -26,10 +26,10 @@ func TestEmbeddedArkChannelConfig(t *testing.T) {
 	resolved, err = resolveDaemonConfig(cfg)
 	require.NoError(t, err)
 	require.False(t, resolved.Swap.SuppressArkChannelRuntime)
-	require.True(t, resolved.Swap.ArkChannelReceiveEnabled)
-	require.False(t, base.Swap.ArkChannelReceiveEnabled)
+	require.True(t, resolved.Swap.ArkChannelsEnabled)
+	require.False(t, base.Swap.ArkChannelsEnabled)
 
-	base.Swap.ArkChannelReceiveEnabled = true
+	base.Swap.ArkChannelsEnabled = true
 	cfg.ArkChannelsEnabled = false
 	resolved, err = resolveDaemonConfig(cfg)
 	require.NoError(t, err)

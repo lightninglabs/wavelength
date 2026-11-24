@@ -239,14 +239,16 @@ channel; it never starts a vHTLC listener for the same invoice.
   store.
 - `ReceiveAuthKey` signing/ECDH is always delegated to the daemon;
   the SDK never holds the raw private key for receive-auth.
-- Channel registration must succeed before the caller receives the invoice.
+- Keep the payment bridge installed to recover existing invoices. Only
+  explicit channel receives need admission; ordinary receives never use it.
+  Channel registration must succeed before the caller receives the invoice.
   Expiry or cancellation releases the registration and the private hold invoice.
 - The channel ID is persisted at registration. After lnd accepts the HTLC
   on that channel, the SDK records `SettlementTypeArkChannel` before
   releasing the preimage. A restart retries that settlement decision.
 - Receive rows encode `reserved_scid` as 8-byte big-endian data and
   `channel_id` as 32 bytes; empty values mean unset. Row restoration rejects
-  any other width. Migration 4 also stores
+  any other width. Migration 5 also stores
   `channel_receive_enabled` so ownership survives restart.
 - `SettlementTypeArkChannel` is receive-only. `validateInSwapPreview` and
   `validateInSwapQuote` reject it for Ark-to-Lightning pay quotes.

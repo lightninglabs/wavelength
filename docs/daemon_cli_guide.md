@@ -153,7 +153,8 @@ waved \
 | `--swap.serveraddress` | network default | Swap server address override for swapruntime builds |
 | `--swap.servertransport` | `grpc` | Swap server transport: `grpc` or `rest` |
 | `--maxpaymentcltv` | `480` in swap-enabled builds | Largest total Lightning payment CLTV reserved by automatic VTXO refresh; `0` disables the payment reserve |
-| `--swap.arkchannelreceiveenabled` | `false` | Enable `channel receive` on existing active channels; ordinary `recv` is unchanged |
+| `--swap.arkchannelsenabled` | `false` | Permit explicit channel open, pay and receive; ordinary send and receive are unchanged |
+| `--swap.disablearkchannelruntime` | `false` | Disable protection only if the local recovery inventory is readable and empty |
 
 Empty Ark and swap addresses resolve from the selected network and transport.
 See [signet.md](signet.md) for the testnet3, testnet4, and signet endpoints and
@@ -536,7 +537,7 @@ wavecli channel refresh <channel-id>
 wavecli channel force-close <channel-id>
 ```
 
-With `--swap.arkchannelreceiveenabled`, `channel receive <amount-sat>`
+With `--swap.arkchannelsenabled`, `channel receive <amount-sat>`
 returns an invoice bound to an existing active channel. If no channel has
 enough inbound liquidity, the command fails without issuing an invoice.
 `activity inspect <payment-hash> --format json` shows the selected
