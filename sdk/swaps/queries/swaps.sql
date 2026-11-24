@@ -10,11 +10,12 @@ INSERT INTO receive_swaps (
     pending_htlc_ack_cursor, claim_receive_pubkey, claim_receive_pkscript,
     claim_session_id, claim_recovery_id, intervention_reason,
     requested_amount_sat, available_credit_sat, attached_credit_sat,
-    dust_limit_sat, created_at_unix, updated_at_unix, request_id, memo
+    dust_limit_sat, reserved_scid, channel_receive_enabled, channel_id,
+    created_at_unix, updated_at_unix, request_id, memo
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
     $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-    $29, $30, $31, $32, $33, $34
+    $29, $30, $31, $32, $33, $34, $35, $36, $37
 )
 ON CONFLICT (payment_hash) DO NOTHING;
 
@@ -50,6 +51,9 @@ INSERT INTO receive_swaps (
 	available_credit_sat,
 	attached_credit_sat,
 	dust_limit_sat,
+	reserved_scid,
+	channel_receive_enabled,
+	channel_id,
 	created_at_unix,
 	updated_at_unix,
 	request_id,
@@ -57,7 +61,7 @@ INSERT INTO receive_swaps (
 ) VALUES (
 	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
 	$16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-	$29, $30, $31, $32, $33, $34
+	$29, $30, $31, $32, $33, $34, $35, $36, $37
 )
 ON CONFLICT (payment_hash) DO UPDATE SET
     amount_sat = EXCLUDED.amount_sat,
@@ -90,6 +94,9 @@ ON CONFLICT (payment_hash) DO UPDATE SET
 	available_credit_sat = EXCLUDED.available_credit_sat,
 	attached_credit_sat = EXCLUDED.attached_credit_sat,
 	dust_limit_sat = EXCLUDED.dust_limit_sat,
+	reserved_scid = EXCLUDED.reserved_scid,
+	channel_receive_enabled = EXCLUDED.channel_receive_enabled,
+	channel_id = EXCLUDED.channel_id,
 	updated_at_unix = EXCLUDED.updated_at_unix;
 
 -- name: GetReceiveSwap :one
