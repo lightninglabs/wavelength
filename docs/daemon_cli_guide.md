@@ -153,7 +153,7 @@ waved \
 | `--swap.serveraddress` | network default | Swap server address override for swapruntime builds |
 | `--swap.servertransport` | `grpc` | Swap server transport: `grpc` or `rest` |
 | `--maxpaymentcltv` | `480` in swap-enabled builds | Largest total Lightning payment CLTV reserved by automatic VTXO refresh; `0` disables the payment reserve |
-| `--swap.arkchannelsenabled` | `false` | Permit explicit channel open and pay; ordinary send and receive are unchanged |
+| `--swap.arkchannelsenabled` | `false` | Permit explicit channel open, pay and receive; ordinary send and receive are unchanged |
 | `--swap.disablearkchannelruntime` | `false` | Disable protection only if the local recovery inventory is readable and empty |
 
 Empty Ark and swap addresses resolve from the selected network and transport.
@@ -532,13 +532,20 @@ hex.
 wavecli channel create 100000
 wavecli channel get <channel-id>
 wavecli channel pay <bolt11> --max-fee-sat 1000
+wavecli channel receive 25000
 wavecli channel refresh <channel-id>
 wavecli channel force-close <channel-id>
 ```
 
-Opening a channel and paying through it require `--swap.arkchannelsenabled`.
-An ordinary `recv --offchain --amt <amount-sat>` settles into the wallet and
-does not open a channel. To fund one, use `wavecli channel create <amount-sat>`.
+With `--swap.arkchannelsenabled`, `channel receive <amount-sat>`
+returns an invoice bound to an existing active channel. If no channel has
+enough inbound liquidity, the command fails without issuing an invoice.
+`activity inspect <payment-hash> --format json` shows the selected
+`channel_id` and the invoice's virtual SCID.
+
+To receive into the wallet instead, use `recv --offchain --amt <amount-sat>`
+to create a separate invoice. To fund a channel from wallet VTXOs, use
+`wavecli channel create <amount-sat>`.
 
 ### `ark board` / `dev daemon Board`
 

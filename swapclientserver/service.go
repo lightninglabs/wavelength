@@ -299,7 +299,8 @@ type swapRuntimeClient interface {
 	// invoice that callers hand to the remote payer. A non-empty request
 	// ID is stored with the receive and may own only one receive.
 	StartReceiveViaLightning(ctx context.Context, requestID string,
-		amount btcutil.Amount, memo string) (receiveSwapSession, error)
+		amount btcutil.Amount, memo string,
+		activeChannelOnly bool) (receiveSwapSession, error)
 
 	// ReceiveSummaryByRequestID reads the receive created under a request
 	// ID, or returns swaps.ErrSwapSummaryNotFound.
@@ -549,7 +550,7 @@ func RegisterGateway(ctx context.Context, mux *runtime.ServeMux,
 // must be called during daemon shutdown so the root worker context is canceled
 // before the Ark, swapdk-server, and store resources are closed.
 //
-//nolint:contextcheck
+//nolint:contextcheck,funlen // Startup owns reverse-order cleanup.
 func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 	daemonCfg *waved.Config) (*swapClientService, func(), error) {
 
@@ -612,7 +613,6 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 
 		return nil, nil, err
 	}
-
 	arkClient, err := sdkark.WrapDaemonServer(ctx, sdkark.InProcessConfig{
 		DaemonServer: rpcServer,
 	})
@@ -653,6 +653,9 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 		swapClients.server, daemonConn, log, invoiceGen, store,
 	)
 	swapClient.SetChainParams(chainParams)
+	configureArkChannelReceiveBridge(
+		swapClient, rpcServer, cfg,
+	)
 	recoveryCfg := cfg.VHTLCRecovery
 	swapClient.SetRecoveryPolicy(swaps.RecoveryPolicy{
 		AutoEscalate: recoveryCfg.AutoEscalate,
@@ -745,6 +748,22 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 	}
 
 	return service, cleanup, nil
+}
+
+// arkChannelPaymentBridgeSetter is the narrow SDK wiring surface needed by the
+// direct receive opt-in.
+type arkChannelPaymentBridgeSetter interface {
+	SetArkChannelPaymentBridge(swaps.ArkChannelPaymentBridge, bool)
+}
+
+// configureArkChannelReceiveBridge keeps the bridge available for recovery
+// while new invoices require an explicit opt-in.
+func configureArkChannelReceiveBridge(client arkChannelPaymentBridgeSetter,
+	rpcServer *waved.RPCServer, cfg *waved.SwapConfig) {
+
+	client.SetArkChannelPaymentBridge(&arkChannelPaymentBridge{
+		rpc: rpcServer,
+	}, cfg.ArkChannelsEnabled && !cfg.SuppressArkChannelRuntime)
 }
 
 // bindArkChannelMailbox publishes the authenticated swap-server transport for
@@ -982,12 +1001,20 @@ func (a *swapClientAdapter) ListCredits(ctx context.Context, limit uint32) (
 // StartReceiveViaLightning starts a real sdk/swaps receive session and wraps
 // it with method accessors for the daemon RPC response path.
 func (a *swapClientAdapter) StartReceiveViaLightning(ctx context.Context,
-	requestID string, amountSat btcutil.Amount, memo string) (
-	receiveSwapSession, error) {
+	requestID string, amountSat btcutil.Amount, memo string,
+	activeChannelOnly bool) (receiveSwapSession, error) {
 
-	session, err := a.client.StartReceiveWithRequestID(
-		ctx, requestID, amountSat, memo,
-	)
+	var session *swaps.ReceiveSession
+	var err error
+	if activeChannelOnly {
+		session, err = a.client.StartReceiveViaArkChannel(
+			ctx, amountSat, memo,
+		)
+	} else {
+		session, err = a.client.StartReceiveWithRequestID(
+			ctx, requestID, amountSat, memo,
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1222,11 +1249,11 @@ func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 	}
 }
 
-// swapServerWaitForReadyInterceptor applies reconnect waiting only to swap
-// operations that create or advance protocol state. User operations remain
-// bounded by their request context, while background resume operations remain
-// bounded by the daemon root context. Read-only quotes and credit snapshots
-// retain gRPC's fail-fast behavior.
+// swapServerWaitForReadyInterceptor applies reconnect waiting only to swap and
+// mailbox operations that create or advance protocol state. User operations
+// remain bounded by their request context, while background resume operations
+// remain bounded by the daemon root context. Read-only quotes, mailbox pulls,
+// and credit snapshots retain gRPC's fail-fast behavior.
 func swapServerWaitForReadyInterceptor(ctx context.Context, method string, req,
 	reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker,
 	opts ...grpc.CallOption) error {
@@ -1243,7 +1270,8 @@ func swapServerWaitForReadyInterceptor(ctx context.Context, method string, req,
 // reconnects.
 func swapServerOperationWaitsForReady(method string) bool {
 	switch method {
-	case swaprpc.SwapService_RequestChannelId_FullMethodName,
+	case mailboxpb.MailboxService_Send_FullMethodName,
+		swaprpc.SwapService_RequestChannelId_FullMethodName,
 		swaprpc.SwapService_CreateInSwap_FullMethodName,
 		swaprpc.SwapService_CreateCredit_FullMethodName,
 		swaprpc.SwapService_RedeemCredit_FullMethodName,
@@ -1813,6 +1841,12 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 			codes.InvalidArgument, "amount_sat must be positive",
 		)
 	}
+	if req.GetActiveChannelOnly() && req.GetIdempotencyKey() != "" {
+		return nil, status.Error(
+			codes.Unimplemented,
+			"keyed active-channel receives are unsupported",
+		)
+	}
 	if !s.reserveReceiveWorker() {
 		return nil, status.Errorf(codes.ResourceExhausted, "active "+
 			"receive swap limit of %d reached", s.maxActiveReceives)
@@ -1830,6 +1864,7 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 			req.GetAmountSat(),
 		),
 		req.GetMemo(),
+		req.GetActiveChannelOnly(),
 	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start receive "+
@@ -1862,7 +1897,7 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 }
 
 func receivePlanVHTLCAmount(summary *swapclientrpc.SwapSummary) uint64 {
-	if summary == nil {
+	if summary == nil || len(summary.GetChannelId()) != 0 {
 		return 0
 	}
 	if summary.GetVhtlcAmountSat() > 0 {
@@ -2867,6 +2902,10 @@ func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
 	if summary.Preimage != nil {
 		preimage = hex.EncodeToString(summary.Preimage[:])
 	}
+	var channelID []byte
+	if summary.ChannelID != ([32]byte{}) {
+		channelID = append([]byte(nil), summary.ChannelID[:]...)
+	}
 
 	return &swapclientrpc.SwapSummary{
 		Direction:        swapDirectionToProto(summary.Direction),
@@ -2898,6 +2937,8 @@ func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
 		AttachedCreditSat:  summary.AttachedCreditSat,
 		DustLimitSat:       summary.DustLimitSat,
 		AvailableCreditSat: summary.AvailableCreditSat,
+		ChannelId:          channelID,
+		ReservedScid:       summary.ReservedSCID,
 	}
 }
 
@@ -3215,6 +3256,10 @@ func swapSettlementTypeToProto(
 
 	case swaps.SettlementTypeMixed:
 		return swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_MIXED
+
+	case swaps.SettlementTypeArkChannel:
+		return swapclientrpc.
+			SwapSettlementType_SWAP_SETTLEMENT_TYPE_ARK_CHANNEL
 
 	default:
 		return swapclientrpc.

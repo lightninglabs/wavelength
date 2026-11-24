@@ -161,10 +161,12 @@ func TestChannelCommandRecoveryFlags(t *testing.T) {
 	_, _, err = root.Find([]string{"close"})
 	require.ErrorContains(t, err, "unknown command")
 
-	for _, method := range []string{"send", "receive"} {
-		_, _, err := root.Find([]string{method})
-		require.ErrorContains(t, err, "unknown command")
-	}
+	receive, _, err := root.Find([]string{"receive"})
+	require.NoError(t, err)
+	require.Equal(t, "receive", receive.Name())
+	require.NotNil(t, receive.Flags().Lookup("memo"))
+	_, _, err = root.Find([]string{"send"})
+	require.ErrorContains(t, err, "unknown command")
 
 	pay := newChannelPayCmd()
 	maxFee, err := pay.Flags().GetUint64("max-fee-sat")

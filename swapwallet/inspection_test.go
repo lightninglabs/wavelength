@@ -42,6 +42,7 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 
 	sessionID := testBytes(32, 0x21)
 	sessionHex := testSessionString(t, sessionID)
+	channelID := testBytes(32, 0x31)
 
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
 		Swaps: []*swapclientrpc.SwapSummary{
@@ -59,6 +60,8 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 				VhtlcAmountSat:   1_234,
 				UpdatedAtUnix:    200,
 				FundingSessionId: sessionHex,
+				ChannelId:        channelID,
+				ReservedScid:     1234,
 			},
 		},
 	}
@@ -103,6 +106,8 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 	)
 	require.Equal(t, "sender-pubkey", resp.GetSwap().GetSenderPubkey())
 	require.Equal(t, "deadbeef", resp.GetSwap().GetPreimage())
+	require.Equal(t, channelID, resp.GetSwap().GetChannelId())
+	require.Equal(t, uint64(1234), resp.GetSwap().GetReservedScid())
 	require.Len(t, resp.GetLedgerRows(), 2)
 	require.Len(t, resp.GetVtxos(), 3)
 

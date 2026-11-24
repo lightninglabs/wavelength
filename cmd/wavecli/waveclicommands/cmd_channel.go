@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/wavelength/rpc/arkchannelrpc"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -44,8 +45,8 @@ func newChannelCmd() *cobra.Command {
 	}
 	cmd.AddCommand(
 		newChannelCreateCmd(), newChannelGetCmd(), newChannelListCmd(),
-		newChannelPayCmd(), newChannelRefreshCmd(),
-		newChannelForceCloseCmd(),
+		newChannelPayCmd(), newChannelReceiveCmd(),
+		newChannelRefreshCmd(), newChannelForceCloseCmd(),
 	)
 
 	return cmd
@@ -265,6 +266,52 @@ func newChannelPayCmd() *cobra.Command {
 		"maximum public Lightning routing fee")
 	cmd.Flags().Bool("yes", false,
 		"approve paying the public invoice")
+
+	return cmd
+}
+
+// newChannelReceiveCmd obtains an invoice bound to an existing active channel.
+func newChannelReceiveCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "receive <amount-sat>",
+		Short: "Receive Lightning over an active channel",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			amount, err := parsePositiveChannelAmount(args[0])
+			if err != nil {
+				return err
+			}
+			conn, err := getDaemonConn(cmd)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+			memo, _ := cmd.Flags().GetString("memo")
+			client := swapclientrpc.NewSwapClientServiceClient(conn)
+			resp, err := client.StartReceive(
+				ctx, &swapclientrpc.StartReceiveRequest{
+					AmountSat:         amount,
+					Memo:              memo,
+					ActiveChannelOnly: true,
+				},
+			)
+			if err != nil {
+				return err
+			}
+			// Older daemons ignore the request flag. Do not publish
+			// a swap invoice if the daemon did not reserve a
+			// channel.
+			if len(resp.GetSwap().GetChannelId()) != 32 {
+				return fmt.Errorf("daemon did not reserve an " +
+					"active channel")
+			}
+
+			return printJSON(resp)
+		},
+	}
+	cmd.Flags().String("memo", "", "invoice description")
 
 	return cmd
 }
