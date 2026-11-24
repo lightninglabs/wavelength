@@ -118,7 +118,7 @@ func (a *ServerConnectionActor) sendHeartbeatOnce(ctx context.Context) error {
 			Kind:    mailboxpb.RpcMeta_KIND_EVENT,
 			Service: HeartbeatService,
 			Method:  HeartbeatMethod,
-			ReplyTo: a.cfg.LocalMailboxID,
+			ReplyTo: a.cfg.replyMailboxID(),
 		},
 	}
 

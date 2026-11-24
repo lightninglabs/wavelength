@@ -2332,7 +2332,9 @@ func TestWaitIncomingVHTLCNotificationRejectsMissingAckCursor(t *testing.T) {
 		clientPubKey: clientPriv.PubKey(),
 	}
 
-	_, err = session.waitIncomingVHTLCNotification(t.Context(), nil)
+	_, err = session.waitIncomingVHTLCNotification(
+		t.Context(), t.Context(), nil,
+	)
 	require.ErrorContains(t, err, "incoming vHTLC ack cursor")
 	require.Equal(t, ReceiveStateInvoiceCreated, session.State())
 	require.Zero(t, session.pendingHTLCAckCursor)
@@ -2903,6 +2905,7 @@ func (d *testDaemonConn) PrepareOORWithCustomInputs(_ context.Context,
 	}
 
 	return &PreparedOOR{
+		ArkPSBT: []byte("ark"),
 		CustomInputs: []PreparedOORCustomInput{{
 			Outpoint:       inputs[0].Outpoint,
 			CheckpointPSBT: []byte("checkpoint"),
@@ -4283,7 +4286,9 @@ func TestReceiveSessionOverdueInvoiceAcceptsDeliveredEvent(t *testing.T) {
 	client := NewSwapClientWithStore(
 		serverConn, daemonConn, nil, creator, store,
 	)
-	client.overdueReceivePollWindow = 100 * time.Millisecond
+	// The cached event is already delivered, so acceptance must persist
+	// under the parent context even after the polling window closes.
+	client.overdueReceivePollWindow = 0
 	useTestOnionDecoder(client, 42_000)
 
 	session, err := client.StartReceiveViaLightning(

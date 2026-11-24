@@ -483,6 +483,39 @@ func TestStartReceiveReleasesReservationOnCreationFailure(t *testing.T) {
 	require.True(t, service.reserveReceiveWorker())
 }
 
+// TestReceiveWorkerRetriesWhileDurableSwapIsPending verifies a transient
+// process-local Wait failure does not strand a resumable receive FSM until the
+// daemon restarts. The worker keeps ownership across the retry and resumes the
+// same payment hash once more.
+func TestReceiveWorkerRetriesWhileDurableSwapIsPending(t *testing.T) {
+	t.Parallel()
+
+	receiveHash := testHash(3)
+	fakeClient := newFakeSwapRuntime(swaps.SwapSummary{
+		Direction:   swaps.SwapDirectionReceive,
+		PaymentHash: receiveHash,
+		State:       "claim_initiated",
+		Pending:     true,
+	})
+	fakeClient.receiveResumeSessions = []receiveSwapSession{
+		&fakeReceiveSession{
+			hash:    receiveHash,
+			waitErr: errors.New("temporary mailbox disconnect"),
+		},
+		&fakeReceiveSession{
+			hash: receiveHash,
+		},
+	}
+	service := newTestSwapClientService(fakeClient)
+	service.workerRetryDelay = 10 * time.Millisecond
+	defer service.cancel()
+
+	service.startReceiveWorker(receiveHash)
+	fakeClient.awaitReceiveResume(t, receiveHash)
+	fakeClient.awaitReceiveResume(t, receiveHash)
+	require.Equal(t, 2, fakeClient.receiveResumeCount(receiveHash))
+}
+
 // TestChainParamsForNetworkAcceptsTestNet4 verifies the swapruntime daemon
 // subserver accepts every network string the main daemon config advertises.
 func TestChainParamsForNetworkAcceptsTestNet4(t *testing.T) {
@@ -1967,6 +2000,7 @@ type fakeSwapRuntime struct {
 	payResumeCalls        map[lntypes.Hash]int
 	receiveResumeCalls    map[lntypes.Hash]int
 	receiveDone           map[lntypes.Hash]chan struct{}
+	receiveResumeSessions []receiveSwapSession
 
 	payResumeCh     chan lntypes.Hash
 	receiveResumeCh chan lntypes.Hash
@@ -2066,6 +2100,10 @@ func (f *fakeSwapRuntime) ResumeReceiveViaLightning(ctx context.Context,
 
 	f.receiveResumeCalls[hash]++
 	f.receiveResumeCh <- hash
+	resumeIndex := f.receiveResumeCalls[hash] - 1
+	if resumeIndex < len(f.receiveResumeSessions) {
+		return f.receiveResumeSessions[resumeIndex], nil
+	}
 
 	return &fakeReceiveSession{hash: hash, done: f.receiveDone[hash]}, nil
 }
@@ -2269,6 +2307,7 @@ type fakeReceiveSession struct {
 	done    <-chan struct{}
 	hash    lntypes.Hash
 	invoice string
+	waitErr error
 }
 
 func (f *fakeReceiveSession) PaymentHash() lntypes.Hash {
@@ -2283,9 +2322,13 @@ func (f *fakeReceiveSession) Invoice() string {
 func (f *fakeReceiveSession) Wait(ctx context.Context) (*swaps.ReceiveResult,
 	error) {
 
+	if f.waitErr != nil {
+		return nil, f.waitErr
+	}
+
 	select {
 	case <-f.done:
-		return nil, errors.New("temporary receive failure")
+		return nil, nil
 
 	case <-ctx.Done():
 	}

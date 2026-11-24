@@ -42,6 +42,10 @@ const (
 	// startPayloadDispatchRequestDataType stores the normalized caller
 	// recipient proof for a keyed dispatch.
 	startPayloadDispatchRequestDataType tlv.Type = 9
+
+	// startPayloadPrepareOnlyType stores whether admission must stop before
+	// signing. It is optional so pre-feature messages decode as false.
+	startPayloadPrepareOnlyType tlv.Type = 11
 )
 
 const (
@@ -114,27 +118,30 @@ const (
 	eventKindIncomingMetadata  uint64 = 10
 	eventKindOutboxError       uint64 = 11
 	eventKindArkSigned         uint64 = 12
+	eventKindCommitPrepared    uint64 = 13
+	eventKindAbortPrepared     uint64 = 14
 )
 
 const (
-	transferInputOutpointRecordType           tlv.Type = 1
-	transferInputAmountSatRecordType          tlv.Type = 2
-	transferInputClientFamilyRecordType       tlv.Type = 3
-	transferInputClientIndexRecordType        tlv.Type = 4
-	transferInputClientPubKeyRecordType       tlv.Type = 5
-	transferInputOperatorPubKeyRecordType     tlv.Type = 6
-	transferInputExitDelayRecordType          tlv.Type = 7
-	transferInputOwnerLeafScriptRecordType    tlv.Type = 8
-	transferInputPkScriptRecordType           tlv.Type = 9
-	transferInputSpendWitnessScriptRecordType tlv.Type = 10
-	transferInputSpendControlBlockRecordType  tlv.Type = 11
-	transferInputConditionWitnessRecordType   tlv.Type = 12
-	transferInputOwnerLeafPolicyRecordType    tlv.Type = 13
-	transferInputVTXOPolicyRecordType         tlv.Type = 14
-	transferInputRequiredSequenceRecordType   tlv.Type = 15
-	transferInputRequiredLockTimeRecordType   tlv.Type = 16
-	transferInputExternalSignaturesRecordType tlv.Type = 17
-	transferInputReserveEpochRecordType       tlv.Type = 18
+	transferInputOutpointRecordType              tlv.Type = 1
+	transferInputAmountSatRecordType             tlv.Type = 2
+	transferInputClientFamilyRecordType          tlv.Type = 3
+	transferInputClientIndexRecordType           tlv.Type = 4
+	transferInputClientPubKeyRecordType          tlv.Type = 5
+	transferInputOperatorPubKeyRecordType        tlv.Type = 6
+	transferInputExitDelayRecordType             tlv.Type = 7
+	transferInputOwnerLeafScriptRecordType       tlv.Type = 8
+	transferInputPkScriptRecordType              tlv.Type = 9
+	transferInputSpendWitnessScriptRecordType    tlv.Type = 10
+	transferInputSpendControlBlockRecordType     tlv.Type = 11
+	transferInputConditionWitnessRecordType      tlv.Type = 12
+	transferInputOwnerLeafPolicyRecordType       tlv.Type = 13
+	transferInputVTXOPolicyRecordType            tlv.Type = 14
+	transferInputRequiredSequenceRecordType      tlv.Type = 15
+	transferInputRequiredLockTimeRecordType      tlv.Type = 16
+	transferInputExternalSignaturesRecordType    tlv.Type = 17
+	transferInputReserveEpochRecordType          tlv.Type = 18
+	transferInputExternalArkSignaturesRecordType tlv.Type = 19
 )
 
 const (
@@ -164,6 +171,7 @@ type startTransferPayload struct {
 	IdempotencyKey             string
 	DispatchRequestData        []byte
 	AdmissionDeadlineUnixNanos int64
+	PrepareOnly                bool
 }
 
 type recipientPayload struct {
@@ -197,6 +205,10 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 	idempotencyKey := []byte(payload.IdempotencyKey)
 	dispatchRequestData := payload.DispatchRequestData
 	admissionDeadline := uint64(payload.AdmissionDeadlineUnixNanos)
+	var prepareOnly uint8
+	if payload.PrepareOnly {
+		prepareOnly = 1
+	}
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -220,6 +232,9 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			startPayloadDispatchRequestDataType,
 			&dispatchRequestData,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadPrepareOnlyType, &prepareOnly,
 		),
 	}
 
@@ -245,6 +260,7 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		idKey               []byte
 		dispatchRequestData []byte
 		deadline            uint64
+		prepareOnly         uint8
 	)
 
 	records := []tlv.Record{
@@ -268,12 +284,19 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 			startPayloadDispatchRequestDataType,
 			&dispatchRequestData,
 		),
+		tlv.MakePrimitiveRecord(
+			startPayloadPrepareOnlyType, &prepareOnly,
+		),
 	}
 
 	if _, err := decodeBoundedRecords(
 		raw, records...,
 	); err != nil {
 		return startTransferPayload{}, err
+	}
+	if prepareOnly > 1 {
+		return startTransferPayload{}, fmt.Errorf("prepare-only flag " +
+			"must be 0 or 1")
 	}
 
 	inputs, err := decodeTransferInputSnapshotsWithLimits(
@@ -298,6 +321,7 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		IdempotencyKey:             string(idKey),
 		DispatchRequestData:        dispatchRequestData,
 		AdmissionDeadlineUnixNanos: int64(deadline),
+		PrepareOnly:                prepareOnly != 0,
 	}, nil
 }
 
@@ -1289,6 +1313,20 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 			transferInputReserveEpochRecordType, &reserveEpoch,
 		),
 	)
+	if len(input.ExternalArkSignatures) > 0 {
+		blob, err := encodeExternalSignatures(
+			input.ExternalArkSignatures,
+		)
+		if err != nil {
+			return nil, err
+		}
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				transferInputExternalArkSignaturesRecordType,
+				&blob,
+			),
+		)
+	}
 
 	return tlvutil.EncodeRecordsToBytes(records...)
 }
@@ -1310,6 +1348,7 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		controlBlock       []byte
 		condBlob           []byte
 		externalSigBlob    []byte
+		externalArkSigBlob []byte
 		requiredSequence   uint32
 		requiredLockTime   uint32
 		reserveEpoch       uint64
@@ -1376,6 +1415,10 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		tlv.MakePrimitiveRecord(
 			transferInputReserveEpochRecordType, &reserveEpoch,
 		),
+		tlv.MakePrimitiveRecord(
+			transferInputExternalArkSignaturesRecordType,
+			&externalArkSigBlob,
+		),
 	}
 
 	if _, err := decodeBoundedRecords(
@@ -1436,6 +1479,13 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		}
 
 		snap.ExternalSignatures = sigs
+	}
+	if len(externalArkSigBlob) > 0 {
+		sigs, err := decodeExternalSignatures(externalArkSigBlob)
+		if err != nil {
+			return nil, err
+		}
+		snap.ExternalArkSignatures = sigs
 	}
 
 	return snap, nil
@@ -2038,6 +2088,13 @@ func encodeEventPayload(event Event) ([]byte, error) {
 	)
 
 	switch evt := event.(type) {
+	case *CommitPreparedEvent:
+		eventKind = eventKindCommitPrepared
+
+	case *AbortPreparedEvent:
+		eventKind = eventKindAbortPrepared
+		reason = []byte(evt.Reason)
+
 	case *ArkSignedEvent:
 		eventKind = eventKindArkSigned
 		if evt.ArkPSBT == nil {
@@ -2227,8 +2284,6 @@ func encodeEventPayload(event Event) ([]byte, error) {
 
 // decodeEventPayloadWithLimits decodes an event payload and applies receive
 // limits to nested list-shaped event fields.
-//
-//nolint:funlen // One TLV switch owns the complete event wire format.
 func decodeEventPayloadWithLimits(raw []byte,
 	limits ReceiveLimits) (Event, error) {
 
@@ -2290,6 +2345,12 @@ func decodeEventPayloadWithLimits(raw []byte,
 	}
 
 	switch eventKind {
+	case eventKindCommitPrepared:
+		return &CommitPreparedEvent{}, nil
+
+	case eventKindAbortPrepared:
+		return &AbortPreparedEvent{Reason: string(reason)}, nil
+
 	case eventKindArkSigned:
 		ark, err := psbtutil.Parse(arkPSBT)
 		if err != nil {
@@ -2350,43 +2411,10 @@ func decodeEventPayloadWithLimits(raw []byte,
 		return &FailEvent{Reason: string(reason)}, nil
 
 	case eventKindIncomingTransfer:
-		if len(arkPSBT) == 0 {
-			return nil, fmt.Errorf("incoming transfer event ark " +
-				"psbt must be provided")
-		}
-
-		ark, err := psbtutil.Parse(arkPSBT)
-		if err != nil {
-			return nil, err
-		}
-
-		checkpoints, err := decodeCheckpointPSBTsWithLimits(
-			checkpointPSBT, limits,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		ancestors, err := decodePackageArtifactsWithLimits(
-			ancestorPayload, limits,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		recipients, err := decodeIncomingRecipientsWithLimits(
+		return decodeIncomingTransferEvent(
+			arkPSBT, checkpointPSBT, ancestorPayload,
 			recipientPayload, limits,
 		)
-		if err != nil {
-			return nil, err
-		}
-
-		return &IncomingTransferEvent{
-			ArkPSBT:              ark,
-			FinalCheckpointPSBTs: checkpoints,
-			AncestorPackages:     ancestors,
-			Recipients:           recipients,
-		}, nil
 
 	case eventKindIncomingHandled:
 		outpoints, err := decodeOutPointListWithLimits(
@@ -2434,6 +2462,47 @@ func decodeEventPayloadWithLimits(raw []byte,
 	default:
 		return nil, fmt.Errorf("unknown event kind: %d", eventKind)
 	}
+}
+
+// decodeIncomingTransferEvent decodes the list-shaped fields carried by an
+// incoming transfer event under the configured receive limits.
+func decodeIncomingTransferEvent(arkPSBT, checkpointPSBT, ancestorPayload,
+	recipientPayload []byte, limits ReceiveLimits) (Event, error) {
+
+	if len(arkPSBT) == 0 {
+		return nil, fmt.Errorf("incoming transfer event ark psbt " +
+			"must be provided")
+	}
+
+	ark, err := psbtutil.Parse(arkPSBT)
+	if err != nil {
+		return nil, err
+	}
+	checkpoints, err := decodeCheckpointPSBTsWithLimits(
+		checkpointPSBT, limits,
+	)
+	if err != nil {
+		return nil, err
+	}
+	ancestors, err := decodePackageArtifactsWithLimits(
+		ancestorPayload, limits,
+	)
+	if err != nil {
+		return nil, err
+	}
+	recipients, err := decodeIncomingRecipientsWithLimits(
+		recipientPayload, limits,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &IncomingTransferEvent{
+		ArkPSBT:              ark,
+		FinalCheckpointPSBTs: checkpoints,
+		AncestorPackages:     ancestors,
+		Recipients:           recipients,
+	}, nil
 }
 
 // decodeCheckpointPSBTsWithLimits decodes checkpoint PSBT lists using receive

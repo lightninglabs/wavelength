@@ -64,6 +64,10 @@ type TransferInput struct {
 	// ExternalSignatures are tapscript signatures produced by additional
 	// custom-spend participants before the local daemon adds its signature.
 	ExternalSignatures []ExternalTaprootScriptSignature
+
+	// ExternalArkSignatures authorize the final allocation, not the
+	// checkpoint. They must remain distinct even if both leaves match.
+	ExternalArkSignatures []ExternalTaprootScriptSignature
 }
 
 // ExternalTaprootScriptSignature carries one externally produced tapscript

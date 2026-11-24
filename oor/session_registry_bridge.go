@@ -29,6 +29,11 @@ type SessionRegistryStore interface {
 		error,
 	)
 
+	// GetUnfailedSessionByIdempotencyKey loads an outgoing session before
+	// its immutable dispatch-attempt row exists. Failed rows release keys.
+	GetUnfailedSessionByIdempotencyKey(ctx context.Context,
+		key string) (*clientdb.OORSessionRegistryRecord, error)
+
 	// GetDispatchAttemptByIdempotencyKey loads the immutable outgoing
 	// dispatch carrying the given caller key.
 	GetDispatchAttemptByIdempotencyKey(ctx context.Context,

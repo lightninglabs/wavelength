@@ -541,7 +541,7 @@ func (g *GRPCSwapServerConn) AuthorizeInSwapRefund(ctx context.Context,
 		return nil, fmt.Errorf("vHTLC amount must be positive")
 	}
 
-	resp, err := g.client.AuthorizeInSwapRefund(
+	return g.authorizeRefund(
 		ctx, &swaprpc.AuthorizeInSwapRefundRequest{
 			PaymentHash:    append([]byte(nil), paymentHash[:]...),
 			VhtlcOutpoint:  vhtlcOutpoint,
@@ -555,6 +555,40 @@ func (g *GRPCSwapServerConn) AuthorizeInSwapRefund(ctx context.Context,
 			CheckpointPsbt: append([]byte(nil), checkpointPSBT...),
 		},
 	)
+}
+
+// AuthorizeInSwapRefundPackage requests both signatures for an exact refund.
+// A legacy peer may ignore the new fields; the SDK must not publish a
+// checkpoint-only response as a cooperative refund.
+func (g *GRPCSwapServerConn) AuthorizeInSwapRefundPackage(ctx context.Context,
+	req *swaprpc.AuthorizeInSwapRefundRequest) (*InSwapRefundAuthorization,
+	error) {
+
+	if len(req.GetArkPsbt()) == 0 || len(req.GetCheckpointPsbt()) == 0 ||
+		len(req.GetRefundPubkey()) == 0 || req.GetOwnerProof() == nil {
+		return nil, fmt.Errorf("incomplete refund payout package")
+	}
+	auth, err := g.authorizeRefund(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if auth.PayoutSignature == nil {
+		return nil, status.Error(
+			codes.FailedPrecondition,
+			"peer did not authorize the full refund payout",
+		)
+	}
+
+	return auth, nil
+}
+
+// authorizeRefund preserves the shared wire method and both distinct
+// signatures without inferring peer capabilities from the transport type.
+func (g *GRPCSwapServerConn) authorizeRefund(ctx context.Context,
+	req *swaprpc.AuthorizeInSwapRefundRequest) (*InSwapRefundAuthorization,
+	error) {
+
+	resp, err := g.client.AuthorizeInSwapRefund(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -565,17 +599,29 @@ func (g *GRPCSwapServerConn) AuthorizeInSwapRefund(ctx context.Context,
 			"empty signature")
 	}
 
-	return &InSwapRefundAuthorization{
-		Signature: TaprootScriptSignature{
-			PubKey: append([]byte(nil), sig.GetPubkey()...),
-			WitnessScript: append(
-				[]byte(nil), sig.GetWitnessScript()...,
-			),
-			Signature: append([]byte(nil), sig.GetSignature()...),
-			SigHash:   sig.GetSighash(),
-		},
+	result := &InSwapRefundAuthorization{
+		Signature:     refundSignatureFromProto(sig),
 		FailureReason: resp.GetFailureReason(),
-	}, nil
+	}
+	if payout := resp.GetPayoutSignature(); payout != nil {
+		sig := refundSignatureFromProto(payout)
+		result.PayoutSignature = &sig
+	}
+
+	return result, nil
+}
+
+// refundSignatureFromProto separates the two signing targets from the
+// transport response before they are attached to the wallet's package.
+func refundSignatureFromProto(
+	sig *swaprpc.TaprootScriptSignature) TaprootScriptSignature {
+
+	return TaprootScriptSignature{
+		PubKey:        append([]byte(nil), sig.GetPubkey()...),
+		WitnessScript: append([]byte(nil), sig.GetWitnessScript()...),
+		Signature:     append([]byte(nil), sig.GetSignature()...),
+		SigHash:       sig.GetSighash(),
+	}
 }
 
 // SignInSwapForfeit asks the swap server to sign its participant share for one

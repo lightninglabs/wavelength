@@ -168,6 +168,12 @@ type swapClientService struct {
 	// and duplicate in-flight checks before swap creation mutates remote
 	// swapdk-server state.
 	chainParams *chaincfg.Params
+
+	// workerRetryDelay is the pause between daemon-owned attempts to resume
+	// a durable swap that remains pending after a transient driver error.
+	// Keeping the delay on the service makes the retry loop deterministic
+	// in tests without moving retry policy into the swap FSM.
+	workerRetryDelay time.Duration
 }
 
 // receiveScanKey orders durable receives by creation time and payment hash.
@@ -193,6 +199,8 @@ const (
 	// receiveRefillRetryDelay bounds the rate of failed durable rescans.
 	receiveRefillRetryDelay = time.Second
 )
+
+const defaultWorkerRetryDelay = time.Second
 
 // operatorPubKeyFetcher returns the current Ark operator pubkey. It exists so
 // daemon-hosted swap clients can bypass the cached GetInfo snapshot when they
@@ -720,6 +728,7 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 		receiveMinAmount: minAmount,
 		payMinAmount:     minAmount,
 		chainParams:      chainParams,
+		workerRetryDelay: defaultWorkerRetryDelay,
 	}
 	service.pendingReceiveSet = make(map[string]struct{})
 
@@ -2280,18 +2289,18 @@ func (s *swapClientService) startPayWorker(hash lntypes.Hash) {
 		defer s.markInactive(key)
 		defer s.publishHash(hash)
 
-		session, err := s.client.ResumePayViaLightning(s.rootCtx, hash)
-		if err != nil {
-			s.log.Warnf("unable to resume pay swap %s: %v", key,
-				err)
+		s.runSwapWorker(hash, "pay", func(ctx context.Context) error {
+			session, err := s.client.ResumePayViaLightning(
+				ctx, hash,
+			)
+			if err != nil {
+				return err
+			}
 
-			return
-		}
+			_, err = session.Wait(ctx)
 
-		_, err = session.Wait(s.rootCtx)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			s.log.Warnf("pay swap %s stopped: %v", key, err)
-		}
+			return err
+		})
 	})
 }
 
@@ -2331,21 +2340,76 @@ func (s *swapClientService) runReceiveWorker(hash lntypes.Hash, key string) {
 		defer s.finishReceiveWorker(key)
 		defer s.publishHash(hash)
 
-		session, err := s.client.ResumeReceiveViaLightning(
-			s.rootCtx, hash,
-		)
-		if err != nil {
-			s.log.Warnf("unable to resume receive swap %s: %v", key,
-				err)
+		s.runSwapWorker(
+			hash, "receive",
+			func(ctx context.Context) error {
+				session, err :=
+					s.client.ResumeReceiveViaLightning(
+						ctx, hash,
+					)
+				if err != nil {
+					return err
+				}
 
+				_, err = session.Wait(ctx)
+
+				return err
+			},
+		)
+	})
+}
+
+// runSwapWorker drives one durable swap until the SDK reports success, the
+// persisted FSM becomes terminal, or the daemon stops. A Wait or resume error
+// alone is not terminal: transport loss can interrupt the process-local driver
+// while the durable FSM remains resumable.
+func (s *swapClientService) runSwapWorker(hash lntypes.Hash, direction string,
+	drive func(context.Context) error) {
+
+	key := hex.EncodeToString(hash[:])
+	for {
+		err := drive(s.rootCtx)
+		if err == nil || errors.Is(err, context.Canceled) ||
+			s.rootCtx.Err() != nil {
 			return
 		}
 
-		_, err = session.Wait(s.rootCtx)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			s.log.Warnf("receive swap %s stopped: %v", key, err)
+		summary, summaryErr := s.client.GetSwapSummary(s.rootCtx, hash)
+		if errors.Is(summaryErr, swaps.ErrSwapSummaryNotFound) {
+			return
 		}
-	})
+		if summaryErr == nil && !summary.Pending {
+			return
+		}
+
+		if summaryErr != nil {
+			s.log.Warnf("%s swap %s stopped and durable state "+
+				"could not be checked: %v (driver error: %v)",
+				direction, key, summaryErr, err)
+		} else {
+			s.log.Warnf("%s swap %s stopped while still pending; "+
+				"retrying: %v", direction, key, err)
+		}
+
+		delay := s.workerRetryDelay
+		if delay <= 0 {
+			delay = defaultWorkerRetryDelay
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-s.rootCtx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+
+			return
+
+		case <-timer.C:
+		}
+	}
 }
 
 // markActive records that the daemon has an in-process worker responsible for

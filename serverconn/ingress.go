@@ -56,7 +56,7 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 	state AckState) {
 
 	a.log.InfoS(ctx, "Ingress loop starting",
-		slog.String("mailbox_id", a.cfg.LocalMailboxID),
+		slog.String("mailbox_id", a.cfg.replyMailboxID()),
 	)
 
 	var failCount int
@@ -506,7 +506,7 @@ func (a *ServerConnectionActor) pullPhase(ctx context.Context, state *AckState,
 // logIngressExit emits the common ingress shutdown log line.
 func (a *ServerConnectionActor) logIngressExit(ctx context.Context) {
 	a.log.InfoS(ctx, "Ingress loop exiting",
-		slog.String("mailbox_id", a.cfg.LocalMailboxID),
+		slog.String("mailbox_id", a.cfg.replyMailboxID()),
 	)
 }
 
@@ -535,7 +535,7 @@ func (a *ServerConnectionActor) pullBatchWithWait(ctx context.Context,
 	error) {
 
 	resp, err := a.cfg.Edge.Pull(ctx, &mailboxpb.PullRequest{
-		MailboxId:     a.cfg.LocalMailboxID,
+		MailboxId:     a.cfg.replyMailboxID(),
 		MaxEnvelopes:  a.cfg.PullMaxEnvelopes,
 		WaitTimeoutMs: uint32(wait.Milliseconds()),
 		Cursor:        cursor,
@@ -809,7 +809,7 @@ func (a *ServerConnectionActor) ackRemote(
 ) error {
 
 	resp, err := a.cfg.Edge.AckUpTo(ctx, &mailboxpb.AckUpToRequest{
-		MailboxId: a.cfg.LocalMailboxID,
+		MailboxId: a.cfg.replyMailboxID(),
 		Cursor:    cursor,
 	})
 
@@ -821,7 +821,7 @@ func (a *ServerConnectionActor) ackRemote(
 func (a *ServerConnectionActor) loadCheckpoint(ctx context.Context) (AckState,
 	error) {
 
-	actorID := DurableActorID(a.cfg.LocalMailboxID)
+	actorID := a.runtimeID()
 
 	checkpoint, err := a.cfg.Store.LoadCheckpoint(ctx, actorID)
 	if err != nil {
@@ -829,6 +829,15 @@ func (a *ServerConnectionActor) loadCheckpoint(ctx context.Context) (AckState,
 	}
 	if checkpoint == nil {
 		return AckState{}, nil
+	}
+	if checkpoint.ActorID != actorID {
+		return AckState{}, fmt.Errorf("checkpoint actor ID %q does "+
+			"not match ingress runtime %q", checkpoint.ActorID,
+			actorID)
+	}
+	if checkpoint.StateType != ackStateType {
+		return AckState{}, fmt.Errorf("checkpoint state type %q does "+
+			"not match %q", checkpoint.StateType, ackStateType)
 	}
 
 	var state AckState
@@ -963,10 +972,9 @@ func (a *ServerConnectionActor) runFoldedDispatch(ctx context.Context,
 	// skip it. Everything else in the closure derives from the caller's
 	// state and is safe to redo.
 	ctx = withDeliveredOutsideTx(ctx)
-	ctx = context.WithValue(ctx, ingressScopeKey{}, ingressScope{
-		local:  a.cfg.LocalMailboxID,
-		remote: a.cfg.RemoteMailboxID,
-	})
+	ctx = context.WithValue(
+		ctx, ingressScopeKey{}, a.ingressEvidenceScope(),
+	)
 
 	var (
 		newState AckState
@@ -1410,7 +1418,7 @@ func (a *ServerConnectionActor) saveCheckpointTo(ctx context.Context,
 		return err
 	}
 
-	actorID := DurableActorID(a.cfg.LocalMailboxID)
+	actorID := a.runtimeID()
 
 	return store.SaveCheckpoint(ctx, actor.CheckpointParams{
 		ActorID:   actorID,

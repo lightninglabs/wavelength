@@ -313,6 +313,18 @@ const (
 	// NOTE: Appended last so the numeric values of existing statuses used
 	// in SQL queries are unchanged.
 	VTXOStatusExpired
+
+	// VTXOStatusRecoveryOnly identifies an application-owned output whose
+	// descriptor exists only so the common unroller can recover its
+	// on-chain ancestry. It is deliberately excluded from wallet balance,
+	// coin selection, refresh, and VTXO actor recovery. The application FSM
+	// owns its lifecycle and admits the exact final-spend policy to unroll.
+	// It must refresh or materialize the output before BatchExpiry;
+	// relative CSV delays do not extend that absolute deadline.
+	//
+	// NOTE: Appended last so the numeric values of existing statuses used
+	// in SQL queries are unchanged.
+	VTXOStatusRecoveryOnly
 )
 
 // String returns a human-readable representation of the VTXO status.
@@ -344,6 +356,9 @@ func (s VTXOStatus) String() string {
 
 	case VTXOStatusExpired:
 		return "expired"
+
+	case VTXOStatusRecoveryOnly:
+		return "recovery_only"
 
 	default:
 		return "unknown"
