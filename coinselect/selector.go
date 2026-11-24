@@ -181,3 +181,46 @@ func selectAll[T any](candidates []T, amount AmountFunc[T]) (Result[T], error) {
 
 	return Result[T]{Selected: selected, Total: total}, nil
 }
+
+// SelectSequential verifies that a series of funding targets can each be
+// covered in dispatch order from one coin set. Each leg runs largest-first
+// selection against the remaining coins; a leg's non-zero change re-enters
+// the remaining set before the next leg, mirroring how dispatch spends an
+// earlier leg's change (a credit top-up's change funds part of the pay
+// leg). Zero targets are skipped. The result is nil when every leg is
+// covered, or the first failing leg's typed selection error (with its
+// Result totals) otherwise. It is a snapshot, not a reservation.
+func SelectSequential(coins []btcutil.Amount, minChange btcutil.Amount,
+	targets ...btcutil.Amount) error {
+
+	remaining := append([]btcutil.Amount(nil), coins...)
+	sort.Slice(remaining, func(i, j int) bool {
+		return remaining[i] > remaining[j]
+	})
+
+	amount := func(v btcutil.Amount) btcutil.Amount { return v }
+
+	for _, target := range targets {
+		if target <= 0 {
+			continue
+		}
+
+		res, err := LargestFirst(remaining, amount, Request{
+			Target:    target,
+			MinChange: minChange,
+		})
+		if err != nil {
+			return err
+		}
+
+		remaining = remaining[len(res.Selected):]
+		if res.Change > 0 {
+			remaining = append(remaining, res.Change)
+			sort.Slice(remaining, func(i, j int) bool {
+				return remaining[i] > remaining[j]
+			})
+		}
+	}
+
+	return nil
+}

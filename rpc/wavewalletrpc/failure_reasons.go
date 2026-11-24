@@ -25,6 +25,14 @@ const (
 	ReasonAmountExceedsVTXOLimit = "AMOUNT_EXCEEDS_VTXO_LIMIT"
 	ReasonBalanceLimitExceeded   = "BALANCE_LIMIT_EXCEEDED"
 
+	// ReasonInsufficientFunds tags a PrepareSend whose complete quote
+	// cannot be funded by the wallet's live VTXOs under the
+	// minimum-change rule — the same rejection dispatch would issue at
+	// Send time, surfaced at prepare so hosts can disable confirmation.
+	// Distinct from AMOUNT_REQUIRED: the amount is well-formed, the
+	// wallet simply cannot cover it right now.
+	ReasonInsufficientFunds = "INSUFFICIENT_FUNDS"
+
 	// ReasonCreditReceiveUnavailable tags a sub-dust receive that was
 	// routed to the operator's credit subsystem but which the swap server
 	// did not complete (it timed out or errored). It is distinct from

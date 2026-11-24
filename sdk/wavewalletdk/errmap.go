@@ -22,6 +22,7 @@ var reasonToSentinel = map[string]error{
 	wavewalletrpc.ReasonSwapBackendUnavailable:   ErrSwapBackendUnavailable,
 	wavewalletrpc.ReasonAmountExceedsVTXOLimit:   ErrAmountExceedsVTXOLimit,
 	wavewalletrpc.ReasonBalanceLimitExceeded:     ErrBalanceLimitExceeded,
+	wavewalletrpc.ReasonInsufficientFunds:        ErrInsufficientFunds,
 	wavewalletrpc.ReasonCreditReceiveUnavailable: ErrCreditReceiveUnavailable, //nolint:ll
 	wavewalletrpc.ReasonReceiveNotFound:          ErrReceiveNotFound,
 	wavewalletrpc.ReasonReceiveRequestMismatch:   ErrReceiveRequestMismatch,

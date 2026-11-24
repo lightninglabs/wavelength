@@ -176,6 +176,19 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 	if err != nil {
 		return nil, err
 	}
+
+	// A complete quote lets prepare reject what dispatch would reject
+	// later: the wallet's live VTXOs must fund the quote's wallet legs
+	// (credit top-up first, then the Ark funding leg) under the same
+	// minimum-change rule dispatch enforces. Local-only previews cannot
+	// size the outflow and skip the check. The check is a snapshot of
+	// the live set, not a reservation.
+	if preview.totalOutflowKnown {
+		if err := r.checkInvoiceFundable(ctx, quote); err != nil {
+			return nil, err
+		}
+	}
+
 	if quote != nil {
 		// A complete quote replaces the conservative fallback earmark
 		// with the exact amount this plan reserves. No credit quote
@@ -198,6 +211,70 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 	}
 
 	return prepareResponseFromIntent(intent, preview), nil
+}
+
+// checkInvoiceFundable verifies that the wallet's live VTXOs can fund the
+// wallet-paid legs of a complete pay quote: any credit top-up first (its
+// change then funds part of the Ark leg), then the Ark funding leg itself,
+// under the same minimum-change floor dispatch enforces. A shortfall
+// rejects the prepare with ErrInsufficientFunds so hosts do not surface a
+// payable intent for a payment dispatch cannot fund.
+func (r *router) checkInvoiceFundable(ctx context.Context,
+	quote *swapclientrpc.QuotePayResponse) error {
+
+	if quote == nil || r.deps.RPCServer == nil {
+		return nil
+	}
+
+	info, err := r.deps.RPCServer.GetInfo(ctx, &waverpc.GetInfoRequest{})
+	if err != nil {
+		return fmt.Errorf("read funding policy: %w", err)
+	}
+
+	floor := uint64(0)
+	if server := info.GetServerInfo(); server != nil {
+		floor = max(server.GetDustLimit(), server.GetMinVtxoAmountSat())
+	}
+	if floor > math.MaxInt64 {
+		return fmt.Errorf("%w: invalid minimum change policy",
+			ErrSwapBackendUnavailable)
+	}
+
+	liveVTXOs, err := r.listLiveVTXOsForLeave(ctx)
+	if err != nil {
+		return err
+	}
+
+	coins := make([]btcutil.Amount, 0, len(liveVTXOs))
+	var liveTotal btcutil.Amount
+	for _, v := range liveVTXOs {
+		amt := btcutil.Amount(v.GetAmountSat())
+		coins = append(coins, amt)
+		liveTotal += amt
+	}
+
+	cq := quote.GetCreditQuote()
+	legs := []btcutil.Amount{
+		btcutil.Amount(cq.GetCreditTopupSat()),
+		btcutil.Amount(quote.GetAmountSat()),
+	}
+
+	var walletLegs btcutil.Amount
+	for _, leg := range legs {
+		walletLegs += leg
+	}
+
+	if err := coinselect.SelectSequential(
+		coins, btcutil.Amount(floor), legs...,
+	); err != nil {
+		return fmt.Errorf(
+			"%w: quote requires %d sat from wallet VTXOs, %d sat "+
+				"spendable", ErrInsufficientFunds,
+			int64(walletLegs), int64(liveTotal),
+		)
+	}
+
+	return nil
 }
 
 // sendInvoiceIntent routes a prepared BOLT-11 invoice. A credit-backed pay
