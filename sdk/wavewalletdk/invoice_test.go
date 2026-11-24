@@ -126,7 +126,13 @@ func TestDecodeInvoice(t *testing.T) {
 		"regtest",
 	)
 	require.ErrorContains(t, err, "expired")
-	_, err = DecodeInvoice(amountless[:len(amountless)-1]+"q", "regtest")
+	// Keep the character in the Bech32 alphabet but always change it.
+	last := len(amountless) - 1
+	replacement := "q"
+	if amountless[last] == 'q' {
+		replacement = "p"
+	}
+	_, err = DecodeInvoice(amountless[:last]+replacement, "regtest")
 	require.Error(t, err)
 	_, err = DecodeInvoice("lnbcrt1invalid", "regtest")
 	require.Error(t, err)

@@ -27,12 +27,20 @@ import (
 // main installs the private browser transport entry point and then parks the Go
 // runtime so the exported callbacks stay live for the lifetime of the page.
 func main() {
-	js.Global().Set("wavewalletdkCall", js.FuncOf(walletCall))
+	installWalletCall()
 	js.Global().Call("dispatchEvent", js.Global().Get("CustomEvent").New(
 		"wavewalletdk-ready",
 	))
 
 	select {}
+}
+
+// installWalletCall exposes the dispatch callback for the lifetime of the VM.
+func installWalletCall() js.Func {
+	call := js.FuncOf(walletCall)
+	js.Global().Set("wavewalletdkCall", call)
+
+	return call
 }
 
 // walletCall is the private JS transport dispatcher used by a typed host SDK.
@@ -134,6 +142,15 @@ func walletCall(_ js.Value, args []js.Value) any {
 
 	case "lookupReceive":
 		return promise(jsonVerb(req, mobile.LookupReceive))
+
+	case "promoteVTXO":
+		return promise(jsonVerb(req, mobile.PromoteVTXO))
+
+	case "receiveOnActiveChannel":
+		return promise(jsonVerb(req, mobile.ReceiveOnActiveChannel))
+
+	case "payOnActiveChannel":
+		return promise(jsonVerb(req, mobile.PayOnActiveChannel))
 
 	case "prepareSend":
 		return promise(jsonVerb(req, mobile.PrepareSend))
