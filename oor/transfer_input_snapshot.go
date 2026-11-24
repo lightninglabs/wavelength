@@ -83,7 +83,8 @@ type TransferInputSnapshot struct {
 
 	// ExternalSignatures are pre-collected tapscript signatures needed to
 	// resume custom OOR spends after restart.
-	ExternalSignatures []ExternalTaprootScriptSignature
+	ExternalSignatures    []ExternalTaprootScriptSignature
+	ExternalArkSignatures []ExternalTaprootScriptSignature
 }
 
 // ToSnapshot converts the transfer input into a portable snapshot.
@@ -136,6 +137,9 @@ func (i *TransferInput) ToSnapshot() (*TransferInputSnapshot, error) {
 		snap.RequiredLockTime = i.CustomSpend.RequiredLockTime
 	}
 	snap.ExternalSignatures = cloneExternalSignatures(i.ExternalSignatures)
+	snap.ExternalArkSignatures = cloneExternalSignatures(
+		i.ExternalArkSignatures,
+	)
 
 	return snap, nil
 }
@@ -241,6 +245,9 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 	}
 	result.ExternalSignatures = cloneExternalSignatures(
 		snap.ExternalSignatures,
+	)
+	result.ExternalArkSignatures = cloneExternalSignatures(
+		snap.ExternalArkSignatures,
 	)
 
 	// For custom spend paths, use the stored PkScript instead of

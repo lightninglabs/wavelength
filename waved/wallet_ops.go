@@ -188,6 +188,13 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 	inputs := make([]oor.TransferInput, 0, len(customInputs))
 
 	for _, ci := range customInputs {
+		if ci == nil {
+			return nil, fmt.Errorf("missing custom input")
+		}
+		if !ci.PreserveSourceOwners && len(ci.PayoutSignatures) != 0 {
+			return nil, fmt.Errorf("payout signatures require " +
+				"preserve_source_owners")
+		}
 		outpoint, err := parseOutpointString(ci.Outpoint)
 		if err != nil {
 			return nil, fmt.Errorf("parse outpoint %q: %w",
@@ -210,6 +217,14 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 				return nil, vtxo.ErrAssetVTXORequiresTransition
 			}
 			desc = stored
+		}
+
+		if ci.PreserveSourceOwners {
+			if err := checkCooperativeFunding(
+				ci, desc, operatorKey,
+			); err != nil {
+				return nil, err
+			}
 		}
 
 		// If the caller provided amount and pkscript, build
@@ -288,8 +303,12 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 			}
 
 			if len(ci.SpendPath) > 0 {
+				deriveOwnerLeaf := findSettlementOwnerLeaf
+				if ci.PreserveSourceOwners {
+					deriveOwnerLeaf = cooperativeOwnerLeaf
+				}
 				ownerLeaf, ownerLeafPolicy, err =
-					findSettlementOwnerLeaf(
+					deriveOwnerLeaf(
 						template, clientKey.PubKey,
 						operatorKey, ci.SpendPath,
 					)
@@ -343,6 +362,15 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 				"for %s: %w", outpoint, err)
 		}
 
+		payoutSigs, err := customTaprootScriptSignatures(
+			ci.PayoutSignatures,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("decode payout signatures: %w",
+				err)
+		}
+
+		input.ExternalArkSignatures = payoutSigs
 		inputs = append(inputs, input)
 	}
 
