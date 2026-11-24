@@ -99,6 +99,12 @@ type Config struct {
 	// transport. Empty selects the daemon network+transport default.
 	SwapServerAddress string
 
+	// ArkChannelsEnabled permits explicit channel open, pay and receive.
+	// Ordinary operations keep their existing rail, and an empty wallet
+	// does not start a peer on opt-in alone. Keep the same DataDir for
+	// recovery; existing channels remain protected without this opt-in.
+	ArkChannelsEnabled bool
+
 	// SwapNotificationIssuer pins the configured swap source's compressed
 	// public identity. Empty leaves swap notifications unsupported.
 	SwapNotificationIssuer string

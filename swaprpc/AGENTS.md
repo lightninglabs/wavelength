@@ -92,10 +92,9 @@ because they are part of the wire contract, not of either side's logic.
   shared by the optional Ark-channel rail and the ordinary vHTLC rail. The
   server quote does not claim that the channel rail won; that outcome is
   reported later by the daemon's `swapclientrpc` settlement type.
-- `RequestChannelIdRequest` field 7 and `RequestChannelIdResponse` field 10
-  are reserved under the retired name `channel_backing_fee_sat`. Receives no
-  longer negotiate that legacy fee reserve on the wire. Never reuse reserved
-  field numbers or names.
+- Both messages reserve the retired name `channel_backing_fee_sat`, not
+  its old numbers. Keep the ordinary `owner_proof` and
+  `invoice_routing_pubkey` fields on their existing numbers.
 - `SwapMailboxEvent` is a proto oneof: read the populated variant, don't
   assume `OutSwapHtlcEvent` is the only case as new event kinds are added.
 

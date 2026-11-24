@@ -26,6 +26,12 @@ on:
   pull_request:
     paths:
       - "sdk/wavewalletdk/**"
+      - "cmd/wavewalletdk-wasm/**"
+      - "arkchannel/**"
+      - "lnruntime/**"
+      - "rpc/arkchannelrpc/**"
+      - "rpc/wavewalletrpc/**"
+      - "waved/*ark_channel*"
       - "sdk/swaps/**"
       - "db/**"
       - "lwwallet/**"
@@ -124,6 +130,16 @@ jobs:
           GOOS=js GOARCH=wasm go test \
             -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
             -run '^TestWASM.*OpenRetry$' ./db ./lwwallet
+
+      - name: Test channel bindings and persistent storage under WASM
+        if: matrix.sqlite == 'host'
+        run: |
+          go mod download github.com/lightninglabs/go-wasmsqlite
+          sqlite_dir=$(go list -m -f '{{.Dir}}' github.com/lightninglabs/go-wasmsqlite)
+          GOOS=js GOARCH=wasm go test -tags="${MOBILE_TAGS}" \
+            -exec="node ${sqlite_dir}/scripts/node-wasm-test-exec.cjs" \
+            -run '^Test(ChannelSQLReopen|WASMArkChannelDispatch|ArkChannelBindingDispatch)$' \
+            ./db ./cmd/wavewalletdk-wasm ./sdk/wavewalletdk/mobile
 
       - name: Test mobile facade and SQLite stores
         env:

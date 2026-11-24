@@ -118,6 +118,29 @@ func TestReceiveErrorMarksLifecycleCancellation(t *testing.T) {
 	}
 }
 
+// TestParseArkChannelOptIn covers the JSON boundary used by mobile and WASM.
+func TestParseArkChannelOptIn(t *testing.T) {
+	for _, raw := range []string{
+		"",
+		"{}",
+		`{"ark_channels_enabled":false}`,
+	} {
+		cfg, err := parseConfig(raw)
+		if err != nil || cfg.ArkChannelsEnabled {
+			t.Fatalf("unexpected channel config for %q: %v", raw,
+				err)
+		}
+	}
+	cfg, err := parseConfig(`{"ark_channels_enabled":true,
+		"server_transport":"rest","swap_server_transport":"rest"}`)
+	if err != nil || !cfg.ArkChannelsEnabled ||
+		cfg.ServerTransport != wavewalletdk.TransportREST ||
+		cfg.SwapServerTransport != wavewalletdk.TransportREST {
+
+		t.Fatalf("channel transport opt-in not preserved: %v", err)
+	}
+}
+
 // TestParseConfigEmptyUsesDefaults verifies that an empty config string yields
 // the wavewalletdk defaults rather than a zero config.
 func TestParseConfigEmptyUsesDefaults(t *testing.T) {
