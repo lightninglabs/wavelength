@@ -3,6 +3,7 @@ package tapassets
 import (
 	"bytes"
 	"fmt"
+	"sort"
 
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/tap-sdk/customanchor"
@@ -74,7 +75,9 @@ func claimInputsFromCommit(committed *commitResult,
 }
 
 // claimInputFromOutput extends the proof path of one leaf asset's input with
-// the leaf transition.
+// the leaf transition. A transition that merges inputs extends the path of its
+// first virtual input, which its proof spends, and carries the other inputs'
+// paths as co-input paths.
 func claimInputFromOutput(committed *commitResult,
 	output *commitOutput) (*AssetVTXOClaimInput, error) {
 
@@ -83,31 +86,47 @@ func claimInputFromOutput(committed *commitResult,
 		return nil, fmt.Errorf("asset is not OP_TRUE locked")
 	}
 
-	var input *commitInput
+	var inputs []*commitInput
 	for idx := range committed.inputs {
 		candidate := &committed.inputs[idx]
-		if candidate.packetRole != output.packetRole ||
-			candidate.packetIndex != output.packetIndex {
+		if candidate.packetRole == output.packetRole &&
+			candidate.packetIndex == output.packetIndex {
 
-			continue
+			inputs = append(inputs, candidate)
 		}
-		if input != nil {
-			return nil, fmt.Errorf("leaf transition merges asset " +
-				"inputs")
-		}
-		input = candidate
 	}
-	if input == nil {
+	if len(inputs) == 0 {
 		return nil, fmt.Errorf("leaf transition has no asset input")
 	}
+	sort.Slice(inputs, func(i, j int) bool {
+		return inputs[i].virtualInputIndex < inputs[j].virtualInputIndex
+	})
+	for idx, input := range inputs {
+		if input.virtualInputIndex != uint32(idx) {
+			return nil, fmt.Errorf("leaf transition input " +
+				"indexes are not contiguous")
+		}
+		if input.issuanceID != output.issuanceID {
+			return nil, fmt.Errorf("leaf transition input %d has "+
+				"another issuance", idx)
+		}
+	}
 
-	path, err := inputProofPath(input.proofSource)
+	path, err := inputProofPath(inputs[0].proofSource)
 	if err != nil {
 		return nil, err
 	}
-	path.Steps = append(path.Steps, customanchor.ProofPathStep{
+	step := customanchor.ProofPathStep{
 		TransitionProof: bytes.Clone(output.proofBlob),
-	})
+	}
+	for _, input := range inputs[1:] {
+		coPath, err := inputProofPath(input.proofSource)
+		if err != nil {
+			return nil, err
+		}
+		step.CoInputPaths = append(step.CoInputPaths, coPath)
+	}
+	path.Steps = append(path.Steps, step)
 
 	return &AssetVTXOClaimInput{
 		Amount:        output.amount,
