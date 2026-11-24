@@ -58,7 +58,13 @@ func TestValidateChildScriptsBitcoin(t *testing.T) {
 	err = tree.ValidateChildScripts()
 	require.ErrorContains(t, err, "does not match child cosigners")
 
+	// Assert both path-validation entry points as delegation guards: each
+	// must keep delegating to ValidateChildScripts, and its own assertion
+	// here catches a refactor that drops that delegation.
 	_, err = tree.ValidatePath(ownerKeys[0], leaves[0], operatorKey)
+	require.ErrorContains(t, err, "child scripts invalid")
+
+	err = tree.VerifyVTXOPath(ownerKeys[0], leaves[0].PkScript)
 	require.ErrorContains(t, err, "child scripts invalid")
 }
 
