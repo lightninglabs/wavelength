@@ -84,4 +84,7 @@ type ReceiveSwap struct {
 	DustLimitSat                         int64
 	RequestID                            sql.NullString
 	Memo                                 string
+	ReservedScid                         []byte
+	ChannelReceiveEnabled                bool
+	ChannelID                            []byte
 }

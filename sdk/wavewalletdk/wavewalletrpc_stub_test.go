@@ -34,4 +34,8 @@ func TestStartRequiresWalletRPC(t *testing.T) {
 	client, err := Start(context.Background(), Config{})
 	require.Nil(t, client)
 	require.ErrorIs(t, err, ErrWalletRPCUnavailable)
+
+	client, err = Start(t.Context(), Config{ArkChannelsEnabled: true})
+	require.Nil(t, client)
+	require.ErrorIs(t, err, ErrWalletRPCUnavailable)
 }

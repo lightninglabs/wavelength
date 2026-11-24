@@ -20,6 +20,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/swaprecovery"
 	"github.com/lightninglabs/wavelength/swaprpc"
@@ -37,6 +38,7 @@ import (
 type testInvoiceCreator struct {
 	invoice       *invoices.Invoice
 	paymentHash   lntypes.Hash
+	createErr     error
 	lastAuthKey   keychain.SingleKeyMessageSigner
 	lastMemo      string
 	authKeys      []keychain.SingleKeyMessageSigner
@@ -55,7 +57,7 @@ func (c *testInvoiceCreator) CreateInvoice(_ context.Context, _ btcutil.Amount,
 		)
 	}
 
-	return c.invoice, c.paymentHash, nil
+	return c.invoice, c.paymentHash, c.createErr
 }
 
 // CreateInvoiceWithKey returns the preconfigured invoice and payment hash.
@@ -209,6 +211,309 @@ func TestStartReceiveDerivesReceiveAuthKeyPerPaymentHash(t *testing.T) {
 			creator.authKeys[1].PubKey(),
 		),
 	)
+}
+
+// TestArkChannelReceiveSettlesDirectly proves invoice creation installs and
+// registers the private destination before publication, and raises the final
+// route-hint delta so the hub's incoming HTLC can nest private delivery.
+func TestArkChannelReceiveSettlesDirectly(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	creator := &testInvoiceCreator{invoice: &invoices.Invoice{
+		PaymentRequest: []byte("lnrtest1channel"),
+	}}
+	serverConn := &testSwapServerConn{hint: &RouteHint{
+		NodeID:    serverPriv.PubKey().SerializeCompressed(),
+		ChannelID: 99, CltvExpiryDelta: 40,
+	}}
+	channelID := arkchannel.ID{1, 2, 3}
+	bridge := &testArkChannelPaymentBridge{
+		waitChannelID: channelID,
+	}
+	client := NewSwapClient(
+		serverConn, &testDaemonConn{
+			identityKey: clientPriv.PubKey(),
+			operatorKey: operatorPriv.PubKey(),
+			receiveAllocErr: errors.New(
+				"channel receive must not allocate a " +
+					"vHTLC claim",
+			),
+		}, nil, creator,
+	)
+	client.SetArkChannelPaymentBridge(bridge, true)
+	client.SetOutSwapEventReceiver(nil)
+
+	session, err := client.StartReceiveViaArkChannel(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.NoError(t, err)
+	require.Equal(t, session.Preimage, bridge.preparePreimage)
+	require.Equal(t, btcutil.Amount(42_000), bridge.prepareAmount)
+	require.Equal(t, session.PaymentHash, bridge.registerHash)
+	require.Equal(t, uint64(99), bridge.registerSCID)
+	require.True(t, session.channelReceiveEnabled)
+	require.Len(t, creator.lastHintPaths, 1)
+	require.Equal(
+		t, uint32(616), creator.lastHintPaths[0][0].CltvExpiryDelta,
+	)
+
+	result, err := session.Wait(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, SettlementTypeArkChannel, result.SettlementType)
+	require.Equal(t, [32]byte(channelID), result.ChannelID)
+	require.EqualValues(t, 42_000, result.AmountSat)
+	require.Equal(t, ReceiveStateCompleted, session.State())
+	require.False(t, session.channelReceiveEnabled)
+	require.Equal(t, 1, bridge.settleCalls)
+	require.Equal(t, session.Preimage, bridge.settlePreimage)
+	require.Zero(t, bridge.cancelCalls)
+}
+
+// TestArkChannelReceiveRejectsDifferentChannel proves a valid HTLC on another
+// native channel cannot authorize releasing this invoice's preimage.
+func TestArkChannelReceiveRejectsDifferentChannel(t *testing.T) {
+	bridge := &testArkChannelPaymentBridge{waitChannelID: arkchannel.ID{2}}
+	session := &ReceiveSession{
+		client: &SwapClient{
+			channelBridge: bridge,
+		},
+		state:                 ReceiveStateInvoiceCreated,
+		channelReceiveEnabled: true, channelID: arkchannel.ID{
+			1,
+		},
+	}
+	err := session.waitForHTLCEvent(t.Context())
+	require.ErrorContains(t, err, "different channel")
+	require.Zero(t, bridge.settleCalls)
+}
+
+// TestArkChannelReceiveInvoiceFailureCancelsRegistration proves a successful
+// channel registration cannot survive failure before invoice publication.
+func TestArkChannelReceiveInvoiceFailureCancelsRegistration(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	createErr := errors.New("invoice publication failed")
+	creator := &testInvoiceCreator{createErr: createErr}
+	serverConn := &testSwapServerConn{hint: &RouteHint{
+		NodeID:    serverPriv.PubKey().SerializeCompressed(),
+		ChannelID: 99, CltvExpiryDelta: 40,
+	}}
+	bridge := &testArkChannelPaymentBridge{}
+	client := NewSwapClient(
+		serverConn, &testDaemonConn{
+			identityKey: clientPriv.PubKey(),
+			operatorKey: operatorPriv.PubKey(),
+		}, nil, creator,
+	)
+	client.SetArkChannelPaymentBridge(bridge, true)
+
+	_, err = client.StartReceiveViaArkChannel(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.ErrorIs(t, err, createErr)
+	require.NotZero(t, bridge.registerSCID)
+	require.Equal(t, 1, bridge.cancelCalls)
+	require.Equal(t, bridge.registerHash, bridge.cancelHash)
+	require.Equal(
+		t, arkChannelReceiveSetupFailureReason, bridge.cancelReason,
+	)
+}
+
+// TestRaiseFinalRouteHintCLTV proves channel receive raises only final virtual
+// hops, retains an already safer delta, and rejects values BOLT 11 cannot
+// encode.
+func TestRaiseFinalRouteHintCLTV(t *testing.T) {
+	t.Parallel()
+
+	paths := [][]*RouteHint{
+		{
+			{
+				ChannelID:       1,
+				CltvExpiryDelta: 20,
+			},
+			{
+				ChannelID:       99,
+				CltvExpiryDelta: 40,
+			},
+		},
+		{
+			{
+				ChannelID:       99,
+				CltvExpiryDelta: 700,
+			},
+		},
+	}
+	require.NoError(t, raiseFinalRouteHintCLTV(paths, 616))
+	require.Equal(t, uint32(20), paths[0][0].CltvExpiryDelta)
+	require.Equal(t, uint32(616), paths[0][1].CltvExpiryDelta)
+	require.Equal(t, uint32(700), paths[1][0].CltvExpiryDelta)
+
+	require.Error(t, raiseFinalRouteHintCLTV(paths, 0))
+	require.Error(t, raiseFinalRouteHintCLTV(paths, 1<<16))
+
+	invalid := [][]*RouteHint{
+		{
+			{
+				CltvExpiryDelta: 40,
+			},
+		},
+		{},
+	}
+	require.Error(t, raiseFinalRouteHintCLTV(invalid, 616))
+	require.Equal(t, uint32(40), invalid[0][0].CltvExpiryDelta)
+}
+
+// TestArkChannelReceiveSetupFailsClosed verifies registration failure cannot
+// return a usable vHTLC invoice.
+func TestArkChannelReceiveSetupFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		prepareErr   error
+		registerErr  error
+		wantRegister bool
+	}{
+		{
+			name:       "prepare unavailable",
+			prepareErr: errors.New("daemon unavailable"),
+		},
+		{
+			name:         "register unavailable",
+			registerErr:  errors.New("hub unavailable"),
+			wantRegister: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			clientPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+			operatorPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+			serverPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+			creator := &testInvoiceCreator{
+				invoice: &invoices.Invoice{
+					PaymentRequest: []byte(
+						"lnrtest1unpublished",
+					),
+				},
+			}
+			serverConn := &testSwapServerConn{hint: &RouteHint{
+				NodeID: serverPriv.
+					PubKey().
+					SerializeCompressed(),
+				ChannelID: 99, CltvExpiryDelta: 40,
+			}}
+			bridge := &testArkChannelPaymentBridge{
+				prepareErr:  test.prepareErr,
+				registerErr: test.registerErr,
+			}
+			client := NewSwapClient(
+				serverConn, &testDaemonConn{
+					identityKey: clientPriv.PubKey(),
+					operatorKey: operatorPriv.PubKey(),
+				}, nil, creator,
+			)
+			client.SetArkChannelPaymentBridge(bridge, true)
+
+			session, err := client.StartReceiveViaArkChannel(
+				t.Context(), btcutil.Amount(42_000),
+			)
+			require.Error(t, err)
+			require.Nil(t, session)
+			require.Empty(t, creator.lastHintPaths)
+			require.Equal(
+				t, test.wantRegister, bridge.registerSCID != 0,
+			)
+			require.Equal(t, 1, bridge.cancelCalls)
+			require.Equal(
+				t, arkChannelReceiveSetupFailureReason,
+				bridge.cancelReason,
+			)
+
+			// The same client can request a separate ordinary
+			// invoice.
+			session, err = client.StartReceiveViaLightning(
+				t.Context(), 42_000,
+			)
+			require.NoError(t, err)
+			require.NotEmpty(t, session.Invoice)
+			require.False(t, session.channelReceiveEnabled)
+			require.NotEqual(
+				t, session.PaymentHash, bridge.cancelHash,
+			)
+			require.Equal(t, 1, bridge.cancelCalls)
+		})
+	}
+}
+
+// TestArkChannelReceiveTerminalFailureCancelsPrivateRail verifies a terminal
+// non-channel result cannot leave its hold invoice eligible for later payment.
+func TestArkChannelReceiveTerminalFailureCancelsPrivateRail(t *testing.T) {
+	t.Parallel()
+
+	bridge := &testArkChannelPaymentBridge{}
+	client := NewSwapClient(nil, nil, nil, nil)
+	client.SetArkChannelPaymentBridge(bridge, true)
+	session := &ReceiveSession{
+		client: client,
+		PaymentHash: lntypes.Hash{
+			10,
+			11,
+			12,
+		},
+		state:                 ReceiveStateInvoiceCreated,
+		channelReceiveEnabled: true,
+	}
+	cause := errors.New("invalid channel payment")
+
+	err := session.failTerminal(
+		t.Context(), cause.Error(), cause, nil,
+	)
+	require.ErrorIs(t, err, cause)
+	require.Equal(t, ReceiveStateFailed, session.State())
+	require.False(t, session.channelReceiveEnabled)
+	require.Equal(t, 1, bridge.cancelCalls)
+	require.Equal(
+		t, arkChannelReceiveTerminalReason, bridge.cancelReason,
+	)
+}
+
+// TestArkChannelReceiveExpiryCancelsRegistration verifies an unpaid channel
+// invoice expires without touching the vHTLC event receiver.
+func TestArkChannelReceiveExpiryCancelsRegistration(t *testing.T) {
+	bridge := &testArkChannelPaymentBridge{wait: make(chan struct{})}
+	client := NewSwapClient(nil, nil, nil, nil)
+	client.SetArkChannelPaymentBridge(bridge, true)
+	client.overdueReceivePollWindow = time.Millisecond
+	session := &ReceiveSession{
+		client: client, channelID: arkchannel.ID{
+			1,
+		},
+		channelReceiveEnabled: true, state: ReceiveStateInvoiceCreated,
+		deadline: time.Now().Add(-time.Second),
+	}
+	_, err := session.Wait(t.Context())
+	require.ErrorIs(t, err, errSwapExpired)
+	require.Equal(t, ReceiveStateExpired, session.State())
+	require.Equal(t, 1, bridge.cancelCalls)
+	require.Zero(t, bridge.settleCalls)
 }
 
 // TestStartReceiveEmbedsAllRouteHintPaths verifies every alternative
@@ -1519,6 +1824,95 @@ type testSwapServerConn struct {
 	lastRecoverableProof *swaprpc.SwapOwnerProof
 }
 
+type testArkChannelPaymentBridge struct {
+	preparePreimage  lntypes.Preimage
+	prepareAmount    btcutil.Amount
+	prepareErr       error
+	registerHash     lntypes.Hash
+	registerAmount   btcutil.Amount
+	registerSCID     uint64
+	registerCLTV     uint32
+	registerErr      error
+	waitChannelID    arkchannel.ID
+	waitErr          error
+	wait             <-chan struct{}
+	settlePreimage   lntypes.Preimage
+	settleCalls      int
+	settleErr        error
+	cancelHash       lntypes.Hash
+	cancelReason     string
+	cancelCalls      int
+	cancelErr        error
+	cancelContextErr error
+}
+
+func (b *testArkChannelPaymentBridge) PrepareIncomingPayment(_ context.Context,
+	preimage lntypes.Preimage, amount btcutil.Amount) error {
+
+	b.preparePreimage = preimage
+	b.prepareAmount = amount
+
+	return b.prepareErr
+}
+
+func (b *testArkChannelPaymentBridge) RegisterIncomingPayment(_ context.Context,
+	hash lntypes.Hash, amount btcutil.Amount, scid uint64) (arkchannel.ID,
+	uint32, error) {
+
+	b.registerHash = hash
+	b.registerAmount = amount
+	b.registerSCID = scid
+
+	delta := b.registerCLTV
+	if delta == 0 {
+		delta = 616
+	}
+
+	id := b.waitChannelID
+	if id == (arkchannel.ID{}) {
+		id = arkchannel.ID{1}
+	}
+
+	return id, delta, b.registerErr
+}
+
+func (b *testArkChannelPaymentBridge) WaitIncomingPayment(ctx context.Context,
+	_ lntypes.Hash) (arkchannel.ID, error) {
+
+	if b.wait != nil {
+		select {
+		case <-ctx.Done():
+			return arkchannel.ID{}, ctx.Err()
+
+		case <-b.wait:
+		}
+	}
+
+	return b.waitChannelID, b.waitErr
+}
+
+// SettleIncomingPayment records the selected channel result in tests.
+func (b *testArkChannelPaymentBridge) SettleIncomingPayment(_ context.Context,
+	preimage lntypes.Preimage) error {
+
+	b.settleCalls++
+	b.settlePreimage = preimage
+
+	return b.settleErr
+}
+
+// CancelIncomingPayment records release of the unused channel rail in tests.
+func (b *testArkChannelPaymentBridge) CancelIncomingPayment(ctx context.Context,
+	hash lntypes.Hash, reason string) error {
+
+	b.cancelCalls++
+	b.cancelHash = hash
+	b.cancelReason = reason
+	b.cancelContextErr = ctx.Err()
+
+	return b.cancelErr
+}
+
 type testIncomingEventReceiver struct {
 	notification *IncomingVHTLCNotification
 }
@@ -2308,9 +2702,9 @@ func acceptTestOutSwapHtlcEvent(t *testing.T, client *SwapClient,
 	require.Equal(t, ReceiveStateHTLCEventAccepted, session.State())
 }
 
-// TestWaitIncomingVHTLCNotificationRejectsMissingAckCursor verifies ack
+// TestReceiveIncomingVHTLCNotificationRejectsMissingAckCursor verifies ack
 // metadata is checked before the event is durably accepted.
-func TestWaitIncomingVHTLCNotificationRejectsMissingAckCursor(t *testing.T) {
+func TestReceiveIncomingVHTLCNotificationRejectsMissingAckCursor(t *testing.T) {
 	t.Parallel()
 
 	clientPriv, err := btcec.NewPrivateKey()
@@ -2332,9 +2726,7 @@ func TestWaitIncomingVHTLCNotificationRejectsMissingAckCursor(t *testing.T) {
 		clientPubKey: clientPriv.PubKey(),
 	}
 
-	_, err = session.waitIncomingVHTLCNotification(
-		t.Context(), t.Context(), nil,
-	)
+	_, err = session.receiveIncomingVHTLCNotification(t.Context())
 	require.ErrorContains(t, err, "incoming vHTLC ack cursor")
 	require.Equal(t, ReceiveStateInvoiceCreated, session.State())
 	require.Zero(t, session.pendingHTLCAckCursor)
@@ -4286,8 +4678,8 @@ func TestReceiveSessionOverdueInvoiceAcceptsDeliveredEvent(t *testing.T) {
 	client := NewSwapClientWithStore(
 		serverConn, daemonConn, nil, creator, store,
 	)
-	// The cached event is already delivered, so acceptance must persist
-	// under the parent context even after the polling window closes.
+	// Expire the polling context synchronously. The cached event is
+	// already delivered, so acceptance must use the caller's context.
 	client.overdueReceivePollWindow = 0
 	useTestOnionDecoder(client, 42_000)
 

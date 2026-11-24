@@ -8,6 +8,8 @@ FSM-driven flows using the Loop FSM engine, coordinating with a remote
 swap server and the local Ark daemon to fund, claim, or refund on-chain
 vHTLCs. With `NewSwapClientWithStore`, persists every state transition in
 an isolated SQLite database; `NewSwapClient` retains state in memory.
+`StartReceiveViaArkChannel` issues a separate invoice for settlement on an
+existing active channel. `StartReceiveViaLightning` uses ordinary swap settlement.
 Also handles same-Ark (in-Ark) vHTLC settlement where sender and receiver
 settle a vHTLC inside the same Ark instance without bridging through
 Lightning.
@@ -19,7 +21,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/swap
 - `SwapClient` — top-level entry point. Constructed via `NewSwapClient`
   (no persistence) or `NewSwapClientWithStore` (SQLite-backed). Holds
   an `OutSwapEventReceiver` overridable via
-  `SetOutSwapEventReceiver`.
+  `SetOutSwapEventReceiver` and an optional daemon-owned
+  `ArkChannelPaymentBridge` installed via
+  `SetArkChannelPaymentBridge`.
 - `PaySession` — Ark-to-Lightning pay FSM:
   `Created → SwapCreated → FundingInitiated → VHTLCFunded →
   WaitingForClaim → Completed` (or `Expired` / `RefundInitiated →
@@ -30,6 +34,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/swap
   `Failed`). `HTLCEventAccepted` becomes authoritative after the configured
   persistence step succeeds. With a store it is a crash-durable checkpoint,
   so funding detection resumes without re-driving mailbox delivery.
+  A channel-enabled receive may
+  instead move directly from `InvoiceCreated` to `Completed` after an active
+  channel is recorded and its private hold invoice is settled.
 - `MailboxOutSwapEventReceiver` — mailbox-backed receiver. Pulls
   out-swap HTLC events from a `mailbox/pb` edge keyed by a per-session
   mailbox ID derived from the client identity key and payment hash.
@@ -56,9 +63,15 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/swap
 - `IncomingVHTLCEventReceiver` — interface for receivers that
   handle both Lightning-backed and same-Ark vHTLC events; implemented
   by `MailboxOutSwapEventReceiver`.
-- `SettlementType` — `SettlementTypeLightning`, `SettlementTypeInArk`
-  (returned in `InSwapConfig` identifying how the server bridges
-  payment).
+- `SettlementType` — Identifies the selected rail:
+  `SettlementTypeLightning`, `SettlementTypeInArk`,
+  `SettlementTypeCredit`, `SettlementTypeMixed`, and
+  `SettlementTypeArkChannel`. The Ark-channel value is a receive outcome; pay
+  quote validation rejects it.
+- `ArkChannelPaymentBridge` — Narrow daemon-owned boundary with prepare,
+  register, wait, settle, and cancel operations for an incoming payment. The
+  SDK owns receive orchestration and persistence, while the daemon and lnd own
+  the native invoice and preimage release on the registered channel.
 - `Store` — isolated SQLite persistence. Runs its own migration table
   (`swap_client_schema_migrations`) separate from the main daemon DB.
 - `SwapServerConn` / `GRPCSwapServerConn` — remote swap-server gRPC
@@ -84,7 +97,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/swap
 - `PayState` / `ReceiveState` — typed FSM enums with `IsTerminal()` /
   `String()`. `ReceiveState` includes `ReceiveStateHTLCEventAccepted`.
 - `VHTLCConfig`, `InSwapConfig`, `RouteHint` — server-negotiation
-  DTOs. `SwapSummary` — flat list view for persisted sessions.
+  DTOs. `SwapSummary` — flat list view for persisted sessions; receive rows
+  include `ChannelID` for the existing channel and `ReservedSCID` for the
+  virtual SCID advertised in the invoice.
+- `ReceiveResult` — Successful receive result. Channel settlements return a
+  nonzero `ChannelID` and `SettlementTypeArkChannel`; vHTLC settlements return
+  their claimed `VTXOOutpoint` instead.
 - `RecoveryPolicy` / `DefaultRecoveryPolicy` — governs auto-escalation
   from cooperative vHTLC retry to daemon-owned on-chain recovery
   (arm/escalate/cancel via `DaemonConn`'s VHTLC recovery RPCs). Also
@@ -119,6 +137,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/swap
 
 - **Depends on**: `lib/arkscript` (vHTLC policy + claim/refund
   tapscript paths, plus the shared `VHTLCTiming` admission model),
+  `arkchannel` (channel identifiers returned by the payment bridge),
   `sdk/ark` (type aliases), `swaprpc` (gRPC stubs),
   `vtxo` (forfeit sign-request conversion), `mailbox/pb` (edge
   pull/ack), `serverconn` + `serverconn/mailboxpull` (`CompoundMailboxID`,
@@ -142,6 +161,11 @@ same-Ark vHTLC event: if `outEvents` implements
 `IncomingVHTLCEventReceiver`, `WaitIncomingVHTLC` is called;
 otherwise the flow falls back to `WaitOutSwapHtlc` and converts the
 result into an `IncomingVHTLCNotification`.
+
+Explicit channel receive installs a private hold invoice and registers its hash,
+amount, and virtual SCID with the hub before it publishes the invoice. The hub
+must return an active channel ID. The SDK waits for acceptance on that exact
+channel; it never starts a vHTLC listener for the same invoice.
 
 ## Invariants
 
@@ -215,6 +239,19 @@ result into an `IncomingVHTLCNotification`.
   store.
 - `ReceiveAuthKey` signing/ECDH is always delegated to the daemon;
   the SDK never holds the raw private key for receive-auth.
+- Keep the payment bridge installed to recover existing invoices. Only
+  explicit channel receives need admission; ordinary receives never use it.
+  Channel registration must succeed before the caller receives the invoice.
+  Expiry or cancellation releases the registration and the private hold invoice.
+- The channel ID is persisted at registration. After lnd accepts the HTLC
+  on that channel, the SDK records `SettlementTypeArkChannel` before
+  releasing the preimage. A restart retries that settlement decision.
+- Receive rows encode `reserved_scid` as 8-byte big-endian data and
+  `channel_id` as 32 bytes; empty values mean unset. Row restoration rejects
+  any other width. Migration 5 also stores
+  `channel_receive_enabled` so ownership survives restart.
+- `SettlementTypeArkChannel` is receive-only. `validateInSwapPreview` and
+  `validateInSwapQuote` reject it for Ark-to-Lightning pay quotes.
 - Error sentinels (`ErrSwapExpired`, `ErrSwapRefunded`,
   `ErrSwapSummaryNotFound`) are exported; callers use `errors.Is`.
 - The credit ledger is server-authoritative; local state only records

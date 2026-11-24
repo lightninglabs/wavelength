@@ -192,6 +192,8 @@ message RequestChannelIdRequest {
     // involving the wallet. Send it only over an authenticated transport.
     // This key does not authorize Ark operations or derive the preimage.
     bytes invoice_routing_key = 9;
+
+    reserved "channel_backing_fee_sat";
 }
 
 // RequestChannelIdResponse returns the route hint paths for one receive
@@ -240,6 +242,8 @@ message RequestChannelIdResponse {
     // invoice_routing_pubkey confirms the service registered the supplied
     // key. The wallet must check it before exposing a probe-capable invoice.
     bytes invoice_routing_pubkey = 10;
+
+    reserved "channel_backing_fee_sat";
 }
 
 // AcknowledgeOutSwapHtlcRequest confirms that the receiver has validated and

@@ -3774,7 +3774,7 @@ const file_swap_proto_rawDesc = "" +
 	"\x16client_identity_pubkey\x18\x01 \x01(\fR\x14clientIdentityPubkey\x12%\n" +
 	"\x0etimestamp_unix\x18\x02 \x01(\x03R\rtimestampUnix\x12\x14\n" +
 	"\x05nonce\x18\x03 \x01(\fR\x05nonce\x12\x1c\n" +
-	"\tsignature\x18\x04 \x01(\fR\tsignature\"\xe5\x03\n" +
+	"\tsignature\x18\x04 \x01(\fR\tsignature\"\xfe\x03\n" +
 	"\x17RequestChannelIdRequest\x12%\n" +
 	"\x0eexpiry_seconds\x18\x01 \x01(\rR\rexpirySeconds\x12.\n" +
 	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\x12!\n" +
@@ -3786,7 +3786,7 @@ const file_swap_proto_rawDesc = "" +
 	"\vowner_proof\x18\a \x01(\v2\x17.swaprpc.SwapOwnerProofR\n" +
 	"ownerProof\x128\n" +
 	"\x18preimage_recovery_params\x18\b \x01(\fR\x16preimageRecoveryParams\x12.\n" +
-	"\x13invoice_routing_key\x18\t \x01(\fR\x11invoiceRoutingKey\"\xf5\x03\n" +
+	"\x13invoice_routing_key\x18\t \x01(\fR\x11invoiceRoutingKeyR\x17channel_backing_fee_sat\"\x8e\x04\n" +
 	"\x18RequestChannelIdResponse\x12$\n" +
 	"\x0epayer_fee_msat\x18\x02 \x01(\x04R\fpayerFeeMsat\x120\n" +
 	"\x14requested_amount_sat\x18\x03 \x01(\x04R\x12requestedAmountSat\x120\n" +
@@ -3797,7 +3797,7 @@ const file_swap_proto_rawDesc = "" +
 	"\x0fsettlement_type\x18\b \x01(\x0e2\x17.swaprpc.SettlementTypeR\x0esettlementType\x12@\n" +
 	"\x10route_hint_paths\x18\t \x03(\v2\x16.swaprpc.RouteHintPathR\x0erouteHintPaths\x124\n" +
 	"\x16invoice_routing_pubkey\x18\n" +
-	" \x01(\fR\x14invoiceRoutingPubkeyJ\x04\b\x01\x10\x02R\x0froute_hint_path\"\xaf\x01\n" +
+	" \x01(\fR\x14invoiceRoutingPubkeyJ\x04\b\x01\x10\x02R\x0froute_hint_pathR\x17channel_backing_fee_sat\"\xaf\x01\n" +
 	"\x1dAcknowledgeOutSwapHtlcRequest\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12.\n" +
 	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\x12;\n" +

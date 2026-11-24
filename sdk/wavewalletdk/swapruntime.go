@@ -3,6 +3,9 @@
 package wavewalletdk
 
 import (
+	"fmt"
+	"runtime"
+
 	"github.com/lightninglabs/wavelength/swapclientserver"
 	"github.com/lightninglabs/wavelength/waved"
 )
@@ -16,9 +19,31 @@ import (
 // swapruntime; the stub file in swapruntime_stub.go is the negative half of
 // the same contract and keeps the public Client method set identical across
 // both build flavors.
-func configureSwapRuntime(cfg *waved.Config, enabled bool) error {
-	if !enabled {
-		return nil
+func configureSwapRuntime(cfg *waved.Config) error {
+	if cfg.Swap.ArkChannelsEnabled {
+		if cfg.Wallet == nil ||
+			cfg.Wallet.Type != waved.WalletTypeLwwallet {
+			return fmt.Errorf("ark_channels_enabled requires " +
+				"lwwallet")
+		}
+		if cfg.HostDrivenIngress {
+			return fmt.Errorf("ark_channels_enabled is " +
+				"incompatible with host_driven_ingress")
+		}
+		if runtime.GOOS == "js" {
+			if cfg.Server == nil ||
+				cfg.Server.Transport != waved.RPCTransportREST ||
+				cfg.Swap.ServerTransport != waved.RPCTransportREST {
+				return fmt.Errorf("ark_channels_enabled on " +
+					"WASM requires REST operator and " +
+					"swap transports")
+			}
+			if cfg.Server.TLSCertPath != "" ||
+				cfg.Swap.ServerTLSCertPath != "" {
+				return fmt.Errorf("browser HTTP cannot pin " +
+					"operator or swap TLS certificates")
+			}
+		}
 	}
 
 	cfg.RPCServiceRegistrars = append(

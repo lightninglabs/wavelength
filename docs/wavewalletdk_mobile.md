@@ -74,6 +74,55 @@ ABI. Its startup envelope is snake_case (`config`, `seed_entropy`,
 is the PascalCase `ExternalSeedWalletOpenResult`. Typed SDKs map their public
 request types onto this wire shape.
 
+## Ark channel operations
+
+Set `"ark_channels_enabled": true` in the startup config (nested `config`
+for `StartExternalSeedWallet`). Use `"wallet_type": "lwwallet"` and leave
+`host_driven_ingress` off. In WASM set both `server_transport` and
+`swap_server_transport` to `"rest"` and use browser-trusted HTTPS endpoints
+in production; the browser cannot pin PEM files. Keep the wallet running
+while serving invoices.
+
+The host sets this flag at wallet startup, not on an ordinary invoice.
+Mobile and WASM both decode it into `wavewalletdk.Config.ArkChannelsEnabled`;
+an embedded Go host may set that field directly. Omitted or false leaves
+new channel operations disabled. Even with it set, only an explicit open
+creates a channel. Existing obligations in the same data directory restore
+without opting in again.
+
+**Downstream dependency gate.** A runtime flag cannot change the packages
+compiled into a binary. For integration tests only, the main module building
+a daemon, mobile binding, or WASM wallet must select both replacements:
+
+```go
+replace github.com/lightningnetwork/lnd => github.com/sputn1ck/lnd v0.4.2-beta.0.20261124151740-0cc0299da78b
+replace github.com/lightningnetwork/lnd/kvdb => github.com/sputn1ck/lnd/kvdb v0.0.0-20261124151740-0cc0299da78b
+```
+
+Go ignores replacements in dependencies. A client using an already-built RPC
+service does not need either replacement. Neither does an application that
+only imports the Wavelength policy parser. Do not ship either personal
+replacement on a supported main branch. First land the required recovery
+behavior upstream, select official versions of **both modules**, then build
+native, mobile and WASM from an external module with no replacements and
+`GOWORK=off`. Run both default mixed-version directions and the enabled
+daemon suite on those versions. A fork-pinned pass or the original upstream
+runtime proposal alone does not satisfy the release gate.
+
+| Go mobile binding | WASM worker method | Request JSON |
+| --- | --- | --- |
+| `PromoteVTXO` | `promoteVTXO` | `{"AmountSat":50000,"IdempotencyKey":"order-17-channel"}` |
+| `PayOnActiveChannel` | `payOnActiveChannel` | `{"Invoice":"<BOLT-11>","MaxFeeSat":10}` |
+| `ReceiveOnActiveChannel` | `receiveOnActiveChannel` | `{"AmountSat":1000,"Memo":"refund","TimeoutSeconds":30}` |
+
+The first result contains `ChannelID`, `Phase`, and `CapacitySat`. Channel pay
+returns `PaymentHash`, `Preimage`, `ChannelID`, `PrivateAmountSat`, and
+`FeeSat`. IDs and preimages are hex strings. Channel receive returns the same
+invoice, entry and receipt reference as `Receive`, with the same deadline
+and uncertainty contract. Never retry a timed-out payment on a different rail.
+Neither receiving nor ordinary prepared sends will implicitly promote funds.
+See the [ordered payment flow](wavewalletdk_integration.md#payments-on-an-existing-ark-channel).
+
 ## Maximum send
 
 For an amountless BOLT-11 payment, `PrepareSend` accepts `MaxAmount: true`
@@ -200,6 +249,13 @@ one budget curve. The larger allowance applies and is always clamped by
 Empty `server_address` and `swap_server_address` values select the endpoint
 for the configured network and transport. They don't disable either service.
 Set the fields explicitly when a mobile host needs a custom or local endpoint.
+
+The [Ark channel opt-in](#ark-channel-operations) maps to
+`wavewalletdk.Config.ArkChannelsEnabled` in Go. Restart with it enabled,
+on the same network and with the same `data_dir`, while channels are
+outstanding. This lets the wallet reopen its channel state and resume peer
+delivery. The default starts no embedded channel peer. Ordinary Lightning
+receives use vHTLCs even with the peer enabled.
 
 ```json
 {
