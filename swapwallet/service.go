@@ -202,6 +202,17 @@ func (s *Service) LookupRecv(ctx context.Context,
 	return s.recv.LookupRecv(ctx, req)
 }
 
+// RecvOnActiveChannel issues an invoice only against existing inbound capacity.
+func (s *Service) RecvOnActiveChannel(ctx context.Context,
+	req *wavewalletrpc.RecvRequest) (*wavewalletrpc.RecvResponse, error) {
+
+	if err := s.requireWalletReady(ctx); err != nil {
+		return nil, err
+	}
+
+	return s.recv.receive(ctx, req, true)
+}
+
 // List returns the unified, normalized wallet history merged across the
 // swap subserver and the daemon's ledger/sweep stores.
 func (s *Service) List(ctx context.Context, req *wavewalletrpc.ListRequest) (

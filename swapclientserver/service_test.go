@@ -954,7 +954,7 @@ func TestStartReceiveReturnsInvoiceAndStartsWorker(t *testing.T) {
 	resp, err := service.StartReceive(
 		t.Context(), &swapclientrpc.StartReceiveRequest{
 			AmountSat: 50_000,
-			Memo:      "coffee",
+			Memo:      "coffee", ActiveChannelOnly: true,
 		},
 	)
 	require.NoError(t, err)
@@ -966,7 +966,18 @@ func TestStartReceiveReturnsInvoiceAndStartsWorker(t *testing.T) {
 	fakeClient.awaitReceiveResume(t, receiveHash)
 	require.Equal(t, 1, fakeClient.startReceiveCount())
 	require.Equal(t, "coffee", fakeClient.startReceiveMemo)
+	require.True(t, fakeClient.startActiveChannel)
 	require.Equal(t, 1, fakeClient.receiveResumeCount(receiveHash))
+
+	_, err = service.StartReceive(t.Context(),
+		&swapclientrpc.StartReceiveRequest{
+			AmountSat:         50_000,
+			ActiveChannelOnly: true,
+			IdempotencyKey:    "ordinary-receive-key",
+		},
+	)
+	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Equal(t, 1, fakeClient.startReceiveCount())
 }
 
 // TestStartReceiveReturnsCreditAssistedPlan verifies receive startup returns
@@ -1287,7 +1298,9 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 		UpdatedAt:        updatedAt,
 		Deadline:         deadline,
 		RefundLocktime:   42,
-		SettlementType:   swaps.SettlementTypeInArk,
+		SettlementType:   swaps.SettlementTypeArkChannel,
+		ChannelID:        [32]byte{7},
+		ReservedSCID:     99,
 		SenderPubkey:     senderPubKey,
 	})
 
@@ -1315,9 +1328,18 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 	require.Equal(t, deadline.Unix(), got.GetDeadlineUnix())
 	require.Equal(t, uint32(42), got.GetRefundLocktime())
 	require.Equal(
-		t, swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK,
+		t, swapclientrpc.
+			SwapSettlementType_SWAP_SETTLEMENT_TYPE_ARK_CHANNEL,
 		got.GetSettlementType(),
 	)
+	require.Equal(
+		t,
+		append(
+			[]byte{7}, make([]byte, 31)...,
+		),
+		got.GetChannelId(),
+	)
+	require.Equal(t, uint64(99), got.GetReservedScid())
 	require.Equal(t, senderPubKeyHex, got.GetSenderPubkey())
 }
 
@@ -1360,6 +1382,58 @@ func TestBindArkChannelMailbox(t *testing.T) {
 
 	release()
 	require.Nil(t, cfg.ArkChannelMailbox)
+}
+
+// recordingArkChannelBridgeSetter records whether daemon wiring exposes the
+// optional direct receive bridge to the swap SDK.
+type recordingArkChannelBridgeSetter struct {
+	bridge swaps.ArkChannelPaymentBridge
+	admit  bool
+	calls  int
+}
+
+// SetArkChannelPaymentBridge records one bridge installation.
+func (s *recordingArkChannelBridgeSetter) SetArkChannelPaymentBridge(
+	bridge swaps.ArkChannelPaymentBridge, admit bool) {
+
+	s.bridge = bridge
+	s.admit = admit
+	s.calls++
+}
+
+// TestConfigureArkChannelReceiveBridgeRequiresOptIn keeps the recovery
+// bridge available without admitting new invoices on a disabled runtime.
+func TestConfigureArkChannelReceiveBridgeRequiresOptIn(t *testing.T) {
+	t.Parallel()
+
+	rpcServer := waved.NewRPCServer(nil)
+	disabled := &recordingArkChannelBridgeSetter{}
+	configureArkChannelReceiveBridge(
+		disabled, rpcServer, &waved.SwapConfig{},
+	)
+	require.Equal(t, 1, disabled.calls)
+	require.NotNil(t, disabled.bridge)
+	require.False(t, disabled.admit)
+
+	enabled := &recordingArkChannelBridgeSetter{}
+	configureArkChannelReceiveBridge(enabled, rpcServer, &waved.SwapConfig{
+		ArkChannelsEnabled: true,
+	})
+	require.Equal(t, 1, enabled.calls)
+	require.True(t, enabled.admit)
+	bridge, ok := enabled.bridge.(*arkChannelPaymentBridge)
+	require.True(t, ok)
+	require.Same(t, rpcServer, bridge.rpc)
+
+	suppressed := &recordingArkChannelBridgeSetter{}
+	configureArkChannelReceiveBridge(
+		suppressed, rpcServer, &waved.SwapConfig{
+			ArkChannelsEnabled:        true,
+			SuppressArkChannelRuntime: true,
+		},
+	)
+	require.NotNil(t, suppressed.bridge)
+	require.False(t, suppressed.admit)
 }
 
 // TestDaemonWithLiveOperatorKeyUsesLiveFetcher verifies the daemon-hosted swap
@@ -1765,8 +1839,13 @@ func TestSwapServerOperationWaitsForReady(t *testing.T) {
 			method: swaprpc.SwapService_ListCredits_FullMethodName,
 		},
 		{
-			name:   "mailbox",
-			method: "/mailboxrpc.MailboxService/Pull",
+			name:   "mailbox send",
+			method: mailboxpb.MailboxService_Send_FullMethodName,
+			wait:   true,
+		},
+		{
+			name:   "mailbox pull",
+			method: mailboxpb.MailboxService_Pull_FullMethodName,
 		},
 		{
 			name:   "future swap method",
@@ -2001,6 +2080,7 @@ type fakeSwapRuntime struct {
 
 	startReceiveRequestID string
 	receiveByRequestID    map[string]swaps.SwapSummary
+	startActiveChannel    bool
 	startReceiveHook      func()
 	createCreditCalls     int
 	createCreditReq       swaps.CreateCreditRequest
@@ -2068,8 +2148,8 @@ func (f *fakeSwapRuntime) StartPayViaLightning(_ context.Context, _ string,
 }
 
 func (f *fakeSwapRuntime) StartReceiveViaLightning(_ context.Context,
-	requestID string, _ btcutil.Amount, memo string) (receiveSwapSession,
-	error) {
+	requestID string, _ btcutil.Amount, memo string, activeChannel bool) (
+	receiveSwapSession, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2077,6 +2157,7 @@ func (f *fakeSwapRuntime) StartReceiveViaLightning(_ context.Context,
 	f.startReceiveCalls++
 	f.startReceiveMemo = memo
 	f.startReceiveRequestID = requestID
+	f.startActiveChannel = activeChannel
 	if f.startReceiveHook != nil {
 		f.startReceiveHook()
 	}

@@ -58,6 +58,7 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, swap.startReceiveCalls)
 	require.Equal(t, "coffee", swap.startReceiveLast.GetMemo())
+	require.False(t, swap.startReceiveLast.GetActiveChannelOnly())
 	require.Equal(t, "lnbc1invoice", resp.GetInvoice())
 	require.Equal(t, "abc123", resp.GetEntry().GetId())
 	require.Equal(t, "coffee", resp.GetEntry().GetNote())
@@ -79,6 +80,52 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 			WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT,
 		resp.GetEntry().GetProgress().GetPhase(),
 	)
+}
+
+// TestRecvOnActiveChannelDispatch requires the channel rail even below the
+// VTXO floor. A rejected request must not issue an invoice on another rail.
+func TestRecvOnActiveChannelDispatch(t *testing.T) {
+	t.Parallel()
+	r, swap := newRecvFixture(t)
+	credit := &fakeCreditRegistry{}
+	r.deps.CreditRegistry = credit
+	r.deps.RPCServer = &fakeRPCServer{
+		getInfoResp: &waverpc.GetInfoResponse{
+			WalletState: waverpc.WalletState_WALLET_STATE_READY,
+			ServerInfo: &waverpc.ServerInfo{
+				MinVtxoAmountSat: 10_000,
+			},
+		},
+	}
+	svc := newService(r.deps, r.runtime)
+	req := &wavewalletrpc.RecvRequest{AmtSat: 1000, Memo: "channel"}
+	swap.startReceiveResp = &swapclientrpc.StartReceiveResponse{
+		Invoice: "channel-invoice",
+		Swap: &swapclientrpc.SwapSummary{
+			PaymentHash: "aabb",
+		},
+	}
+	result, err := svc.RecvOnActiveChannel(t.Context(), req)
+	require.NoError(t, err)
+	require.Equal(t, "channel-invoice", result.GetInvoice())
+	require.Equal(t, "aabb", result.GetEntry().GetId())
+	require.True(t, swap.startReceiveLast.GetActiveChannelOnly())
+	require.Equal(t, int64(1000), swap.startReceiveLast.GetAmountSat())
+	require.Equal(t, "channel", swap.startReceiveLast.GetMemo())
+
+	swap.startReceiveErr = status.Error(
+		codes.FailedPrecondition, "no inbound",
+	)
+	result, err = svc.RecvOnActiveChannel(t.Context(), req)
+	require.Nil(t, result)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	req.RequestId = "ordinary-receive-key"
+	result, err = svc.RecvOnActiveChannel(t.Context(), req)
+	require.Nil(t, result)
+	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Equal(t, 2, swap.startReceiveCalls)
+	require.Zero(t, swap.listCreditsCalls)
+	require.Zero(t, credit.receiveCalls)
 }
 
 // TestRecvProjectsPendingEntry confirms a swap-backed RECV projects its
