@@ -62,6 +62,7 @@ func TestWavedRPCPermissionsMapsMutatingMethods(t *testing.T) {
 		waverpc.DaemonService_RefreshVTXOs_FullMethodName,
 		waverpc.DaemonService_SignReceiveAuthMessage_FullMethodName,
 		waverpc.DaemonService_SignOutSwapHtlcAck_FullMethodName,
+		wavewalletrpc.WalletService_RecvOnActiveChannel_FullMethodName,
 		fullArkChannelMethod("PromoteVTXO"),
 		fullArkChannelMethod("PayLightningInvoice"),
 		fullArkChannelMethod("MaterializeAndForceClose"),
