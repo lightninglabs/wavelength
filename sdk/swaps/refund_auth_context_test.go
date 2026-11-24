@@ -59,6 +59,9 @@ func TestCooperativeRefundBoundsOnlyAuthorization(t *testing.T) {
 				WitnessScript: []byte("witness"),
 				Signature:     []byte("authorized-refund"),
 			},
+			PayoutSignature: &TaprootScriptSignature{
+				Signature: []byte("payout-sig"),
+			},
 		},
 	}
 	client.server = remote
