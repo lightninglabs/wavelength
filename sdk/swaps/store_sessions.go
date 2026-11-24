@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -427,6 +428,13 @@ func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
 	if err != nil {
 		return SwapSummary{}, err
 	}
+	if len(row.ReservedScid) != 0 && len(row.ReservedScid) != 8 {
+		return SwapSummary{}, fmt.Errorf("invalid reserved channel " +
+			"SCID")
+	}
+	if len(row.ChannelID) != 0 && len(row.ChannelID) != 32 {
+		return SwapSummary{}, fmt.Errorf("invalid receive channel ID")
+	}
 
 	paymentHash, err := hashFromBytes(row.PaymentHash)
 	if err != nil {
@@ -457,6 +465,8 @@ func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
 		VHTLCAmountSat:     row.VhtlcAmount,
 		ClaimSessionID:     row.ClaimSessionID,
 		SettlementType:     SettlementType(row.SettlementType),
+		ChannelID:          receiveChannelID(row.ChannelID),
+		ReservedSCID:       decodeReceiveSCID(row.ReservedScid),
 		RequestedAmountSat: requestedAmountSat,
 		Memo:               row.Memo,
 		AvailableCreditSat: uint64(row.AvailableCreditSat),
@@ -618,17 +628,20 @@ func (s *ReceiveSession) persistSnapshot(ctx context.Context,
 		PendingHtlcAckCursor: int64(
 			s.pendingHTLCAckCursor,
 		),
-		ClaimReceivePubkey:   cloneBytesOrEmpty(s.claimReceivePubKey),
-		ClaimReceivePkscript: cloneBytesOrEmpty(s.claimReceiveScript),
-		ClaimSessionID:       s.claimSessionID,
-		ClaimRecoveryID:      s.claimRecoveryID,
-		InterventionReason:   s.interventionReason,
-		RequestedAmountSat:   int64(s.requestedAmountSat),
-		AvailableCreditSat:   int64(s.availableCreditSat),
-		AttachedCreditSat:    int64(s.attachedCreditSat),
-		DustLimitSat:         int64(s.dustLimitSat),
-		CreatedAtUnix:        s.createdAt.Unix(),
-		UpdatedAtUnix:        now,
+		ClaimReceivePubkey:    cloneBytesOrEmpty(s.claimReceivePubKey),
+		ClaimReceivePkscript:  cloneBytesOrEmpty(s.claimReceiveScript),
+		ClaimSessionID:        s.claimSessionID,
+		ClaimRecoveryID:       s.claimRecoveryID,
+		InterventionReason:    s.interventionReason,
+		RequestedAmountSat:    int64(s.requestedAmountSat),
+		AvailableCreditSat:    int64(s.availableCreditSat),
+		AttachedCreditSat:     int64(s.attachedCreditSat),
+		DustLimitSat:          int64(s.dustLimitSat),
+		ReservedScid:          encodeReceiveSCID(s.reservedSCID),
+		ChannelReceiveEnabled: s.channelReceiveEnabled,
+		ChannelID:             append([]byte(nil), s.channelID[:]...),
+		CreatedAtUnix:         s.createdAt.Unix(),
+		UpdatedAtUnix:         now,
 		RequestID: sql.NullString{
 			String: s.requestID,
 			Valid:  s.requestID != "",
@@ -891,6 +904,12 @@ func receiveSessionFromRow(c *SwapClient,
 	if err != nil {
 		return nil, err
 	}
+	if len(row.ReservedScid) != 0 && len(row.ReservedScid) != 8 {
+		return nil, fmt.Errorf("invalid reserved channel SCID")
+	}
+	if len(row.ChannelID) != 0 && len(row.ChannelID) != 32 {
+		return nil, fmt.Errorf("invalid receive channel ID")
+	}
 
 	clientKey, err := btcec.ParsePubKey(row.ClientPubkey)
 	if err != nil {
@@ -995,17 +1014,20 @@ func receiveSessionFromRow(c *SwapClient,
 		claimReceiveScript: append(
 			[]byte(nil), row.ClaimReceivePkscript...,
 		),
-		claimSessionID:     row.ClaimSessionID,
-		claimRecoveryID:    row.ClaimRecoveryID,
-		interventionReason: row.InterventionReason,
-		clientPubKey:       clientKey,
-		operatorPubKey:     operatorKey,
-		swapServerPubKey:   swapServerKey,
-		settlementType:     SettlementType(row.SettlementType),
-		paymentAddr:        paymentAddr,
-		createdAt:          time.Unix(row.CreatedAtUnix, 0),
-		updatedAt:          time.Unix(row.UpdatedAtUnix, 0),
-		forfeitBindingGate: newReceiveForfeitBindingGate(),
+		claimSessionID:        row.ClaimSessionID,
+		claimRecoveryID:       row.ClaimRecoveryID,
+		interventionReason:    row.InterventionReason,
+		clientPubKey:          clientKey,
+		operatorPubKey:        operatorKey,
+		swapServerPubKey:      swapServerKey,
+		settlementType:        SettlementType(row.SettlementType),
+		reservedSCID:          decodeReceiveSCID(row.ReservedScid),
+		channelReceiveEnabled: row.ChannelReceiveEnabled,
+		channelID:             receiveChannelID(row.ChannelID),
+		paymentAddr:           paymentAddr,
+		createdAt:             time.Unix(row.CreatedAtUnix, 0),
+		updatedAt:             time.Unix(row.UpdatedAtUnix, 0),
+		forfeitBindingGate:    newReceiveForfeitBindingGate(),
 	}
 
 	// A restored session was reconstructed from a durable row, so a
@@ -1023,6 +1045,33 @@ func receiveExpectedVHTLCSat(row swapsqlc.ReceiveSwap) uint64 {
 	}
 
 	return requestedAmountSat + uint64(row.AttachedCreditSat)
+}
+
+func encodeReceiveSCID(scid uint64) []byte {
+	if scid == 0 {
+		return []byte{}
+	}
+	encoded := make([]byte, 8)
+	binary.BigEndian.PutUint64(encoded, scid)
+
+	return encoded
+}
+
+func decodeReceiveSCID(encoded []byte) uint64 {
+	if len(encoded) != 8 {
+		return 0
+	}
+
+	return binary.BigEndian.Uint64(encoded)
+}
+
+func receiveChannelID(encoded []byte) [32]byte {
+	var id [32]byte
+	if len(encoded) == len(id) {
+		copy(id[:], encoded)
+	}
+
+	return id
 }
 
 // paySessionFromRow reconstructs one pay session from its persisted SQL row.

@@ -106,6 +106,52 @@ func admissionReceiveSession(t *testing.T, client *SwapClient,
 	return session
 }
 
+// TestChannelReceiveAdmissionPreservesIdentity verifies both insert-only
+// admission paths persist the same channel identity as subsequent updates.
+func TestChannelReceiveAdmissionPreservesIdentity(t *testing.T) {
+	t.Parallel()
+	for _, restored := range []bool{false, true} {
+		name := "normal"
+		if restored {
+			name = "restored"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			store := newTestSwapStore(t)
+			client := NewSwapClientWithStore(
+				nil, nil, nil, nil, store,
+			)
+			session := admissionReceiveSession(t, client, restored)
+			session.channelReceiveEnabled = true
+			session.reservedSCID = 1<<63 | 99
+			session.channelID = [32]byte{1, 2, 3}
+			if restored {
+				require.NoError(t, session.persistRestored(ctx))
+			} else {
+				require.NoError(t, session.persist(ctx))
+			}
+			for range 2 {
+				resumed, err :=
+					client.ResumeReceiveViaLightning(
+						ctx, session.PaymentHash,
+					)
+				require.NoError(t, err)
+				require.True(t, resumed.channelReceiveEnabled)
+				require.Equal(
+					t, session.reservedSCID,
+					resumed.reservedSCID,
+				)
+				require.Equal(
+					t, session.channelID, resumed.channelID,
+				)
+				resumed.Invoice = "updated-invoice"
+				require.NoError(t, resumed.persist(ctx))
+			}
+		})
+	}
+}
+
 // TestRestoredAdmissionPreservesWinner covers stale restore admission after a
 // normal worker has persisted accepted protocol work or a terminal outcome.
 func TestRestoredAdmissionPreservesWinner(t *testing.T) {
