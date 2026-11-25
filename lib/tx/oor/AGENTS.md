@@ -18,9 +18,23 @@ finalize packages.
 - `CheckpointOutput` / `RecipientOutput` / `CheckpointInput` — Builder inputs
   for PSBT construction.
 - `RecipientAsset` — The Taproot Asset an Ark recipient output carries
-  (asset root, ref, units). An asset output pays to its policy composed with
-  the asset root; `ValidateAsset` checks that and `RoutingPkScript` returns
-  the uncomposed policy script that addresses the owner.
+  (non-zero asset root, ref, units). An asset output pays to its policy
+  composed with the asset root; `ValidateAsset` checks that and
+  `RoutingPkScript` returns the uncomposed policy script that addresses the
+  owner.
+- `TaprootAssetTransfer` — Versioned (`TaprootAssetTransferVersion = 0`, magic
+  `WAVTAPOR`), SHA-256-checksummed container (checksum covers header, slot
+  lengths, checkpoint slots, and Ark package) of opaque sealed checkpoint and
+  Ark asset packages. Requires at least one non-empty checkpoint slot (empty
+  slots mark plain Bitcoin checkpoints such as an operator carrier float).
+  Capped at `MaxTaprootAssetPackageBytes` (2 MiB) per package and
+  `MaxTaprootAssetTransferBytes` (3 MiB) total encoded size so every valid
+  container fits inside the 4 MiB mailbox transport and 16 MiB OOR snapshot
+  TLV limits.
+- `CarrierOrigin` / `CarrierInput` / `CarrierPlanRequest` / `CarrierPlan` —
+  Explicit origin-tagged (`CarrierOriginRound` / `CarrierOriginOOR`, zero
+  invalid) closed-sum carrier accounting inputs and output plan for
+  operator-funded asset OOR transfers.
 - `CheckpointArtifact` — Wraps checkpoint PSBT with tap tree sidecar metadata.
 
 ## Key Functions
@@ -28,6 +42,13 @@ finalize packages.
 - `BuildArkPSBT` — Constructs deterministic Ark PSBT spending checkpoint
   outputs, enforcing fee-less transfers and canonical ordering.
 - `BuildCheckpointPSBT` — Wraps checkpoint.BuildPSBT with tap tree metadata.
+- `BuildComposedTaprootTapLeafScript` — Builds a BIP-341 tapleaf control block
+  for an asset checkpoint output composed via `ComposeWithSiblingRoot`.
+- `PlanAssetCarriers` / `RequiredCarrierLeaseSat` / `ValidateCarrierFloatKeys`
+  / `ParseCarrierPubKey` — Computes exact sender Bitcoin change (round-created
+  carriers) and operator float change (reclaimed OOR carriers), enforces the
+  output floor on both non-zero change outputs, validates 33-byte compressed
+  carrier pubkeys, and enforces float/operator x-only key separation.
 - `ValidateSubmitPackage` / `ValidateSubmitPackageSigned` — Structural (resp.
   signature+VM) validators for a submit package.
 - `ValidateFinalizePackage` / `ValidateFinalizePackageSigned` — Structural
