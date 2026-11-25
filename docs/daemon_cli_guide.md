@@ -143,6 +143,8 @@ waved \
 | `--lnd.account` | _(empty)_ | lnd wallet account to spend from; empty uses lnd's default account. Set when sharing an lnd node with another daemon. The account must already exist and be taproot-scoped; a watch-only account is accepted only on a remote-signing lnd (one whose default account is itself watch-only) and must report an extended public key and derivation path |
 | `--assets.enabled` | `false` | Hold and verify Taproot Assets inside the daemon (regtest only). When off, the daemon refuses asset VTXOs |
 | `--assets.groupkeys` | | Asset groups the daemon trusts, as hex compressed public keys |
+| `--assets.courier.addr` | | Proof courier of the daemon's Taproot Asset addresses, as `authmailbox+universerpc://host:port`. Without it the daemon creates no address |
+| `--assets.courier.endpoints` | | Proof couriers reached at another host or with their own TLS certificate, each as `host:port=target` or `host:port=target=tlscertpath` |
 | `--server.host` | network default | Ark operator address override for the selected transport |
 | `--server.transport` | `grpc` | Ark operator transport: `grpc` or `rest` |
 | `--server.insecure` | `false` | Disable TLS for server connection |

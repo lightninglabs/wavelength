@@ -51,9 +51,10 @@ var errAssetWalletNotReady = errors.New("wallet is not ready")
 // initEmbeddedAssets creates the asset engine on the daemon's
 // database, wallet seed and chain backend, and installs its asset VTXO
 // verifier and its claimer. The wallet may still be locked, so the engine
-// reaches the wallet and the chain backend on each call, and follows the
-// transfers an earlier run left unconfirmed once the wallet services are up.
-// The returned cleanup stops following transfers.
+// reaches the wallet and the chain backend on each call. Once the wallet
+// services are up it follows the transfers an earlier run left unconfirmed
+// and holds the mailbox of every Taproot Asset address open. The returned
+// cleanup stops both.
 func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 	func(), error) {
 
@@ -68,6 +69,10 @@ func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 
 	engineStore := db.NewAssetEngineStore(store)
 	keys := &assetKeyRing{server: s}
+	receive, err := s.assetReceiveConfig(engineStore, keys)
+	if err != nil {
+		return nil, err
+	}
 	client, err := embedded.NewClient(&embedded.Config{
 		Network:   tapsdk.Network(s.cfg.Network),
 		Store:     engineStore,
@@ -76,6 +81,7 @@ func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 		Chain:     &assetChain{server: s},
 		GroupKeys: groupKeys,
 		Logger:    &assetEngineLogger{log: s.log},
+		Receive:   receive,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create asset engine: %w", err)
@@ -103,6 +109,7 @@ func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 
 	s.assetClient = client
 	s.embeddedAssets = client
+	s.assetAddresses = receive != nil
 	s.assetVTXOVerifier = &groupTrustingVerifier{
 		verifier: verifier,
 		engine:   client,
@@ -112,8 +119,9 @@ func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 		engine:  client,
 	}
 
-	// The engine follows its transfers through the chain backend, which
-	// exists only once the wallet is unlocked.
+	// The engine follows its transfers through the chain backend and
+	// answers a mailbox challenge with the wallet's keys, and both exist
+	// only once the wallet is unlocked.
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
@@ -125,6 +133,13 @@ func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 		if err := client.ResumeTransfers(runCtx); err != nil {
 			s.log.ErrorS(runCtx, "Unable to resume asset "+
 				"transfers", err)
+		}
+		if receive == nil {
+			return
+		}
+		if err := client.ResumeReceives(runCtx); err != nil {
+			s.log.ErrorS(runCtx, "Unable to resume asset "+
+				"receives", err)
 		}
 	}()
 
@@ -831,8 +846,9 @@ func (l *assetEngineLogger) Infof(format string, args ...any) {
 	l.log.Infof("Asset engine: "+format, args...)
 }
 
-// Errorf logs a failure the engine retries. The engine keeps retrying on its
-// own, so nobody has to act on it.
+// Errorf logs a failure the engine retries, such as a transfer it cannot
+// confirm yet or a mailbox stream that dropped. The engine keeps retrying on
+// its own, so nobody has to act on it.
 func (l *assetEngineLogger) Errorf(format string, args ...any) {
 	l.log.Infof("Asset engine: "+format, args...)
 }

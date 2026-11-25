@@ -1,9 +1,12 @@
 package waved
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -742,6 +745,31 @@ func TestGroupTrustingClaimer(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, 1, inner.prepares)
 	require.Equal(t, 1, inner.calls)
+}
+
+// TestAssetEngineLogger writes the failures the engine retries, a dropped
+// mailbox stream among them, below the levels that alert a human.
+func TestAssetEngineLogger(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	logger := &assetEngineLogger{
+		log: btclog.NewSLogger(btclog.NewDefaultHandler(&out)),
+	}
+
+	logger.Errorf("Reading the mailbox of address %x: %v", []byte{2},
+		io.EOF)
+	logger.Infof("Receive %v confirmed at height %d", "aa:0", 115)
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	require.Len(t, lines, 2)
+	require.Contains(t, lines[0], "[INF]")
+	require.Contains(
+		t, lines[0],
+		"Asset engine: Reading the mailbox of address 02: EOF",
+	)
+	require.Contains(t, lines[1], "[INF]")
+	require.Contains(t, lines[1], "Receive aa:0 confirmed at height 115")
 }
 
 // TestAssetJournal maps an absent journal entry to the journal's not-found

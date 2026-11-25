@@ -173,10 +173,38 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 - `NewAssetFundingAddress` hands out a backing-wallet address through
   `NewWalletAddress`. A deposit spends the daemon wallet's coins, and a
   wallet SDK host has no other way to learn an address of that wallet.
+- `assets.courier.addr` names the proof courier of the daemon's Taproot
+  Asset addresses and has no default. It must be a full
+  `authmailbox+universerpc://host:port` address: the engine rejects another
+  scheme and completes no missing part, so `validateAssetsConfig` refuses
+  anything else when assets are on. `assets.courier.endpoints` lists the
+  couriers the daemon reaches at another host or with a certificate file of
+  its own (`host:port=target` or `host:port=target=tlscertpath`). They
+  become the endpoints of tap-sdk's gRPC courier dialer.
+- `assetReceiveConfig` (`asset_receive_native.go`) hands the engine its
+  `embedded.ReceiveConfig`: `db.AssetEngineStore` as address store,
+  `assetKeyRing` as `embedded.ReceiveKeys`, and the courier dialer. A daemon
+  with assets on gets it also with no courier configured, so it keeps
+  receiving at the addresses an earlier configuration created. The js/wasm
+  build (`asset_receive_wasm.go`) returns none: a browser creates no address,
+  and `Server.assetAddresses` stays false. Once the wallet services are
+  ready, `initEmbeddedAssets` calls `ResumeReceives` after `ResumeTransfers`.
+  The engine then holds one mailbox stream open per stored address and works
+  on the receives an earlier run left unfinished.
 - `assetKeyRing.ECDH` and `SignMessageSchnorr` decrypt a mailbox message and
   answer a mailbox challenge with the script key of an address. An lnd
   wallet uses lnd's signer (`DeriveSharedKey`, and `SignMessage` for a
   Schnorr signature with no tag), and a wallet holding the seed its key ring.
+- The engine's `Logger.Errorf` covers every failure the engine retries, a
+  dropped mailbox stream included, so `assetEngineLogger` writes it at Info.
+- The engine follows a confirmed receive through re-orgs. When the
+  confirming block leaves the chain, the receive lists as detected and its
+  units leave the wallet. When the anchor transaction confirms again, the
+  engine writes the new block into the proof and the units return. The
+  engine stops following a receive once the chain source reports its
+  confirmation final. It rewrites only the block of the received output's
+  own transaction: if a re-org also removes the block of an earlier transfer
+  in the proof file, the receive stays detected with nothing owned.
 - `DepositAsset` needs an asset backend; without one the RPC returns
   `FailedPrecondition`. It also refuses, before recording anything, an
   asset the operator does not list in `GetInfo`'s `assets`

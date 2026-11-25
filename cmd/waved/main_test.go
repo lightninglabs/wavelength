@@ -136,9 +136,16 @@ func TestAssetFlags(t *testing.T) {
 		"02" + strings.Repeat("11", 32),
 		"03" + strings.Repeat("22", 32),
 	}
+	courier := "authmailbox+universerpc://tapd:10029"
+	endpoints := []string{
+		"tapd:10029=127.0.0.1:12029=/tmp/tls.cert",
+		"other:10029=127.0.0.1:12030",
+	}
 	err := flags.Parse([]string{
 		"--assets.enabled",
 		"--assets.groupkeys=" + strings.Join(groupKeys, ","),
+		"--assets.courier.addr=" + courier,
+		"--assets.courier.endpoints=" + strings.Join(endpoints, ","),
 	})
 	if err != nil {
 		t.Fatalf("parse asset flags: %v", err)
@@ -160,6 +167,16 @@ func TestAssetFlags(t *testing.T) {
 
 		t.Fatalf("expected group keys %v, got %v", groupKeys,
 			cfg.Assets.GroupKeys)
+	}
+	if cfg.Assets.Courier.Addr != courier {
+		t.Fatalf("expected courier %v, got %v", courier,
+			cfg.Assets.Courier.Addr)
+	}
+	if strings.Join(cfg.Assets.Courier.Endpoints, ",") !=
+		strings.Join(endpoints, ",") {
+
+		t.Fatalf("expected courier endpoints %v, got %v", endpoints,
+			cfg.Assets.Courier.Endpoints)
 	}
 }
 
