@@ -56,6 +56,10 @@ const (
 	DaemonService_ImportAssetProof_FullMethodName                               = "/waverpc.DaemonService/ImportAssetProof"
 	DaemonService_ListOwnedAssets_FullMethodName                                = "/waverpc.DaemonService/ListOwnedAssets"
 	DaemonService_NewAssetFundingAddress_FullMethodName                         = "/waverpc.DaemonService/NewAssetFundingAddress"
+	DaemonService_NewAssetAddress_FullMethodName                                = "/waverpc.DaemonService/NewAssetAddress"
+	DaemonService_ListAssetAddresses_FullMethodName                             = "/waverpc.DaemonService/ListAssetAddresses"
+	DaemonService_ListAssetReceives_FullMethodName                              = "/waverpc.DaemonService/ListAssetReceives"
+	DaemonService_SyncAssetReceives_FullMethodName                              = "/waverpc.DaemonService/SyncAssetReceives"
 	DaemonService_JoinNextRound_FullMethodName                                  = "/waverpc.DaemonService/JoinNextRound"
 	DaemonService_SweepBoardingUTXOs_FullMethodName                             = "/waverpc.DaemonService/SweepBoardingUTXOs"
 	DaemonService_ListBoardingSweeps_FullMethodName                             = "/waverpc.DaemonService/ListBoardingSweeps"
@@ -246,6 +250,26 @@ type DaemonServiceClient interface {
 	// wallet. Bitcoin sent to it pays for asset deposits: the value of the
 	// deposit output and the miner fee. Requires an asset backend.
 	NewAssetFundingAddress(ctx context.Context, in *NewAssetFundingAddressRequest, opts ...grpc.CallOption) (*AssetFundingAddress, error)
+	// NewAssetAddress returns the Taproot Asset address at which the
+	// daemon's asset wallet receives an asset. The first call for an asset
+	// creates the address, and later calls return the same one. The address
+	// names no amount: a sender pays it any number of times and chooses each
+	// amount. The daemon detects a payment through the mailbox of the
+	// address's proof courier. Requires an asset backend and a configured
+	// proof courier.
+	NewAssetAddress(ctx context.Context, in *NewAssetAddressRequest, opts ...grpc.CallOption) (*AssetAddress, error)
+	// ListAssetAddresses returns the Taproot Asset addresses of the daemon's
+	// asset wallet, oldest first.
+	ListAssetAddresses(ctx context.Context, in *ListAssetAddressesRequest, opts ...grpc.CallOption) (*ListAssetAddressesResponse, error)
+	// ListAssetReceives returns the transfers sent to the Taproot Asset
+	// addresses of the daemon's asset wallet, oldest first.
+	ListAssetReceives(ctx context.Context, in *ListAssetReceivesRequest, opts ...grpc.CallOption) (*ListAssetReceivesResponse, error)
+	// SyncAssetReceives reads the proof courier mailbox of every Taproot
+	// Asset address once and works once on every unfinished receive. The
+	// daemon also receives on its own while it runs. A transfer whose block
+	// or proofs are not available yet is left to a later call without an
+	// error.
+	SyncAssetReceives(ctx context.Context, in *SyncAssetReceivesRequest, opts ...grpc.CallOption) (*SyncAssetReceivesResponse, error)
 	// JoinNextRound asks the client round FSM to commit any currently
 	// queued round intents and emit a JoinRoundRequest to the operator.
 	// Useful after queueing refresh or leave intents that intentionally
@@ -699,6 +723,46 @@ func (c *daemonServiceClient) NewAssetFundingAddress(ctx context.Context, in *Ne
 	return out, nil
 }
 
+func (c *daemonServiceClient) NewAssetAddress(ctx context.Context, in *NewAssetAddressRequest, opts ...grpc.CallOption) (*AssetAddress, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AssetAddress)
+	err := c.cc.Invoke(ctx, DaemonService_NewAssetAddress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ListAssetAddresses(ctx context.Context, in *ListAssetAddressesRequest, opts ...grpc.CallOption) (*ListAssetAddressesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAssetAddressesResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListAssetAddresses_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ListAssetReceives(ctx context.Context, in *ListAssetReceivesRequest, opts ...grpc.CallOption) (*ListAssetReceivesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAssetReceivesResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListAssetReceives_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SyncAssetReceives(ctx context.Context, in *SyncAssetReceivesRequest, opts ...grpc.CallOption) (*SyncAssetReceivesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SyncAssetReceivesResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SyncAssetReceives_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) JoinNextRound(ctx context.Context, in *JoinNextRoundRequest, opts ...grpc.CallOption) (*JoinNextRoundResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(JoinNextRoundResponse)
@@ -1076,6 +1140,26 @@ type DaemonServiceServer interface {
 	// wallet. Bitcoin sent to it pays for asset deposits: the value of the
 	// deposit output and the miner fee. Requires an asset backend.
 	NewAssetFundingAddress(context.Context, *NewAssetFundingAddressRequest) (*AssetFundingAddress, error)
+	// NewAssetAddress returns the Taproot Asset address at which the
+	// daemon's asset wallet receives an asset. The first call for an asset
+	// creates the address, and later calls return the same one. The address
+	// names no amount: a sender pays it any number of times and chooses each
+	// amount. The daemon detects a payment through the mailbox of the
+	// address's proof courier. Requires an asset backend and a configured
+	// proof courier.
+	NewAssetAddress(context.Context, *NewAssetAddressRequest) (*AssetAddress, error)
+	// ListAssetAddresses returns the Taproot Asset addresses of the daemon's
+	// asset wallet, oldest first.
+	ListAssetAddresses(context.Context, *ListAssetAddressesRequest) (*ListAssetAddressesResponse, error)
+	// ListAssetReceives returns the transfers sent to the Taproot Asset
+	// addresses of the daemon's asset wallet, oldest first.
+	ListAssetReceives(context.Context, *ListAssetReceivesRequest) (*ListAssetReceivesResponse, error)
+	// SyncAssetReceives reads the proof courier mailbox of every Taproot
+	// Asset address once and works once on every unfinished receive. The
+	// daemon also receives on its own while it runs. A transfer whose block
+	// or proofs are not available yet is left to a later call without an
+	// error.
+	SyncAssetReceives(context.Context, *SyncAssetReceivesRequest) (*SyncAssetReceivesResponse, error)
 	// JoinNextRound asks the client round FSM to commit any currently
 	// queued round intents and emit a JoinRoundRequest to the operator.
 	// Useful after queueing refresh or leave intents that intentionally
@@ -1269,6 +1353,18 @@ func (UnimplementedDaemonServiceServer) ListOwnedAssets(context.Context, *ListOw
 }
 func (UnimplementedDaemonServiceServer) NewAssetFundingAddress(context.Context, *NewAssetFundingAddressRequest) (*AssetFundingAddress, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method NewAssetFundingAddress not implemented")
+}
+func (UnimplementedDaemonServiceServer) NewAssetAddress(context.Context, *NewAssetAddressRequest) (*AssetAddress, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method NewAssetAddress not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListAssetAddresses(context.Context, *ListAssetAddressesRequest) (*ListAssetAddressesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListAssetAddresses not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListAssetReceives(context.Context, *ListAssetReceivesRequest) (*ListAssetReceivesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListAssetReceives not implemented")
+}
+func (UnimplementedDaemonServiceServer) SyncAssetReceives(context.Context, *SyncAssetReceivesRequest) (*SyncAssetReceivesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SyncAssetReceives not implemented")
 }
 func (UnimplementedDaemonServiceServer) JoinNextRound(context.Context, *JoinNextRoundRequest) (*JoinNextRoundResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method JoinNextRound not implemented")
@@ -2017,6 +2113,78 @@ func _DaemonService_NewAssetFundingAddress_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_NewAssetAddress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NewAssetAddressRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).NewAssetAddress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_NewAssetAddress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).NewAssetAddress(ctx, req.(*NewAssetAddressRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ListAssetAddresses_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAssetAddressesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListAssetAddresses(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListAssetAddresses_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListAssetAddresses(ctx, req.(*ListAssetAddressesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ListAssetReceives_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAssetReceivesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListAssetReceives(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListAssetReceives_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListAssetReceives(ctx, req.(*ListAssetReceivesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SyncAssetReceives_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SyncAssetReceivesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SyncAssetReceives(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SyncAssetReceives_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SyncAssetReceives(ctx, req.(*SyncAssetReceivesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_JoinNextRound_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(JoinNextRoundRequest)
 	if err := dec(in); err != nil {
@@ -2524,6 +2692,22 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "NewAssetFundingAddress",
 			Handler:    _DaemonService_NewAssetFundingAddress_Handler,
+		},
+		{
+			MethodName: "NewAssetAddress",
+			Handler:    _DaemonService_NewAssetAddress_Handler,
+		},
+		{
+			MethodName: "ListAssetAddresses",
+			Handler:    _DaemonService_ListAssetAddresses_Handler,
+		},
+		{
+			MethodName: "ListAssetReceives",
+			Handler:    _DaemonService_ListAssetReceives_Handler,
+		},
+		{
+			MethodName: "SyncAssetReceives",
+			Handler:    _DaemonService_SyncAssetReceives_Handler,
 		},
 		{
 			MethodName: "JoinNextRound",

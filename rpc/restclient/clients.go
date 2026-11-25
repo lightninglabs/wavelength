@@ -788,6 +788,54 @@ func (c *DaemonServiceClient) NewAssetFundingAddress(ctx context.Context,
 	return out, err
 }
 
+// NewAssetAddress returns the Taproot Asset address at which the daemon's
+// asset wallet receives an asset.
+func (c *DaemonServiceClient) NewAssetAddress(ctx context.Context,
+	in *waverpc.NewAssetAddressRequest, _ ...grpc.CallOption) (
+	*waverpc.AssetAddress, error) {
+
+	out := new(waverpc.AssetAddress)
+	err := c.client.Post(ctx, "/v1/daemon/new-asset-address", in, out)
+
+	return out, err
+}
+
+// ListAssetAddresses returns the Taproot Asset addresses of the daemon's
+// asset wallet.
+func (c *DaemonServiceClient) ListAssetAddresses(ctx context.Context,
+	in *waverpc.ListAssetAddressesRequest, _ ...grpc.CallOption) (
+	*waverpc.ListAssetAddressesResponse, error) {
+
+	out := new(waverpc.ListAssetAddressesResponse)
+	err := c.client.Post(ctx, "/v1/daemon/list-asset-addresses", in, out)
+
+	return out, err
+}
+
+// ListAssetReceives returns the transfers sent to the daemon's Taproot
+// Asset addresses.
+func (c *DaemonServiceClient) ListAssetReceives(ctx context.Context,
+	in *waverpc.ListAssetReceivesRequest, _ ...grpc.CallOption) (
+	*waverpc.ListAssetReceivesResponse, error) {
+
+	out := new(waverpc.ListAssetReceivesResponse)
+	err := c.client.Post(ctx, "/v1/daemon/list-asset-receives", in, out)
+
+	return out, err
+}
+
+// SyncAssetReceives reads the proof courier mailboxes of the daemon's
+// Taproot Asset addresses once.
+func (c *DaemonServiceClient) SyncAssetReceives(ctx context.Context,
+	in *waverpc.SyncAssetReceivesRequest, _ ...grpc.CallOption) (
+	*waverpc.SyncAssetReceivesResponse, error) {
+
+	out := new(waverpc.SyncAssetReceivesResponse)
+	err := c.client.Post(ctx, "/v1/daemon/sync-asset-receives", in, out)
+
+	return out, err
+}
+
 // JoinNextRound commits queued round intents and joins the next round.
 func (c *DaemonServiceClient) JoinNextRound(ctx context.Context,
 	in *waverpc.JoinNextRoundRequest, _ ...grpc.CallOption) (
