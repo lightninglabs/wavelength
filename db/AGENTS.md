@@ -156,8 +156,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   unknown key, an absent journal entry and a recorded transfer are answers:
   they are returned after the transaction, never from inside it, so the
   executor logs no warning. The same store keeps the asset deposit journal
-  (`LoadJournalEntry` / `StoreJournalEntry`) for the asset engine.
-- `LatestMigrationVersion = 31` — current schema version.
+  (`LoadJournalEntry` / `StoreJournalEntry`) for the asset engine. It is
+  also the engine's `embedded.AddressStore`: the Taproot Asset addresses the
+  engine created and the transfers announced to them. `ListAddresses`
+  orders by creation time and then by insertion, because two addresses can
+  share a creation time. A receive row is one announcement, keyed by anchor
+  outpoint, address script key and announcement hash, so one output can
+  have several rows. `UpdateReceive` writes the proofs in the transaction
+  that moves the receive, so the wallet holds a receive's assets exactly
+  when the receive reads confirmed.
+- `LatestMigrationVersion = 32` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -540,6 +548,12 @@ when adding one.
   `asset_engine_transfers`, plus `asset_journal`, the deposit journal of the
   asset engine. They live in the daemon's database because a browser has
   one exclusive connection and no files.
+
+- `000032_asset_engine_addresses` — `asset_engine_addresses` and
+  `asset_engine_receives`, the asset engine's Taproot Asset addresses and
+  the transfers announced to them. Both carry an auto-increment key that
+  orders rows of the same creation time. The receive state has no upper
+  bound in the schema, because the engine defines the states.
 
 ## Deep Docs
 
