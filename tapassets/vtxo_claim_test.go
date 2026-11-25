@@ -9,7 +9,7 @@ import (
 
 // TestClaimInputsFromCommit checks that a claim takes one input per asset in
 // the leaf, each extending its input proof with the leaf transition, and is
-// refused for a leaf whose assets are not OP_TRUE locked or merge inputs.
+// refused for a leaf whose assets are not OP_TRUE locked.
 func TestClaimInputsFromCommit(t *testing.T) {
 	t.Parallel()
 
@@ -18,6 +18,7 @@ func TestClaimInputsFromCommit(t *testing.T) {
 	input := commitInput{
 		packetRole:  output.packetRole,
 		packetIndex: output.packetIndex,
+		issuanceID:  output.issuanceID,
 		proofSource: commitProofSource{
 			kind: customanchor.ProofSourceConfirmedFile,
 			blob: []byte("deposit proof"),
@@ -68,6 +69,9 @@ func TestClaimInputsFromCommit(t *testing.T) {
 		)
 	}
 
+	otherIssuance := withVirtualIndex(input, 1)
+	otherIssuance.issuanceID[0] ^= 1
+
 	otherLeaf := f.leafOutpoint
 	otherLeaf.Index++
 	walletOutput := output
@@ -111,16 +115,27 @@ func TestClaimInputsFromCommit(t *testing.T) {
 		leaf: true,
 		err:  "has no asset input",
 	}, {
-		name: "merged inputs",
+		name: "input indexes with a gap",
 		outputs: []commitOutput{
 			output,
 		},
 		inputs: []commitInput{
 			input,
-			input,
+			withVirtualIndex(input, 2),
 		},
 		leaf: true,
-		err:  "merges asset inputs",
+		err:  "not contiguous",
+	}, {
+		name: "merged input of another issuance",
+		outputs: []commitOutput{
+			output,
+		},
+		inputs: []commitInput{
+			input,
+			otherIssuance,
+		},
+		leaf: true,
+		err:  "has another issuance",
 	}}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -137,4 +152,53 @@ func TestClaimInputsFromCommit(t *testing.T) {
 			require.ErrorContains(t, err, testCase.err)
 		})
 	}
+}
+
+// TestClaimInputsFromMergedCommit checks that a leaf transition merging
+// several inputs of one issuance extends the path of its first virtual input
+// and carries the others as co-input paths, whatever order the package lists
+// them in.
+func TestClaimInputsFromMergedCommit(t *testing.T) {
+	t.Parallel()
+
+	f := newAssetVTXOFixture(t)
+	output := f.committed.outputs[0]
+	inputs := make([]commitInput, 3)
+	for idx := range inputs {
+		inputs[idx] = commitInput{
+			packetRole:        output.packetRole,
+			packetIndex:       output.packetIndex,
+			virtualInputIndex: uint32(idx),
+			issuanceID:        output.issuanceID,
+			proofSource: commitProofSource{
+				kind: customanchor.ProofSourceConfirmedFile,
+				blob: []byte{
+					byte(idx),
+				},
+			},
+		}
+	}
+
+	committed := cloneCommit(f.committed)
+	committed.outputs = []commitOutput{output}
+	committed.inputs = []commitInput{inputs[2], inputs[0], inputs[1]}
+	claimInputs, err := claimInputsFromCommit(committed, f.leafOutpoint)
+	require.NoError(t, err)
+	require.Len(t, claimInputs, 1)
+
+	path := claimInputs[0].ProofPath
+	require.Equal(t, []byte{0}, path.ConfirmedBaseProof)
+	require.Len(t, path.Steps, 1)
+	require.Equal(t, output.proofBlob, path.Steps[0].TransitionProof)
+	coPaths := path.Steps[0].CoInputPaths
+	require.Len(t, coPaths, 2)
+	require.Equal(t, []byte{1}, coPaths[0].ConfirmedBaseProof)
+	require.Equal(t, []byte{2}, coPaths[1].ConfirmedBaseProof)
+}
+
+// withVirtualIndex returns input at another index of its virtual packet.
+func withVirtualIndex(input commitInput, index uint32) commitInput {
+	input.virtualInputIndex = index
+
+	return input
 }

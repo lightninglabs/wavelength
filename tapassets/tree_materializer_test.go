@@ -521,7 +521,9 @@ func TestTreeMaterializerConfig(t *testing.T) {
 	}
 }
 
-// TestTreePathVerifier checks existing and newly appended proof steps.
+// TestTreePathVerifier checks that the verifier accepts its appended step and
+// hands every other step to its base, including a co-input path's step at the
+// appended step's index.
 func TestTreePathVerifier(t *testing.T) {
 	t.Parallel()
 
@@ -543,14 +545,6 @@ func TestTreePathVerifier(t *testing.T) {
 		}},
 	}
 
-	err := verifier.VerifyUnconfirmedAnchor(
-		t.Context(), customanchor.UnconfirmedAnchorVerification{
-			StepIndex: 0,
-		},
-	)
-	require.NoError(t, err)
-	require.Equal(t, []uint16{0}, base.steps)
-
 	transition := customanchor.UnconfirmedAnchorVerification{
 		StepIndex:              1,
 		PreviousAnchorOutpoint: previous,
@@ -568,10 +562,34 @@ func TestTreePathVerifier(t *testing.T) {
 			t.Context(), transition,
 		),
 	)
+	require.Empty(t, base.steps)
 
-	transition.PreviousAnchorOutpoints = nil
-	err = verifier.VerifyUnconfirmedAnchor(t.Context(), transition)
-	require.ErrorContains(t, err, "input outpoints mismatch")
+	earlier := customanchor.UnconfirmedAnchorVerification{
+		StepIndex: 0,
+	}
+	coInput := transition
+	coInput.AnchorTransaction = []byte{
+		0x04,
+	}
+	for _, step := range []customanchor.UnconfirmedAnchorVerification{
+		earlier, coInput,
+	} {
+		err := verifier.VerifyUnconfirmedAnchor(t.Context(), step)
+		require.NoError(t, err)
+	}
+	require.Equal(t, []uint16{0, 1}, base.steps)
+
+	// A base without the unconfirmed extension leaves only the appended
+	// step verifiable.
+	verifier.base = staticProofVerifier{}
+	require.NoError(
+		t,
+		verifier.VerifyUnconfirmedAnchor(
+			t.Context(), transition,
+		),
+	)
+	err := verifier.VerifyUnconfirmedAnchor(t.Context(), coInput)
+	require.ErrorContains(t, err, "cannot verify unconfirmed step 1")
 }
 
 // TestTreeMaterializerBuildsAssetTree tests a three-leaf asset tree.
@@ -703,6 +721,30 @@ func TestTreeMaterializerMultipleIssuances(t *testing.T) {
 		BatchOutput:   f.batchOut,
 	}
 	require.NoError(t, built.Verify())
+}
+
+// TestTreeMaterializerRejectsRepeatedIssuance checks that a node refuses two
+// inputs of one issuance, which its children could not extend.
+func TestTreeMaterializerRejectsRepeatedIssuance(t *testing.T) {
+	t.Parallel()
+
+	f := newTreeMaterializerFixture(t, 800, 700)
+	cfg := f.mat.cfg
+	input := cfg.Root.Inputs[0]
+	input.Amount = 750
+	cfg.Root.Inputs = []TreeRootAssetInput{input, input}
+	materializer, err := newTreeMaterializer(
+		cfg, f.structure.AssetContext, f.batch, &fakeTreeDriver{},
+	)
+	require.NoError(t, err)
+
+	err = tree.Materialize(
+		t.Context(), f.structure.Root, tree.MaterializeParams{
+			Input: f.batch,
+		},
+		materializer,
+	)
+	require.ErrorContains(t, err, "asset input 1 repeats an issuance")
 }
 
 // TestTreeMaterializerCommitCache tests completed commit replay and retries.

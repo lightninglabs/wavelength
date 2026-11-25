@@ -29,7 +29,9 @@ Durable journals retain committed packages for restart recovery.
   after a reorganization still serves a journaled claim.
   `DecodeAssetVTXOClaimInputs` reads, for each issuance an asset VTXO's leaf
   holds, the proof path down to the leaf and the OP_TRUE witness from the
-  leaf's sealed package.
+  leaf's sealed package. A leaf transition that merges inputs extends the
+  path of its first virtual input, which its proof spends, and carries the
+  other inputs' paths as co-input paths.
 - `SelectOnboardingProofs` / `ExportOnboardedProof` — Pick and export the
   confirmed proofs of the asset anchors that fund an onboarding (one issuance,
   smallest covering anchor, else the largest anchors up to
@@ -49,6 +51,14 @@ Durable journals retain committed packages for restart recovery.
 - `BuildAssetTree` / `AssetTreeRequest` / `TreeMaterializerConfig` — Builds an
   asset VTXO tree beneath a batch output, returning a `lib/tree.Tree` whose
   node outputs commit to the asset transitions.
+- `BuildOORTransfer` / `OORTransferRequest` / `OORTransfer` — Commits the
+  asset transitions of an OOR transfer that spends up to
+  `MaxOORAssetInputs` asset VTXOs: each VTXO's pieces move into its
+  checkpoint output, then the Ark transaction merges them, per issuance, into
+  the new asset VTXOs (a recipient and the sender's asset change). Bitcoin
+  checkpoints, such as a leased carrier, and Bitcoin outputs ride along
+  unchanged. The Ark package holds every new asset VTXO's proof, so
+  `DecodeAssetVTXOClaimInputs` reads their pieces from it.
 - `TreeRootAssetSource` / `TreeRootAssetInput` — The asset states held by the
   batch output that the tree's root node spends. `BatchAnchorCommit.RootSource`
   feeds straight into `TreeMaterializerConfig.Root`.
@@ -95,6 +105,9 @@ Durable journals retain committed packages for restart recovery.
   same request digest decodes the journaled package instead of committing again.
   The journal write uses `context.WithoutCancel` plus a bounded timeout, so a
   cancelled request still records what the backend already sealed.
+  `BuildOORTransfer` is the exception: its commits are caller-funded and
+  lock no coins, so a lost result is rebuilt, and the caller keeps the
+  result until the transfer settles.
 - **A journal key is bound to one request digest.** The digest is computed over
   the request under a domain-separated hash (`wavelength/asset-tree-request/v0`
   for trees). Loading state whose digest does not match the current request is
@@ -152,6 +165,23 @@ Durable journals retain committed packages for restart recovery.
   Each extra input becomes a co-input path of the proof path step, which
   tap-sdk bounds. Plans above the bound fail with
   `ErrTooManyTransitionInputs` before the backend seals anything.
+- **An asset Ark transaction is still canonical.** It orders outputs by
+  value and script like any Ark transaction, but an asset output's script
+  commits to a root that depends on the output order through the split
+  commitment. `BuildOORTransfer` previews a layout and accepts it only once
+  the composed scripts sort into that layout, varying the OP_TRUE key domain
+  when the layout does not settle (`ErrOOROrderingUnresolved` after
+  `maxOOROrderingNonces`). Two outputs may not pay the same value to the
+  same script, where an asset output counts with its uncomposed policy
+  script.
+- **An OOR transfer keeps every new proof path within tap-sdk's bounds.**
+  Each transfer adds two unconfirmed steps, and a merge nests the other
+  VTXOs' paths one level deeper as co-input paths. `BuildOORTransfer`
+  refuses, with `ErrOORProofLimit`, a piece without room for two steps
+  before any commit, and a merge in which any piece could exceed the
+  co-input nesting or size bounds before the Ark commit, since the backend
+  picks which input the transition spends. After the Ark commit it checks
+  the exact paths every new asset VTXO reads.
 - **An asset VTXO is verified against its round, not a wallet.**
   `VTXOVerifier` requires the leaf package to seal the leaf's own
   transaction, and every asset output to land in the VTXO under an OP_TRUE

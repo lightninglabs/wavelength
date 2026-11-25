@@ -94,8 +94,8 @@ type TreeMaterializerConfig struct {
 	Digest tapsdk.Hash
 }
 
-// treePathVerifier delegates existing proof steps and checks appended tree
-// steps against their transactions.
+// treePathVerifier accepts the steps it appended to a proof path and delegates
+// every other step to its base verifier.
 type treePathVerifier struct {
 	base      customanchor.ConfirmedProofVerifier
 	baseDepth uint16
@@ -115,49 +115,51 @@ func (v *treePathVerifier) VerifyConfirmedProof(ctx context.Context,
 }
 
 // VerifyUnconfirmedAnchor verifies one unconfirmed transition.
+//
+// tap-sdk verifies a merged step's co-input paths with this verifier too, and
+// their step indexes restart at zero, so a step index alone does not tell an
+// appended step from an earlier one.
 func (v *treePathVerifier) VerifyUnconfirmedAnchor(ctx context.Context,
 	transition customanchor.UnconfirmedAnchorVerification) error {
 
-	if transition.StepIndex < v.baseDepth {
-		base, ok := v.base.(customanchor.UnconfirmedAnchorVerifier)
-		if !ok {
-			return fmt.Errorf("proof verifier cannot verify " +
-				"unconfirmed step")
-		}
-
-		return base.VerifyUnconfirmedAnchor(ctx, transition)
+	if v.appended(transition) {
+		return nil
 	}
 
+	base, ok := v.base.(customanchor.UnconfirmedAnchorVerifier)
+	if !ok {
+		return fmt.Errorf("proof verifier cannot verify "+
+			"unconfirmed step %d", transition.StepIndex)
+	}
+
+	return base.VerifyUnconfirmedAnchor(ctx, transition)
+}
+
+// appended reports whether transition is one of the steps v appended.
+func (v *treePathVerifier) appended(
+	transition customanchor.UnconfirmedAnchorVerification) bool {
+
+	if transition.StepIndex < v.baseDepth {
+		return false
+	}
 	stepIndex := int(transition.StepIndex - v.baseDepth)
-	if stepIndex >= len(v.steps) {
-		return fmt.Errorf("unexpected unconfirmed proof step %d",
-			transition.StepIndex)
+	if stepIndex >= len(v.steps) || v.steps[stepIndex] == nil {
+		return false
 	}
 	expected := v.steps[stepIndex]
-	if expected == nil {
-		return fmt.Errorf("unconfirmed proof step %d has no binding",
-			transition.StepIndex)
-	}
-	if transition.PreviousAnchorOutpoint != expected.previousOutpoint {
-		return fmt.Errorf("step %d previous outpoint mismatch",
-			transition.StepIndex)
-	}
-	if transition.AnchorOutpoint != expected.anchorOutpoint {
-		return fmt.Errorf("step %d anchor outpoint mismatch",
-			transition.StepIndex)
-	}
-	if !bytes.Equal(transition.AnchorTransaction, expected.transaction) {
-		return fmt.Errorf("step %d anchor transaction mismatch",
-			transition.StepIndex)
-	}
-	if !slices.Equal(
-		transition.PreviousAnchorOutpoints, expected.previousOutpoints,
-	) {
-		return fmt.Errorf("step %d input outpoints mismatch",
-			transition.StepIndex)
+
+	switch {
+	case transition.PreviousAnchorOutpoint != expected.previousOutpoint,
+		transition.AnchorOutpoint != expected.anchorOutpoint:
+		return false
+
+	case !bytes.Equal(transition.AnchorTransaction, expected.transaction):
+		return false
 	}
 
-	return nil
+	return slices.Equal(
+		transition.PreviousAnchorOutpoints, expected.previousOutpoints,
+	)
 }
 
 type nodeAssetHandoff struct {
@@ -696,7 +698,11 @@ func validateIssuanceConservation(sources []*assetSpendSource,
 
 	expected := make(map[tapsdk.AssetID]uint64, len(sources))
 	for _, source := range sources {
-		expected[source.issuanceID] = source.amount
+		amount := expected[source.issuanceID]
+		if source.amount > math.MaxUint64-amount {
+			return fmt.Errorf("asset input amount overflow")
+		}
+		expected[source.issuanceID] = amount + source.amount
 	}
 	actual := make(map[tapsdk.AssetID]uint64, len(sources))
 	for _, output := range outputs {
@@ -737,6 +743,7 @@ func (m *treeMaterializer) validateCommitInputs(input wire.OutPoint,
 		byID[assetInput.logicalInputID] = assetInput
 	}
 
+	issuances := make(map[tapsdk.AssetID]struct{}, len(sources))
 	for idx, source := range sources {
 		id := fmt.Sprintf("wavelength-tree-input-%d", idx)
 		assetInput, ok := byID[id]
@@ -764,6 +771,14 @@ func (m *treeMaterializer) validateCommitInputs(input wire.OutPoint,
 			return fmt.Errorf("asset input %d amount %d, want %d",
 				idx, assetInput.amount, source.amount)
 		}
+
+		// A child extends one source per issuance, so a node cannot
+		// merge two inputs of one issuance.
+		if _, ok := issuances[source.issuanceID]; ok {
+			return fmt.Errorf("asset input %d repeats an issuance",
+				idx)
+		}
+		issuances[source.issuanceID] = struct{}{}
 	}
 
 	return nil
