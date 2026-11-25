@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	// DefaultChannelReactionWindow separates channel-funding eligibility
-	// from funder-refund eligibility by 432 blocks: about three days at
-	// 144 blocks per day, not a wall-clock guarantee.
+	// DefaultChannelReactionWindow is the minimum gap between
+	// channel-funding and funder-refund eligibility. At 144 blocks per
+	// day, 432 blocks corresponds to about three days.
 	DefaultChannelReactionWindow uint32 = 432
 )
 
@@ -45,15 +45,15 @@ type ChannelVTXOParams struct {
 	ChannelDelay uint32
 
 	// FunderDelay gates the refund path in blocks from the same VTXO
-	// confirmation. It must be at least ChannelDelay + ReactionWindow,
-	// giving the non-funder time to materialize before refund is possible.
+	// confirmation. It must be at least ChannelDelay plus the effective
+	// reaction window, giving the non-funder time to materialize.
 	FunderDelay uint32
 
 	// MinExitDelay is the admitting Ark operator's minimum exit delay.
 	MinExitDelay uint32
 
-	// ReactionWindow is the minimum block gap between the two delayed
-	// paths. Zero selects DefaultChannelReactionWindow. Neither delay
+	// ReactionWindow can raise the minimum block gap between the two
+	// delayed paths above DefaultChannelReactionWindow. Neither delay
 	// extends the source round's absolute batch expiry.
 	ReactionWindow uint32
 }
@@ -420,10 +420,7 @@ func (p ChannelVTXOParams) validate() error {
 			"mode")
 	}
 
-	reactionWindow := p.ReactionWindow
-	if reactionWindow == 0 {
-		reactionWindow = DefaultChannelReactionWindow
-	}
+	reactionWindow := max(p.ReactionWindow, DefaultChannelReactionWindow)
 	if reactionWindow > wire.SequenceLockTimeMask ||
 		p.ChannelDelay > math.MaxUint32-reactionWindow {
 		return fmt.Errorf("channel VTXO reaction window overflows")

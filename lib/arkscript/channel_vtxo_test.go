@@ -66,6 +66,40 @@ func TestChannelVTXOPolicyReactionWindow(t *testing.T) {
 	require.ErrorContains(t, err, "preserve the reaction window")
 }
 
+// TestChannelVTXOPolicyReactionWindowFloor checks that an explicit smaller
+// window still requires the same minimum gap in construction and validation.
+func TestChannelVTXOPolicyReactionWindowFloor(t *testing.T) {
+	t.Parallel()
+
+	params := testChannelVTXOParams(t)
+	params.ReactionWindow = 1
+	policy, err := NewChannelVTXOPolicy(params)
+	require.NoError(t, err)
+	require.NoError(t, ValidateChannelVTXOTemplate(policy.Template, params))
+	err = ValidateChannelVTXOPolicy(
+		policy.Template, params.ArkOperatorKey, params.MinExitDelay,
+	)
+	require.NoError(t, err)
+
+	// Shorten the refund delay directly in the template so both validators
+	// see the same policy even if construction rejects these parameters.
+	params.FunderDelay = params.ChannelDelay + params.ReactionWindow
+	funderCSV, ok := policy.FunderClosure.(*CSV)
+	require.True(t, ok)
+	funderCSV.Lock = blockchain.LockTimeToSequence(
+		false, params.FunderDelay,
+	)
+
+	_, err = NewChannelVTXOPolicy(params)
+	require.ErrorContains(t, err, "preserve the reaction window")
+	err = ValidateChannelVTXOTemplate(policy.Template, params)
+	require.ErrorContains(t, err, "preserve the reaction window")
+	err = ValidateChannelVTXOPolicy(
+		policy.Template, params.ArkOperatorKey, params.MinExitDelay,
+	)
+	require.ErrorContains(t, err, "preserve the reaction window")
+}
+
 // TestChannelVTXOPolicyCustomReactionWindow verifies callers can increase the
 // block budget without changing the channel-funding delay.
 func TestChannelVTXOPolicyCustomReactionWindow(t *testing.T) {
