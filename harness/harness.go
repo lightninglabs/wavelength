@@ -1297,6 +1297,10 @@ func (h *Harness) attemptStartBitcoind(containerName string) error {
 			// Keep container for logs on failure; Purge() will
 			// clean up.
 			hc.AutoRemove = false
+
+			// A bind conflict on an unused image port can take down
+			// the regtest RPC forward along with it.
+			hc.PublishAllPorts = false
 			hc.PortBindings =
 				map[docker.Port][]docker.PortBinding{
 					"18443/tcp": {{
