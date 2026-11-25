@@ -295,32 +295,28 @@ func TestDurableActorPerKeyFIFOSurvivesTransientFailure(t *testing.T) {
 // different correlation keys can interleave freely even when one of
 // them is in retry backoff. Both messages are pre-enqueued; the first
 // key is configured to fail on its first attempt, the second key is
-// expected to succeed promptly while the first key is in backoff.
+// expected to succeed while the first key is in backoff.
 func TestDurableActorCrossKeyIndependence(t *testing.T) {
 	t.Parallel()
 
 	rawDB := newSQLiteDB(t)
 	require.NoError(t, RunMigrations(rawDB, sqlc.BackendTypeSqlite))
 
+	now := time.Unix(1_700_000_000, 0)
+	testClock := clock.NewTestClock(now)
 	store, err := NewTxAwareDeliveryStoreFromDB(
-		rawDB, sqlc.BackendTypeSqlite, clock.NewDefaultClock(),
-		btclog.Disabled,
+		rawDB, sqlc.BackendTypeSqlite, testClock, btclog.Disabled,
 	)
 	require.NoError(t, err)
 
+	// K2 cannot be claimed until the test observes K1's first failure.
 	const mailbox = "reorder-test-cross"
-
-	// Pre-enqueue one message per key. K1 enqueues first, K2 right
-	// after. Without per-key FIFO, K1's retry backoff still wouldn't
-	// block K2 (different key); with the fix, behavior is unchanged
-	// across keys — we assert that here.
-	now := time.Now()
 	preEnqueueKeyed(
 		t, store, mailbox, "k1-msg-1", "k1-msg-1", "alice/round-1", now,
 	)
 	preEnqueueKeyed(
 		t, store, mailbox, "k2-msg-1", "k2-msg-1", "bob/round-2",
-		now.Add(time.Millisecond),
+		now.Add(time.Second),
 	)
 
 	codec := newKeyedTestCodec()
@@ -331,8 +327,10 @@ func TestDurableActorCrossKeyIndependence(t *testing.T) {
 	cfg := actor.DefaultDurableActorConfig[*keyedTestMsg, int](
 		mailbox, behavior, store, codec,
 	)
+	cfg.Clock = fn.Some[clock.Clock](testClock)
 	cfg.TellRetryPolicy = longRetryPolicy
 	cfg.PollInterval = 25 * time.Millisecond
+	cfg.MaxPollInterval = cfg.PollInterval
 	cfg.LeaseDuration = 5 * time.Second
 	cfg.HeartbeatInterval = 2 * time.Second
 
@@ -347,19 +345,31 @@ func TestDurableActorCrossKeyIndependence(t *testing.T) {
 		require.NoError(t, a.StopAndWait(stopCtx))
 	}()
 
-	// K2 should be processed well within K1's backoff window since
-	// they're on different keys. The retry delay is 2s; if K2 has to
-	// wait for K1's retry it would fail this assertion.
-	require.Eventually(t, func() bool {
-		for _, id := range behavior.observedOrder() {
-			if id == "k2-msg-1" {
-				return true
-			}
-		}
+	const timeout = 10 * time.Second
+	select {
+	case id := <-behavior.firstFailureCh:
+		require.Equal(t, "k1-msg-1", id)
 
-		return false
-	}, 1*time.Second, 25*time.Millisecond,
-		"K2 must process well within K1's backoff window")
+	case <-time.After(timeout):
+		t.Fatal("K1 did not reach its first failure")
+	}
+
+	// Only K2 is eligible: however long the host takes to schedule it,
+	// the two-second K1 retry cannot expire on the frozen store clock.
+	testClock.SetTime(now.Add(time.Second))
+	require.Eventually(t, func() bool {
+		return len(behavior.observedOrder()) != 0
+	}, timeout, 25*time.Millisecond)
+	require.Equal(t, []string{"k2-msg-1"}, behavior.observedOrder())
+
+	// Release K1 and prove it was deferred, not lost.
+	testClock.SetTime(now.Add(time.Minute))
+	require.Eventually(t, func() bool {
+		return len(behavior.observedOrder()) == 2
+	}, timeout, 25*time.Millisecond)
+	require.Equal(
+		t, []string{"k2-msg-1", "k1-msg-1"}, behavior.observedOrder(),
+	)
 }
 
 // fifoTx is the empty transaction-scoped store for orderRecordingTxBehavior.
