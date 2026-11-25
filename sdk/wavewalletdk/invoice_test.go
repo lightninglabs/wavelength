@@ -126,8 +126,13 @@ func TestDecodeInvoice(t *testing.T) {
 		"regtest",
 	)
 	require.ErrorContains(t, err, "expired")
-	_, err = DecodeInvoice(amountless[:len(amountless)-1]+"q", "regtest")
-	require.Error(t, err)
+	// Change one checksum symbol without leaving the Bech32 alphabet.
+	suffix := "q"
+	if strings.HasSuffix(amountless, suffix) {
+		suffix = "p"
+	}
+	_, err = DecodeInvoice(amountless[:len(amountless)-1]+suffix, "regtest")
+	require.ErrorContains(t, err, "checksum")
 	_, err = DecodeInvoice("lnbcrt1invalid", "regtest")
 	require.Error(t, err)
 }
