@@ -34,7 +34,7 @@ The package is gated behind three build tags — `mobile`, `wavewalletrpc`, and
 
 | Shape | Convention | Verbs |
 |-------|-----------|-------|
-| RPC verbs | **JSON `[]byte` in / out** (throwing) | `GetInfo`, `GenerateSeed`, `CreateWallet`, `UnlockWallet`, `OpenWalletFromPasskey`, `Balance`, `Deposit`, `Receive`, `PrepareSend`, `SendPrepared`, `List`, `Exit`, `ExitStatus`, `ExitSummary`, `GetExitPlan`, `SweepWallet`, `Status`, `NewAssetReceiveKeys`, `NewAssetFundingAddress`, `ImportAssetProof`, `ListOwnedAssets`, `DepositAsset`, `ListAssetDeposits`, `BoardAssetDeposit` |
+| RPC verbs | **JSON `[]byte` in / out** (throwing) | `GetInfo`, `GenerateSeed`, `CreateWallet`, `UnlockWallet`, `OpenWalletFromPasskey`, `Balance`, `Deposit`, `Receive`, `PrepareSend`, `SendPrepared`, `List`, `Exit`, `ExitStatus`, `ExitSummary`, `GetExitPlan`, `SweepWallet`, `Status`, `NewAssetReceiveKeys`, `NewAssetFundingAddress`, `ImportAssetProof`, `ListOwnedAssets`, `NewAssetAddress`, `ListAssetAddresses`, `ListAssetReceives`, `DepositAsset`, `ListAssetDeposits`, `BoardAssetDeposit` |
 | Lifecycle JSON | **JSON `[]byte` in / out** (throwing) | `StartExternalSeedWallet` |
 | Streaming | **pull handle** `Subscription{ next() []byte; close() }` | `Subscribe` |
 | Hot-path scalars | **plain `int64`/`bool`** | `ConfirmedBalanceSat`, `PendingInboundSat`, `WalletReady`, `IsRunning` |
@@ -227,6 +227,20 @@ amount can exceed the largest integer JavaScript reads exactly from a JSON
 number; Bitcoin amounts stay numbers. A deposit spends the wallet's own
 Bitcoin, so the host funds the address from `NewAssetFundingAddress` before
 it calls `DepositAsset`.
+
+`asset_courier_addr` names the proof courier of the wallet's Taproot Asset
+addresses, as `authmailbox+universerpc://host:port`. With it,
+`NewAssetAddress` returns the wallet's address for an asset, and the daemon
+receives the transfers a sender pays to it: the sender announces a transfer
+in the courier's mailbox, which the daemon reads while the app runs.
+`asset_courier_endpoints` lists the couriers the app reaches at another host
+or with a TLS certificate file of its own, each as `host:port=target` or
+`host:port=target=tlscertpath`. `ListAssetAddresses` and `ListAssetReceives`
+return `AssetAddress` and `AssetReceive` arrays. `SyncAssetReceives` takes
+and returns nothing: it reads the mailboxes once, and an app calls it when it
+returns to the foreground, where no mailbox connection survived. A browser
+opens no connection to a courier, so the address verbs are not part of the
+WebAssembly host.
 
 ## Building the bindings
 

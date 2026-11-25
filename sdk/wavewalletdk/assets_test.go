@@ -54,6 +54,102 @@ func TestAssetsEnabledOverride(t *testing.T) {
 	})
 }
 
+// TestAssetCourierOverride verifies embedded hosts can name the proof
+// courier of the wallet's Taproot Asset addresses, and that the daemon names
+// none unless told to.
+func TestAssetCourierOverride(t *testing.T) {
+	t.Parallel()
+
+	const (
+		courier  = "authmailbox+universerpc://tapd:10029"
+		endpoint = "tapd:10029=127.0.0.1:12029"
+	)
+
+	daemonCfg, err := daemonConfig(DefaultConfig())
+	require.NoError(t, err)
+	require.Empty(t, daemonCfg.Assets.Courier.Addr)
+	require.Empty(t, daemonCfg.Assets.Courier.Endpoints)
+
+	cfg := DefaultConfig()
+	cfg.AssetCourierAddr = courier
+	cfg.AssetCourierEndpoints = []string{endpoint}
+	daemonCfg, err = daemonConfig(cfg)
+	require.NoError(t, err)
+	require.Equal(t, courier, daemonCfg.Assets.Courier.Addr)
+	require.Equal(
+		t, []string{endpoint}, daemonCfg.Assets.Courier.Endpoints,
+	)
+	require.False(t, daemonCfg.Assets.Enabled)
+
+	// Unset fields keep a caller-owned daemon config, as a copy.
+	base := waved.DefaultConfig()
+	base.Assets.Courier.Addr = courier
+	base.Assets.Courier.Endpoints = []string{endpoint}
+	daemonCfg, err = daemonConfig(Config{DaemonConfig: base})
+	require.NoError(t, err)
+	require.Equal(t, courier, daemonCfg.Assets.Courier.Addr)
+	daemonCfg.Assets.Courier.Endpoints[0] = "changed"
+	require.Equal(t, []string{endpoint}, base.Assets.Courier.Endpoints)
+}
+
+// TestAssetReceiveFromProto maps an address and a receive with its
+// lifecycle stage to the wrapper types.
+func TestAssetReceiveFromProto(t *testing.T) {
+	t.Parallel()
+
+	addr := assetAddressFromProto(&waverpc.AssetAddress{
+		Address:          "taprt1addr",
+		AssetRef:         "tapr1ref",
+		ProofCourierAddr: "authmailbox+universerpc://tapd:10029",
+	})
+	require.Equal(t, &AssetAddress{
+		Address:          "taprt1addr",
+		AssetRef:         "tapr1ref",
+		ProofCourierAddr: "authmailbox+universerpc://tapd:10029",
+	}, addr)
+
+	confirmed := waverpc.AssetReceiveStatus_ASSET_RECEIVE_STATUS_CONFIRMED
+	receive := assetReceiveFromProto(&waverpc.AssetReceive{
+		Outpoint:           "aa:1",
+		Address:            "taprt1addr",
+		Status:             confirmed,
+		AssetRef:           "tapr1ref",
+		AssetId:            "aabb",
+		Amount:             1<<53 + 1,
+		ConfirmationHeight: 120,
+	})
+	require.Equal(t, &AssetReceive{
+		Outpoint:           "aa:1",
+		Address:            "taprt1addr",
+		Status:             "confirmed",
+		AssetRef:           "tapr1ref",
+		AssetID:            "aabb",
+		Amount:             1<<53 + 1,
+		ConfirmationHeight: 120,
+	}, receive)
+
+	var encoded any = *receive
+	receiveJSON, err := json.Marshal(encoded)
+	require.NoError(t, err)
+	require.Contains(
+		t, string(receiveJSON), `"Amount":"9007199254740993"`,
+	)
+
+	detected := waverpc.AssetReceiveStatus_ASSET_RECEIVE_STATUS_DETECTED
+	failed := waverpc.AssetReceiveStatus_ASSET_RECEIVE_STATUS_FAILED
+	for rpcStatus, status := range map[waverpc.AssetReceiveStatus]string{
+		detected: "detected",
+		failed:   "failed",
+		0:        "unspecified",
+	} {
+		require.Equal(
+			t, status, assetReceiveFromProto(
+				&waverpc.AssetReceive{Status: rpcStatus},
+			).Status,
+		)
+	}
+}
+
 // TestAssetDepositFromProto maps a deposit and its lifecycle stage to the
 // wrapper type.
 func TestAssetDepositFromProto(t *testing.T) {

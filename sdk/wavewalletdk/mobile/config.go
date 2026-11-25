@@ -50,6 +50,12 @@ type mobileConfig struct {
 	AssetsEnabled  bool     `json:"assets_enabled"`
 	AssetGroupKeys []string `json:"asset_group_keys"`
 
+	// AssetCourierAddr is the proof courier of the wallet's Taproot Asset
+	// addresses, and AssetCourierEndpoints the couriers reached at
+	// another host or with a TLS certificate of their own.
+	AssetCourierAddr      string   `json:"asset_courier_addr"`
+	AssetCourierEndpoints []string `json:"asset_courier_endpoints"`
+
 	// Swap server.
 	SwapServerAddress      string `json:"swap_server_address"`
 	SwapNotificationIssuer string `json:"swap_notification_issuer"`
@@ -218,6 +224,14 @@ func applyMobileConfig(cfg *wavewalletdk.Config, mc mobileConfig) {
 	if len(mc.AssetGroupKeys) != 0 {
 		cfg.AssetGroupKeys = append(
 			[]string(nil), mc.AssetGroupKeys...,
+		)
+	}
+	if mc.AssetCourierAddr != "" {
+		cfg.AssetCourierAddr = mc.AssetCourierAddr
+	}
+	if len(mc.AssetCourierEndpoints) != 0 {
+		cfg.AssetCourierEndpoints = append(
+			[]string(nil), mc.AssetCourierEndpoints...,
 		)
 	}
 

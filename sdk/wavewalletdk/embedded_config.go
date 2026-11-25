@@ -95,6 +95,17 @@ type Config struct {
 	// groups the daemon trusts.
 	AssetGroupKeys []string
 
+	// AssetCourierAddr is the proof courier of the wallet's Taproot Asset
+	// addresses, as authmailbox+universerpc://host:port. Empty keeps the
+	// daemon configuration, which names no courier by default, and the
+	// wallet then creates no address.
+	AssetCourierAddr string
+
+	// AssetCourierEndpoints lists the proof couriers the daemon does not
+	// reach as their address says, each as host:port=target or
+	// host:port=target=tlscertpath.
+	AssetCourierEndpoints []string
+
 	// SwapServerAddress is the swap server address for the selected
 	// transport. Empty selects the daemon network+transport default.
 	SwapServerAddress string

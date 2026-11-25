@@ -89,6 +89,56 @@ type OwnedAsset struct {
 	AnchorValueSat int64
 }
 
+// NewAssetAddressRequest names the asset an address receives.
+type NewAssetAddressRequest struct {
+	// AssetRef is the asset ID, or the group key of a grouped asset.
+	AssetRef string
+}
+
+// AssetAddress is a Taproot Asset address of the asset wallet. A sender
+// pays it any number of times and chooses each amount.
+type AssetAddress struct {
+	// Address is the encoded address a sender pays.
+	Address string
+
+	// AssetRef is the group key of a grouped asset, else the asset ID.
+	AssetRef string
+
+	// ProofCourierAddr is the proof courier in whose mailbox a sender
+	// announces a transfer to the address.
+	ProofCourierAddr string
+}
+
+// AssetReceive is what one anchor output paid to an address of the asset
+// wallet. A confirmed output has one entry per asset ID it carries.
+type AssetReceive struct {
+	// Outpoint is the anchor output that carries the transfer.
+	Outpoint string
+
+	// Address is the encoded address the transfer pays.
+	Address string
+
+	// Status is "detected" once a sender announced the transfer,
+	// "confirmed" once the wallet took its assets, or "failed" when the
+	// wallet took none.
+	Status string
+
+	// AssetRef is the asset of the address.
+	AssetRef string
+
+	// AssetID is the ID of the issuance the received units belong to,
+	// empty unless the receive is confirmed.
+	AssetID string
+
+	// Amount is the number of received units, zero unless the receive is
+	// confirmed. It still counts units the wallet has spent since.
+	Amount AssetUnits
+
+	// ConfirmationHeight is the height of the block that confirms the
+	// anchor output.
+	ConfirmationHeight uint32
+}
+
 // DepositAssetRequest funds a boarding output holding a Taproot Asset.
 type DepositAssetRequest struct {
 	// RequestID identifies the deposit; a retry with the same ID resumes
@@ -221,6 +271,78 @@ func (c *Client) ListOwnedAssets(ctx context.Context) ([]OwnedAsset, error) {
 	return assets, nil
 }
 
+// NewAssetAddress returns the wallet's Taproot Asset address for an asset.
+// The first call for an asset creates the address, and later calls return
+// the same one.
+func (c *Client) NewAssetAddress(ctx context.Context,
+	req NewAssetAddressRequest) (*AssetAddress, error) {
+
+	resp, err := c.daemon.NewAssetAddress(
+		ctx, &waverpc.NewAssetAddressRequest{
+			AssetRef: req.AssetRef,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create asset address: %w", err)
+	}
+
+	return assetAddressFromProto(resp), nil
+}
+
+// ListAssetAddresses returns the wallet's Taproot Asset addresses, oldest
+// first.
+func (c *Client) ListAssetAddresses(ctx context.Context) ([]AssetAddress,
+	error) {
+
+	resp, err := c.daemon.ListAssetAddresses(
+		ctx, &waverpc.ListAssetAddressesRequest{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list asset addresses: %w", err)
+	}
+
+	addrs := make([]AssetAddress, 0, len(resp.GetAddresses()))
+	for _, addr := range resp.GetAddresses() {
+		addrs = append(addrs, *assetAddressFromProto(addr))
+	}
+
+	return addrs, nil
+}
+
+// ListAssetReceives returns the transfers sent to the wallet's Taproot
+// Asset addresses, oldest first.
+func (c *Client) ListAssetReceives(ctx context.Context) ([]AssetReceive,
+	error) {
+
+	resp, err := c.daemon.ListAssetReceives(
+		ctx, &waverpc.ListAssetReceivesRequest{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list asset receives: %w", err)
+	}
+
+	receives := make([]AssetReceive, 0, len(resp.GetReceives()))
+	for _, receive := range resp.GetReceives() {
+		receives = append(receives, *assetReceiveFromProto(receive))
+	}
+
+	return receives, nil
+}
+
+// SyncAssetReceives reads the proof courier mailbox of every address once
+// and works once on every unfinished receive. A host that cannot keep a
+// connection open calls it when it returns to the foreground.
+func (c *Client) SyncAssetReceives(ctx context.Context) error {
+	_, err := c.daemon.SyncAssetReceives(
+		ctx, &waverpc.SyncAssetReceivesRequest{},
+	)
+	if err != nil {
+		return fmt.Errorf("sync asset receives: %w", err)
+	}
+
+	return nil
+}
+
 // DepositAsset funds a boarding output holding a Taproot Asset, or resumes
 // the deposit with the same request ID.
 func (c *Client) DepositAsset(ctx context.Context, req DepositAssetRequest) (
@@ -285,6 +407,43 @@ func ownedAssetFromProto(held *waverpc.OwnedAsset) *OwnedAsset {
 		Outpoint:       held.GetOutpoint(),
 		ScriptKey:      hex.EncodeToString(held.GetScriptKey()),
 		AnchorValueSat: held.GetAnchorValueSat(),
+	}
+}
+
+// assetAddressFromProto converts an asset address to its wrapper type.
+func assetAddressFromProto(addr *waverpc.AssetAddress) *AssetAddress {
+	return &AssetAddress{
+		Address:          addr.GetAddress(),
+		AssetRef:         addr.GetAssetRef(),
+		ProofCourierAddr: addr.GetProofCourierAddr(),
+	}
+}
+
+// assetReceiveFromProto converts an asset receive to its wrapper type.
+func assetReceiveFromProto(receive *waverpc.AssetReceive) *AssetReceive {
+	var status string
+	switch receive.GetStatus() {
+	case waverpc.AssetReceiveStatus_ASSET_RECEIVE_STATUS_DETECTED:
+		status = "detected"
+
+	case waverpc.AssetReceiveStatus_ASSET_RECEIVE_STATUS_CONFIRMED:
+		status = "confirmed"
+
+	case waverpc.AssetReceiveStatus_ASSET_RECEIVE_STATUS_FAILED:
+		status = "failed"
+
+	default:
+		status = "unspecified"
+	}
+
+	return &AssetReceive{
+		Outpoint:           receive.GetOutpoint(),
+		Address:            receive.GetAddress(),
+		Status:             status,
+		AssetRef:           receive.GetAssetRef(),
+		AssetID:            receive.GetAssetId(),
+		Amount:             AssetUnits(receive.GetAmount()),
+		ConfirmationHeight: receive.GetConfirmationHeight(),
 	}
 }
 

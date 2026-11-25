@@ -127,6 +127,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
   `Config.AssetsEnabled` turns on Taproot Assets in the daemon and
   `Config.AssetGroupKeys` lists the groups it trusts; zero values keep the
   daemon configuration.
+  `NewAssetAddress`, `ListAssetAddresses`, `ListAssetReceives` and
+  `SyncAssetReceives` receive at a Taproot Asset address (`AssetAddress`,
+  `AssetReceive`). The wallet has one address per asset, which a sender pays
+  any number of times. `Config.AssetCourierAddr` names the proof courier of
+  those addresses and `Config.AssetCourierEndpoints` the couriers reached at
+  another host or with their own TLS certificate; the daemon names no
+  courier by default, and a browser host receives at no address.
 - `ErrWalletRPCUnavailable` — sentinel returned by every wallet method
   on builds without the `wavewalletrpc` tag.
 - `ErrSwapRuntimeUnavailable` — back-compat alias for
