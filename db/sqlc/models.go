@@ -103,6 +103,15 @@ type AssetDepositClaim struct {
 	UpdatedAt int64
 }
 
+type AssetEngineAddress struct {
+	AddressID      int64
+	ScriptKey      []byte
+	Encoded        string
+	InternalKey    []byte
+	CreationHeight int64
+	CreatedAt      int64
+}
+
 type AssetEngineKey struct {
 	Pubkey    []byte
 	KeyFamily int64
@@ -117,6 +126,19 @@ type AssetEngineProof struct {
 	ProofFile     []byte
 	Owned         bool
 	Spent         bool
+}
+
+type AssetEngineReceive struct {
+	ReceiveID        int64
+	OutpointHash     []byte
+	OutpointIndex    int64
+	AddressScriptKey []byte
+	Announcement     []byte
+	State            int32
+	BlockHash        []byte
+	BlockHeight      int64
+	CreatedAt        int64
+	Payload          []byte
 }
 
 type AssetEngineScriptKey struct {

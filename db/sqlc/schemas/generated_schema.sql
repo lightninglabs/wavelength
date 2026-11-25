@@ -184,6 +184,21 @@ CREATE TABLE asset_deposits (
     ))
 );
 
+CREATE TABLE asset_engine_addresses (
+    -- address_id orders addresses created at the same time.
+    address_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    script_key BLOB NOT NULL UNIQUE CHECK (length(script_key) = 33),
+    encoded TEXT NOT NULL CHECK (length(encoded) > 0),
+    internal_key BLOB NOT NULL CHECK (length(internal_key) = 33),
+
+    -- creation_height is the chain height at creation. No transfer to the
+    -- address confirms below it.
+    creation_height BIGINT NOT NULL CHECK (creation_height >= 0),
+
+    -- created_at is in Unix nanoseconds.
+    created_at BIGINT NOT NULL
+);
+
 CREATE TABLE asset_engine_keys (
     pubkey BLOB PRIMARY KEY CHECK (length(pubkey) = 33),
     key_family BIGINT NOT NULL CHECK (key_family >= 0),
@@ -200,6 +215,31 @@ CREATE TABLE asset_engine_proofs (
     spent BOOLEAN NOT NULL DEFAULT FALSE,
 
     PRIMARY KEY (asset_id, script_key, outpoint_hash, outpoint_index)
+);
+
+CREATE TABLE asset_engine_receives (
+    -- receive_id orders receives recorded at the same time.
+    receive_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    outpoint_hash BLOB NOT NULL CHECK (length(outpoint_hash) = 32),
+    outpoint_index BIGINT NOT NULL CHECK (outpoint_index >= 0),
+
+    -- address_script_key is the script_key of the paid address.
+    address_script_key BLOB NOT NULL
+        CHECK (length(address_script_key) = 33),
+
+    -- announcement is the engine's hash of what the sender announced.
+    announcement BLOB NOT NULL CHECK (length(announcement) = 32),
+    state INTEGER NOT NULL CHECK (state >= 0),
+
+    -- block_hash is NULL until the receive is confirmed.
+    block_hash BLOB CHECK (block_hash IS NULL OR length(block_hash) = 32),
+    block_height BIGINT NOT NULL DEFAULT 0 CHECK (block_height >= 0),
+
+    -- created_at is in Unix nanoseconds.
+    created_at BIGINT NOT NULL,
+    payload BLOB NOT NULL,
+
+    UNIQUE (outpoint_hash, outpoint_index, address_script_key, announcement)
 );
 
 CREATE TABLE asset_engine_script_keys (
@@ -573,8 +613,14 @@ CREATE UNIQUE INDEX idx_asset_deposits_outpoint
 CREATE INDEX idx_asset_deposits_status
     ON asset_deposits(status);
 
+CREATE INDEX idx_asset_engine_addresses_created_at
+    ON asset_engine_addresses(created_at, address_id);
+
 CREATE INDEX idx_asset_engine_proofs_owned
     ON asset_engine_proofs(owned, spent);
+
+CREATE INDEX idx_asset_engine_receives_created_at
+    ON asset_engine_receives(created_at, receive_id);
 
 CREATE INDEX idx_asset_engine_transfers_created_at
     ON asset_engine_transfers(created_at);

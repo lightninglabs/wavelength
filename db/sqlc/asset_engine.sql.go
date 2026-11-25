@@ -76,6 +76,42 @@ func (q *Queries) GetAssetEngineProof(ctx context.Context, arg GetAssetEnginePro
 	return i, err
 }
 
+const GetAssetEngineReceive = `-- name: GetAssetEngineReceive :one
+SELECT receive_id, outpoint_hash, outpoint_index, address_script_key, announcement, state, block_hash, block_height, created_at, payload FROM asset_engine_receives
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+    AND address_script_key = $3 AND announcement = $4
+`
+
+type GetAssetEngineReceiveParams struct {
+	OutpointHash     []byte
+	OutpointIndex    int64
+	AddressScriptKey []byte
+	Announcement     []byte
+}
+
+func (q *Queries) GetAssetEngineReceive(ctx context.Context, arg GetAssetEngineReceiveParams) (AssetEngineReceive, error) {
+	row := q.db.QueryRowContext(ctx, GetAssetEngineReceive,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.AddressScriptKey,
+		arg.Announcement,
+	)
+	var i AssetEngineReceive
+	err := row.Scan(
+		&i.ReceiveID,
+		&i.OutpointHash,
+		&i.OutpointIndex,
+		&i.AddressScriptKey,
+		&i.Announcement,
+		&i.State,
+		&i.BlockHash,
+		&i.BlockHeight,
+		&i.CreatedAt,
+		&i.Payload,
+	)
+	return i, err
+}
+
 const GetAssetEngineScriptKey = `-- name: GetAssetEngineScriptKey :one
 SELECT tweaked_key, raw_key, key_family, key_index, tweak, key_type FROM asset_engine_script_keys WHERE tweaked_key = $1
 `
@@ -124,6 +160,37 @@ func (q *Queries) GetAssetJournalEntry(ctx context.Context, journalKey string) (
 	return value, err
 }
 
+const InsertAssetEngineAddress = `-- name: InsertAssetEngineAddress :execrows
+INSERT INTO asset_engine_addresses (
+    script_key, encoded, internal_key, creation_height, created_at
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (script_key) DO NOTHING
+`
+
+type InsertAssetEngineAddressParams struct {
+	ScriptKey      []byte
+	Encoded        string
+	InternalKey    []byte
+	CreationHeight int64
+	CreatedAt      int64
+}
+
+// InsertAssetEngineAddress records an address. A recorded script key inserts
+// nothing.
+func (q *Queries) InsertAssetEngineAddress(ctx context.Context, arg InsertAssetEngineAddressParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, InsertAssetEngineAddress,
+		arg.ScriptKey,
+		arg.Encoded,
+		arg.InternalKey,
+		arg.CreationHeight,
+		arg.CreatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const InsertAssetEngineKey = `-- name: InsertAssetEngineKey :exec
 INSERT INTO asset_engine_keys (pubkey, key_family, key_index)
 VALUES ($1, $2, $3)
@@ -140,6 +207,47 @@ type InsertAssetEngineKeyParams struct {
 func (q *Queries) InsertAssetEngineKey(ctx context.Context, arg InsertAssetEngineKeyParams) error {
 	_, err := q.db.ExecContext(ctx, InsertAssetEngineKey, arg.Pubkey, arg.KeyFamily, arg.KeyIndex)
 	return err
+}
+
+const InsertAssetEngineReceive = `-- name: InsertAssetEngineReceive :execrows
+INSERT INTO asset_engine_receives (
+    outpoint_hash, outpoint_index, address_script_key, announcement, state,
+    block_hash, block_height, created_at, payload
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (outpoint_hash, outpoint_index, address_script_key, announcement)
+DO NOTHING
+`
+
+type InsertAssetEngineReceiveParams struct {
+	OutpointHash     []byte
+	OutpointIndex    int64
+	AddressScriptKey []byte
+	Announcement     []byte
+	State            int32
+	BlockHash        []byte
+	BlockHeight      int64
+	CreatedAt        int64
+	Payload          []byte
+}
+
+// InsertAssetEngineReceive records an announced transfer. A recorded
+// announcement inserts nothing.
+func (q *Queries) InsertAssetEngineReceive(ctx context.Context, arg InsertAssetEngineReceiveParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, InsertAssetEngineReceive,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.AddressScriptKey,
+		arg.Announcement,
+		arg.State,
+		arg.BlockHash,
+		arg.BlockHeight,
+		arg.CreatedAt,
+		arg.Payload,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const InsertAssetEngineTransfer = `-- name: InsertAssetEngineTransfer :execrows
@@ -178,6 +286,42 @@ func (q *Queries) InsertAssetEngineTransfer(ctx context.Context, arg InsertAsset
 	return result.RowsAffected()
 }
 
+const ListAssetEngineAddresses = `-- name: ListAssetEngineAddresses :many
+SELECT address_id, script_key, encoded, internal_key, creation_height, created_at FROM asset_engine_addresses ORDER BY created_at, address_id
+`
+
+// ListAssetEngineAddresses returns the addresses oldest first. Addresses
+// created at the same time keep the order of their insertion.
+func (q *Queries) ListAssetEngineAddresses(ctx context.Context) ([]AssetEngineAddress, error) {
+	rows, err := q.db.QueryContext(ctx, ListAssetEngineAddresses)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AssetEngineAddress
+	for rows.Next() {
+		var i AssetEngineAddress
+		if err := rows.Scan(
+			&i.AddressID,
+			&i.ScriptKey,
+			&i.Encoded,
+			&i.InternalKey,
+			&i.CreationHeight,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListAssetEngineProofsByKey = `-- name: ListAssetEngineProofsByKey :many
 SELECT asset_id, script_key, outpoint_hash, outpoint_index, proof_file, owned, spent FROM asset_engine_proofs
 WHERE asset_id = $1 AND script_key = $2
@@ -206,6 +350,91 @@ func (q *Queries) ListAssetEngineProofsByKey(ctx context.Context, arg ListAssetE
 			&i.ProofFile,
 			&i.Owned,
 			&i.Spent,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListAssetEngineReceives = `-- name: ListAssetEngineReceives :many
+SELECT receive_id, outpoint_hash, outpoint_index, address_script_key, announcement, state, block_hash, block_height, created_at, payload FROM asset_engine_receives ORDER BY created_at, receive_id
+`
+
+func (q *Queries) ListAssetEngineReceives(ctx context.Context) ([]AssetEngineReceive, error) {
+	rows, err := q.db.QueryContext(ctx, ListAssetEngineReceives)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AssetEngineReceive
+	for rows.Next() {
+		var i AssetEngineReceive
+		if err := rows.Scan(
+			&i.ReceiveID,
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.AddressScriptKey,
+			&i.Announcement,
+			&i.State,
+			&i.BlockHash,
+			&i.BlockHeight,
+			&i.CreatedAt,
+			&i.Payload,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListAssetEngineReceivesByOutpoint = `-- name: ListAssetEngineReceivesByOutpoint :many
+SELECT receive_id, outpoint_hash, outpoint_index, address_script_key, announcement, state, block_hash, block_height, created_at, payload FROM asset_engine_receives
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+ORDER BY created_at, receive_id
+`
+
+type ListAssetEngineReceivesByOutpointParams struct {
+	OutpointHash  []byte
+	OutpointIndex int64
+}
+
+// ListAssetEngineReceivesByOutpoint returns the announcements of one anchor
+// output, oldest first.
+func (q *Queries) ListAssetEngineReceivesByOutpoint(ctx context.Context, arg ListAssetEngineReceivesByOutpointParams) ([]AssetEngineReceive, error) {
+	rows, err := q.db.QueryContext(ctx, ListAssetEngineReceivesByOutpoint, arg.OutpointHash, arg.OutpointIndex)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AssetEngineReceive
+	for rows.Next() {
+		var i AssetEngineReceive
+		if err := rows.Scan(
+			&i.ReceiveID,
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.AddressScriptKey,
+			&i.Announcement,
+			&i.State,
+			&i.BlockHash,
+			&i.BlockHeight,
+			&i.CreatedAt,
+			&i.Payload,
 		); err != nil {
 			return nil, err
 		}
@@ -350,6 +579,44 @@ func (q *Queries) MarkAssetEngineProofSpent(ctx context.Context, arg MarkAssetEn
 		arg.ScriptKey,
 		arg.OutpointHash,
 		arg.OutpointIndex,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const UpdateAssetEngineReceive = `-- name: UpdateAssetEngineReceive :execrows
+UPDATE asset_engine_receives SET
+    state = $5,
+    block_hash = $6,
+    block_height = $7,
+    payload = $8
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+    AND address_script_key = $3 AND announcement = $4
+`
+
+type UpdateAssetEngineReceiveParams struct {
+	OutpointHash     []byte
+	OutpointIndex    int64
+	AddressScriptKey []byte
+	Announcement     []byte
+	State            int32
+	BlockHash        []byte
+	BlockHeight      int64
+	Payload          []byte
+}
+
+func (q *Queries) UpdateAssetEngineReceive(ctx context.Context, arg UpdateAssetEngineReceiveParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, UpdateAssetEngineReceive,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.AddressScriptKey,
+		arg.Announcement,
+		arg.State,
+		arg.BlockHash,
+		arg.BlockHeight,
+		arg.Payload,
 	)
 	if err != nil {
 		return 0, err
