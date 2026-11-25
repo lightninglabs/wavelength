@@ -98,6 +98,10 @@ type SendSubmitPackageRequest struct {
 	// package. When present, they carry optional output policy metadata for
 	// operator-side persistence.
 	Recipients []oortx.RecipientOutput
+
+	// TaprootAssetTransfer carries the optional sealed Taproot Asset
+	// transition packages for an asset-bearing OOR submit.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
 }
 
 // outboxType returns a stable identifier for this outbox message.
@@ -167,11 +171,18 @@ func (m *SendSubmitPackageRequest) ToProto() fn.Result[proto.Message] {
 			SpendPath:          spendPathRaw,
 			OwnerLeafPolicy:    ti.OwnerLeafPolicy,
 		}
+		if ti.VTXO.TaprootAssetRoot != nil {
+			root := *ti.VTXO.TaprootAssetRoot
+			desc.TaprootAssetRoot = &root
+			desc.TaprootAssetRef = ti.VTXO.TaprootAssetRef
+			desc.TaprootAssetAmount = ti.VTXO.TaprootAssetAmount
+		}
 		descs = append(descs, desc)
 	}
 
-	req, err := oorpb.NewSubmitPackageRequest(
+	req, err := oorpb.NewSubmitPackageRequestWithAssets(
 		m.ArkPSBT, m.CheckpointPSBTs, descs, m.Recipients,
+		m.TaprootAssetTransfer,
 	)
 	if err != nil {
 		return fn.Err[proto.Message](err)

@@ -182,10 +182,11 @@ func OutboxForState(state State) ([]OutboxEvent, error) {
 func submitOutbox(state *AwaitingSubmitAccepted) []OutboxEvent {
 	return []OutboxEvent{
 		&SendSubmitPackageRequest{
-			ArkPSBT:         state.ArkPSBT,
-			CheckpointPSBTs: state.CheckpointPSBTs,
-			TransferInputs:  state.TransferInputs,
-			Recipients:      state.RecipientOutputs,
+			ArkPSBT:              state.ArkPSBT,
+			CheckpointPSBTs:      state.CheckpointPSBTs,
+			TransferInputs:       state.TransferInputs,
+			Recipients:           state.RecipientOutputs,
+			TaprootAssetTransfer: state.TaprootAssetTransfer,
 		},
 		&ScheduleRetryRequest{
 			After:  outgoingTransportRedriveInterval,
@@ -225,7 +226,7 @@ func finalizeOutbox(state *AwaitingFinalizeAccepted) []OutboxEvent {
 func localVTXOUpdateOutbox(state *AwaitingLocalVTXOUpdate) []OutboxEvent {
 	return []OutboxEvent{
 		&MarkInputsSpentRequest{
-			Outpoints: InputOutpoints(state.TransferInputs),
+			Outpoints: WalletInputOutpoints(state.TransferInputs),
 		},
 		&ScheduleRetryRequest{
 			After:  outgoingTransportRedriveInterval,

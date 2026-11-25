@@ -202,7 +202,7 @@ func (b *sessionBehavior) recordReservations(ctx context.Context,
 	}
 
 	ownerID := chainHashOf(b.sessionID)
-	for _, op := range InputOutpoints(inputs) {
+	for _, op := range WalletInputOutpoints(inputs) {
 		err := b.cfg.ReservationStore.UpsertReservation(
 			ctx, op, ReservationOwnerKindOOROutgoing, ownerID,
 		)
@@ -334,11 +334,16 @@ func (b *sessionBehavior) persistOutgoingPackage(ctx context.Context,
 		return err
 	}
 
-	outpoints := InputOutpoints(state.TransferInputs)
-	for i := range outpoints {
+	for i := range state.TransferInputs {
+		if state.TransferInputs[i].OperatorFunded ||
+			state.TransferInputs[i].VTXO == nil {
+
+			continue
+		}
+
 		err := b.cfg.PackageStore.UpsertBinding(
-			ctx, outpoints[i], sessionHash, uint32(i),
-			PackageLinkKindConsumedInput,
+			ctx, state.TransferInputs[i].VTXO.Outpoint, sessionHash,
+			uint32(i), PackageLinkKindConsumedInput,
 		)
 		if errors.Is(err, libtypes.ErrOORBindingOutpointNotFound) {
 			continue
@@ -366,6 +371,11 @@ func (b *sessionBehavior) queueVTXOSent(ctx context.Context,
 
 	var total int64
 	for i := range state.TransferInputs {
+		if state.TransferInputs[i].OperatorFunded ||
+			state.TransferInputs[i].VTXO == nil {
+
+			continue
+		}
 		total += int64(state.TransferInputs[i].VTXO.Amount)
 	}
 	if total <= 0 {

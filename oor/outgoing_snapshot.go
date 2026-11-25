@@ -7,6 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 )
 
@@ -82,6 +83,14 @@ type OutgoingSnapshot struct {
 	// TransferInputs.
 	TransferInputSnapshots []*TransferInputSnapshot
 
+	// RecipientOutputs are the canonical submit recipients required for a
+	// byte-identical submit retry after restart (including asset metadata).
+	RecipientOutputs []oortx.RecipientOutput
+
+	// TaprootAssetTransfer is the encoded sealed-package container for an
+	// asset-bearing transfer.
+	TaprootAssetTransfer []byte
+
 	// RetryAfter is the requested delay for a pending retry, if any.
 	RetryAfter time.Duration
 
@@ -112,6 +121,10 @@ type OutgoingSnapshot struct {
 	FirstRejectUnixNanos int64
 }
 
+// outgoingSnapshotVersion is the highest outgoing snapshot format version
+// produced and understood by this build.
+const outgoingSnapshotVersion uint8 = 7
+
 // NewOutgoingSnapshot exports an outgoing transfer FSM state into a snapshot.
 func NewOutgoingSnapshot(sessionID SessionID,
 	state State) (*OutgoingSnapshot, error) {
@@ -130,8 +143,10 @@ func NewOutgoingSnapshot(sessionID SessionID,
 		// backward-compatible: a pre-v5 snapshot lacks the record and
 		// decodes FirstRejectUnixNanos to 0 (a fresh window). Version 6
 		// adds the FailedPrePONR record, which a pre-v6 snapshot lacks
-		// and decodes to false (not proven pre-PONR).
-		Version:   6,
+		// and decodes to false (not proven pre-PONR). Version 7 adds
+		// optional RecipientOutputs, TaprootAssetTransfer, and
+		// per-input Taproot Asset / OperatorFunded records.
+		Version:   outgoingSnapshotVersion,
 		SessionID: sessionID,
 	}
 
@@ -162,6 +177,9 @@ func NewOutgoingSnapshot(sessionID SessionID,
 			return nil, err
 		}
 		snap.TransferInputSnapshots = inputSnaps
+		snap.RecipientOutputs = cloneRecipientOutputs(
+			s.RecipientOutputs,
+		)
 
 	case *AwaitingSubmitAccepted:
 		// Snapshot the entire submit package because it is the
@@ -185,6 +203,9 @@ func NewOutgoingSnapshot(sessionID SessionID,
 		); err != nil {
 			return nil, err
 		}
+		snap.RecipientOutputs = cloneRecipientOutputs(
+			s.RecipientOutputs,
+		)
 
 	case *AwaitingCheckpointSignatures:
 		// This is the "point-of-no-return" state from the client's
@@ -244,7 +265,37 @@ func NewOutgoingSnapshot(sessionID SessionID,
 			state)
 	}
 
+	if err := assignSnapshotAssetTransfer(
+		snap, stateTaprootAssetTransfer(state),
+	); err != nil {
+		return nil, err
+	}
+
 	return snap, nil
+}
+
+// stateTaprootAssetTransfer extracts the optional sealed asset transfer
+// container carried by an active outgoing FSM state.
+func stateTaprootAssetTransfer(state State) *oortx.TaprootAssetTransfer {
+	switch s := state.(type) {
+	case *AwaitingArkSignatures:
+		return s.TaprootAssetTransfer
+
+	case *AwaitingSubmitAccepted:
+		return s.TaprootAssetTransfer
+
+	case *AwaitingCheckpointSignatures:
+		return s.TaprootAssetTransfer
+
+	case *AwaitingFinalizeAccepted:
+		return s.TaprootAssetTransfer
+
+	case *AwaitingLocalVTXOUpdate:
+		return s.TaprootAssetTransfer
+
+	default:
+		return nil
+	}
 }
 
 // NewSessionFromSnapshot restores an outgoing transfer session from a snapshot.
@@ -295,22 +346,30 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 	if snapshot.Version == 0 {
 		return nil, fmt.Errorf("snapshot version must be provided")
 	}
+	if snapshot.Version > outgoingSnapshotVersion {
+		return nil, fmt.Errorf("unsupported snapshot version %d "+
+			"(max %d)", snapshot.Version, outgoingSnapshotVersion)
+	}
+
+	assetTransfer, err := restoreSnapshotAssetTransfer(
+		snapshot.TaprootAssetTransfer,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if assetTransfer != nil && len(snapshot.CheckpointPSBTs) > 0 {
+		if err := assetTransfer.Validate(
+			len(snapshot.CheckpointPSBTs),
+		); err != nil {
+			return nil, err
+		}
+	}
 
 	switch snapshot.Phase {
 	case OutgoingPhaseArkSignRequested:
-		ark, cps, err := parseOutgoingPSBTs(
-			snapshot.ArkPSBT, snapshot.CheckpointPSBTs,
+		ark, cps, inputs, err := restorePSBTPhaseArtifacts(
+			snapshot, snapshot.RecipientOutputs, assetTransfer,
 		)
-		if err != nil {
-			return nil, err
-		}
-
-		err = requireSessionIDMatchesArk(snapshot.SessionID, ark)
-		if err != nil {
-			return nil, err
-		}
-
-		inputs, err := restoreTransferInputs(snapshot)
 		if err != nil {
 			return nil, err
 		}
@@ -319,26 +378,20 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			ArkPSBT:         ark,
 			CheckpointPSBTs: cps,
 			TransferInputs:  inputs,
-			IdempotencyKey:  snapshot.IdempotencyKey,
+			RecipientOutputs: cloneRecipientOutputs(
+				snapshot.RecipientOutputs,
+			),
+			TaprootAssetTransfer: assetTransfer,
+			IdempotencyKey:       snapshot.IdempotencyKey,
 			DispatchRequestData: append(
 				[]byte(nil), snapshot.DispatchRequestData...,
 			),
 		}, nil
 
 	case OutgoingPhaseSubmitSent:
-		ark, cps, err := parseOutgoingPSBTs(
-			snapshot.ArkPSBT, snapshot.CheckpointPSBTs,
+		ark, cps, inputs, err := restorePSBTPhaseArtifacts(
+			snapshot, snapshot.RecipientOutputs, assetTransfer,
 		)
-		if err != nil {
-			return nil, err
-		}
-
-		err = requireSessionIDMatchesArk(snapshot.SessionID, ark)
-		if err != nil {
-			return nil, err
-		}
-
-		inputs, err := restoreTransferInputs(snapshot)
 		if err != nil {
 			return nil, err
 		}
@@ -347,7 +400,11 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			ArkPSBT:         ark,
 			CheckpointPSBTs: cps,
 			TransferInputs:  inputs,
-			IdempotencyKey:  snapshot.IdempotencyKey,
+			RecipientOutputs: cloneRecipientOutputs(
+				snapshot.RecipientOutputs,
+			),
+			TaprootAssetTransfer: assetTransfer,
+			IdempotencyKey:       snapshot.IdempotencyKey,
 			DispatchRequestData: append(
 				[]byte(nil), snapshot.DispatchRequestData...,
 			),
@@ -357,19 +414,9 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		}, nil
 
 	case OutgoingPhaseCoSigned:
-		ark, cps, err := parseOutgoingPSBTs(
-			snapshot.ArkPSBT, snapshot.CheckpointPSBTs,
+		ark, cps, inputs, err := restorePSBTPhaseArtifacts(
+			snapshot, nil, assetTransfer,
 		)
-		if err != nil {
-			return nil, err
-		}
-
-		err = requireSessionIDMatchesArk(snapshot.SessionID, ark)
-		if err != nil {
-			return nil, err
-		}
-
-		inputs, err := restoreTransferInputs(snapshot)
 		if err != nil {
 			return nil, err
 		}
@@ -379,23 +426,14 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			ArkPSBT:                 ark,
 			CoSignedCheckpointPSBTs: cps,
 			TransferInputs:          inputs,
+			TaprootAssetTransfer:    assetTransfer,
 			IdempotencyKey:          snapshot.IdempotencyKey,
 		}, nil
 
 	case OutgoingPhaseFinalizeSent:
-		ark, cps, err := parseOutgoingPSBTs(
-			snapshot.ArkPSBT, snapshot.CheckpointPSBTs,
+		ark, cps, inputs, err := restorePSBTPhaseArtifacts(
+			snapshot, nil, assetTransfer,
 		)
-		if err != nil {
-			return nil, err
-		}
-
-		err = requireSessionIDMatchesArk(snapshot.SessionID, ark)
-		if err != nil {
-			return nil, err
-		}
-
-		inputs, err := restoreTransferInputs(snapshot)
 		if err != nil {
 			return nil, err
 		}
@@ -405,6 +443,7 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			ArkPSBT:              ark,
 			FinalCheckpointPSBTs: cps,
 			TransferInputs:       inputs,
+			TaprootAssetTransfer: assetTransfer,
 			IdempotencyKey:       snapshot.IdempotencyKey,
 		}, nil
 
@@ -413,11 +452,17 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := validateRestoredAssetState(
+			inputs, nil, assetTransfer,
+		); err != nil {
+			return nil, err
+		}
 
 		return &AwaitingLocalVTXOUpdate{
-			SessionID:      snapshot.SessionID,
-			TransferInputs: inputs,
-			IdempotencyKey: snapshot.IdempotencyKey,
+			SessionID:            snapshot.SessionID,
+			TransferInputs:       inputs,
+			TaprootAssetTransfer: assetTransfer,
+			IdempotencyKey:       snapshot.IdempotencyKey,
 		}, nil
 
 	case OutgoingPhaseCompleted:
@@ -530,6 +575,57 @@ func restoreTransferInputs(snapshot *OutgoingSnapshot) ([]TransferInput,
 	return inputs, nil
 }
 
+// assignSnapshotAssetTransfer marshals an optional TaprootAssetTransfer into
+// snapshot bytes.
+func assignSnapshotAssetTransfer(snapshot *OutgoingSnapshot,
+	assetTransfer *oortx.TaprootAssetTransfer) error {
+
+	if assetTransfer == nil {
+		return nil
+	}
+
+	encoded, err := assetTransfer.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	snapshot.TaprootAssetTransfer = encoded
+
+	return nil
+}
+
+// restoreSnapshotAssetTransfer unmarshals an optional TaprootAssetTransfer
+// from snapshot bytes.
+func restoreSnapshotAssetTransfer(encoded []byte) (*oortx.TaprootAssetTransfer,
+	error) {
+
+	if len(encoded) == 0 {
+		return nil, nil
+	}
+
+	assetTransfer := &oortx.TaprootAssetTransfer{}
+	if err := assetTransfer.UnmarshalBinary(encoded); err != nil {
+		return nil, err
+	}
+
+	return assetTransfer, nil
+}
+
+// cloneRecipientOutputs returns a deep copy of recipients.
+func cloneRecipientOutputs(
+	recipients []oortx.RecipientOutput) []oortx.RecipientOutput {
+
+	if len(recipients) == 0 {
+		return nil
+	}
+
+	cloned := make([]oortx.RecipientOutput, len(recipients))
+	for i := range recipients {
+		cloned[i] = recipients[i].Clone()
+	}
+
+	return cloned
+}
+
 // parseOutgoingPSBTs parses an Ark PSBT and a list of checkpoint PSBTs.
 func parseOutgoingPSBTs(arkRaw []byte, checkpointRaws [][]byte) (*psbt.Packet,
 	[]*psbt.Packet, error) {
@@ -578,6 +674,93 @@ func serializePSBTSlice(pkts []*psbt.Packet) ([][]byte, error) {
 	}
 
 	return raws, nil
+}
+
+// restorePSBTPhaseArtifacts parses and cross-validates the Ark PSBT,
+// checkpoint PSBTs, transfer inputs, and asset container shared by all
+// PSBT-bearing outgoing snapshot phases.
+func restorePSBTPhaseArtifacts(snapshot *OutgoingSnapshot,
+	recipients []oortx.RecipientOutput,
+	assetTransfer *oortx.TaprootAssetTransfer) (*psbt.Packet,
+	[]*psbt.Packet, []TransferInput, error) {
+
+	ark, cps, err := parseOutgoingPSBTs(
+		snapshot.ArkPSBT, snapshot.CheckpointPSBTs,
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if err := requireSessionIDMatchesArk(
+		snapshot.SessionID, ark,
+	); err != nil {
+		return nil, nil, nil, err
+	}
+
+	inputs, err := restoreTransferInputs(snapshot)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := validateRestoredAssetState(
+		inputs, recipients, assetTransfer,
+	); err != nil {
+		return nil, nil, nil, err
+	}
+
+	return ark, cps, inputs, nil
+}
+
+// validateRestoredAssetState enforces that restored active sessions with
+// Taproot Asset or operator-funded inputs always carry a matching
+// TaprootAssetTransfer container, and that plain sessions carry none.
+func validateRestoredAssetState(inputs []TransferInput,
+	recipients []oortx.RecipientOutput,
+	assetTransfer *oortx.TaprootAssetTransfer) error {
+
+	hasAssetInput := false
+	hasOperatorFunded := false
+	for i := range inputs {
+		if inputs[i].OperatorFunded {
+			hasOperatorFunded = true
+		}
+		if inputs[i].VTXO != nil &&
+			inputs[i].VTXO.TaprootAssetRoot != nil {
+
+			hasAssetInput = true
+		}
+	}
+
+	hasAssetRecipient := false
+	for i := range recipients {
+		if recipients[i].Asset != nil {
+			hasAssetRecipient = true
+		}
+	}
+
+	if assetTransfer == nil {
+		if hasAssetInput || hasOperatorFunded || hasAssetRecipient {
+			return fmt.Errorf("restored asset or operator-funded " +
+				"session requires taproot asset transfer " +
+				"container")
+		}
+
+		return nil
+	}
+
+	if err := assetTransfer.Validate(len(inputs)); err != nil {
+		return err
+	}
+	for i := range inputs {
+		hasInputAsset := inputs[i].VTXO != nil &&
+			inputs[i].VTXO.TaprootAssetRoot != nil
+		hasSlot := len(assetTransfer.CheckpointPackages[i]) > 0
+		if hasInputAsset != hasSlot {
+			return fmt.Errorf("restored input %d asset presence "+
+				"does not match checkpoint package slot", i)
+		}
+	}
+
+	return nil
 }
 
 // parsePSBTSlice parses a slice of serialized PSBT packets.

@@ -53,6 +53,10 @@ type AwaitingArkSignatures struct {
 	// VTXOs.
 	RecipientOutputs []oortx.RecipientOutput
 
+	// TaprootAssetTransfer carries the sealed asset transition packages
+	// for an asset-bearing OOR transfer.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
+
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when provided.
 	IdempotencyKey string
@@ -101,6 +105,10 @@ type AwaitingSubmitAccepted struct {
 	// outputs plus optional semantic policy metadata for the
 	// created VTXOs.
 	RecipientOutputs []oortx.RecipientOutput
+
+	// TaprootAssetTransfer carries the sealed asset transition packages
+	// for an asset-bearing OOR transfer.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
 
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when provided.
@@ -161,6 +169,10 @@ type AwaitingCheckpointSignatures struct {
 	// this is carried on the FSM state.
 	TransferInputs []TransferInput
 
+	// TaprootAssetTransfer carries the sealed asset transition packages
+	// for an asset-bearing OOR transfer.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
+
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when provided.
 	IdempotencyKey string
@@ -205,6 +217,10 @@ type AwaitingFinalizeAccepted struct {
 	// The local bookkeeping phase derives spent outpoints from these.
 	TransferInputs []TransferInput
 
+	// TaprootAssetTransfer carries the sealed asset transition packages
+	// for an asset-bearing OOR transfer.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
+
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when provided.
 	IdempotencyKey string
@@ -237,6 +253,10 @@ type AwaitingLocalVTXOUpdate struct {
 	// TransferInputs carry the VTXO descriptors consumed by this session.
 	// The local persistence step derives spent outpoints from these.
 	TransferInputs []TransferInput
+
+	// TaprootAssetTransfer carries the sealed asset transition packages
+	// for an asset-bearing OOR transfer.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
 
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when provided.
