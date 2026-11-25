@@ -27,6 +27,52 @@ type RecipientAsset struct {
 	Amount uint64
 }
 
+// Validate checks that the asset metadata fields are well-formed. A nil asset
+// represents a Bitcoin-only output and passes unchanged.
+func (a *RecipientAsset) Validate() error {
+	if a == nil {
+		return nil
+	}
+
+	switch {
+	case a.Root == (chainhash.Hash{}):
+		return fmt.Errorf("asset output root must not be zero")
+
+	case a.Ref == "":
+		return fmt.Errorf("asset output ref must be provided")
+
+	case len(a.Ref) > MaxRecipientAssetRefBytes:
+		return fmt.Errorf("asset output ref exceeds %d bytes",
+			MaxRecipientAssetRefBytes)
+
+	case a.Amount == 0:
+		return fmt.Errorf("asset output amount must be positive")
+	}
+
+	return nil
+}
+
+// Clone returns a deep copy of the recipient asset metadata.
+func (a *RecipientAsset) Clone() *RecipientAsset {
+	if a == nil {
+		return nil
+	}
+
+	clone := *a
+
+	return &clone
+}
+
+// Clone returns a deep copy of the recipient output.
+func (o RecipientOutput) Clone() RecipientOutput {
+	return RecipientOutput{
+		PkScript:           bytes.Clone(o.PkScript),
+		Value:              o.Value,
+		VTXOPolicyTemplate: bytes.Clone(o.VTXOPolicyTemplate),
+		Asset:              o.Asset.Clone(),
+	}
+}
+
 // RoutingPkScript returns the script that addresses the output to its owner.
 // An asset output pays to its policy composed with the asset root, so it
 // routes through the uncomposed policy script, which the owner knows before
@@ -51,18 +97,10 @@ func (o RecipientOutput) ValidateAsset() error {
 		return nil
 	}
 
-	switch {
-	case o.Asset.Ref == "":
-		return fmt.Errorf("asset output ref must be provided")
-
-	case len(o.Asset.Ref) > MaxRecipientAssetRefBytes:
-		return fmt.Errorf("asset output ref exceeds %d bytes",
-			MaxRecipientAssetRefBytes)
-
-	case o.Asset.Amount == 0:
-		return fmt.Errorf("asset output amount must be positive")
-
-	case len(o.VTXOPolicyTemplate) == 0:
+	if err := o.Asset.Validate(); err != nil {
+		return err
+	}
+	if len(o.VTXOPolicyTemplate) == 0 {
 		return fmt.Errorf("asset output policy must be provided")
 	}
 

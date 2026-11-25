@@ -80,7 +80,7 @@ func TestRecipientAsset(t *testing.T) {
 	}{{
 		name: "other root",
 		mutate: func(output *RecipientOutput) {
-			output.Asset.Root[0] ^= 1
+			output.Asset.Root[0] ^= 2
 		},
 		err: "does not commit",
 	}, {
@@ -101,6 +101,12 @@ func TestRecipientAsset(t *testing.T) {
 			output.Asset.Amount = 0
 		},
 		err: "amount must be positive",
+	}, {
+		name: "zero root",
+		mutate: func(output *RecipientOutput) {
+			output.Asset.Root = chainhash.Hash{}
+		},
+		err: "root must not be zero",
 	}, {
 		name: "no ref",
 		mutate: func(output *RecipientOutput) {
@@ -161,7 +167,7 @@ func TestBuildArkPSBTValidatesAssets(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	output.Asset.Root[0] ^= 1
+	output.Asset.Root[0] ^= 2
 	_, err = BuildArkPSBT(
 		[]CheckpointOutput{checkpoint}, []RecipientOutput{output},
 	)

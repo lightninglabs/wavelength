@@ -400,6 +400,65 @@ func BuildTaprootTapLeafScript(encoded []byte,
 	return tapLeafFromEncodedTree(encoded, target)
 }
 
+// BuildComposedTaprootTapLeafScript constructs a TaprootTapLeafScript for the
+// target leaf script inside a taproot output whose Ark policy tree is composed
+// with siblingRoot via arkscript.ComposeWithSiblingRoot.
+//
+// Asset-bearing checkpoint outputs commit to the checkpoint policy tree and
+// the Taproot Asset commitment root as top-level siblings, while PSBT output
+// TaprootTapTree metadata stores the policy tree alone. Spending such a
+// checkpoint into an Ark transaction requires this composed control block.
+func BuildComposedTaprootTapLeafScript(encoded []byte, leafScript []byte,
+	siblingRoot chainhash.Hash) (*psbt.TaprootTapLeafScript, error) {
+
+	switch {
+	case len(leafScript) == 0:
+		return nil, fmt.Errorf("leaf script must be provided")
+
+	case siblingRoot == (chainhash.Hash{}):
+		return nil, fmt.Errorf("sibling root must not be zero")
+	}
+
+	leafScripts, err := DecodeTapTree(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("decode tap tree: %w", err)
+	}
+
+	policyLeaves := make([]arkscript.PolicyLeaf, len(leafScripts))
+	for i, script := range leafScripts {
+		policyLeaves[i] = arkscript.PolicyLeaf{
+			Leaf: txscript.NewBaseTapLeaf(script),
+		}
+	}
+
+	policy, err := arkscript.BuildTree(policyLeaves, &arkscript.ARKNUMSKey)
+	if err != nil {
+		return nil, fmt.Errorf("build policy tree: %w", err)
+	}
+
+	leafIndex := policy.ScriptIndex(leafScript)
+	if leafIndex < 0 {
+		return nil, fmt.Errorf("leaf not found in tap tree")
+	}
+
+	composed, err := arkscript.ComposeWithSiblingRoot(policy, siblingRoot)
+	if err != nil {
+		return nil, fmt.Errorf("compose policy with sibling root: %w",
+			err)
+	}
+
+	spendInfo, err := composed.SpendInfo(leafIndex)
+	if err != nil {
+		return nil, fmt.Errorf("derive composed spend info: %w", err)
+	}
+
+	return &psbt.TaprootTapLeafScript{
+		ControlBlock: spendInfo.ControlBlock,
+		Script:       spendInfo.WitnessScript,
+		LeafVersion:  txscript.BaseLeafVersion,
+	}, nil
+}
+
 // appendTaprootSigHash appends a non-default sighash byte to a schnorr
 // signature for witness construction.
 func appendTaprootSigHash(sig []byte, sigHash txscript.SigHashType) []byte {
