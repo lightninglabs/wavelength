@@ -125,6 +125,18 @@ http:
     - selector: waverpc.DaemonService.NewAssetFundingAddress
       post: /v1/daemon/new-asset-funding-address
       body: "*"
+    - selector: waverpc.DaemonService.NewAssetAddress
+      post: /v1/daemon/new-asset-address
+      body: "*"
+    - selector: waverpc.DaemonService.ListAssetAddresses
+      post: /v1/daemon/list-asset-addresses
+      body: "*"
+    - selector: waverpc.DaemonService.ListAssetReceives
+      post: /v1/daemon/list-asset-receives
+      body: "*"
+    - selector: waverpc.DaemonService.SyncAssetReceives
+      post: /v1/daemon/sync-asset-receives
+      body: "*"
     - selector: waverpc.DaemonService.JoinNextRound
       post: /v1/daemon/join-next-round
       body: "*"
