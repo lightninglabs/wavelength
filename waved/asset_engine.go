@@ -10,9 +10,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/lndclient"
 	tapsdk "github.com/lightninglabs/tap-sdk"
 	"github.com/lightninglabs/tap-sdk/embedded"
 	"github.com/lightninglabs/wavelength/baselib/actor"
@@ -219,9 +222,9 @@ func trustAssetGroup(engine *embedded.Client, assetRef string) error {
 	return nil
 }
 
-// assetKeyRing derives and signs with the embedded engine's keys through
-// the daemon wallet. An lnd wallet derives and signs through lnd, so its
-// keys never leave lnd. A wallet holding the seed signs with its key ring.
+// assetKeyRing derives, signs and decrypts with the embedded engine's keys
+// through the daemon wallet. An lnd wallet does all three through lnd, so
+// its keys never leave lnd. A wallet holding the seed uses its key ring.
 type assetKeyRing struct {
 	server *Server
 }
@@ -319,6 +322,73 @@ func (k *assetKeyRing) SignOutputRaw(ctx context.Context, tx *wire.MsgTx,
 
 	return embedded.NewKeyRingSigner(ring).SignOutputRaw(
 		ctx, tx, signDesc,
+	)
+}
+
+// lndSigner returns the signer of the connected lnd, or nil when the daemon
+// wallet is not lnd.
+func (k *assetKeyRing) lndSigner() (lndclient.SignerClient, error) {
+	s := k.server
+	if s.cfg.Wallet.Type != WalletTypeLnd {
+		return nil, nil
+	}
+	if !s.isWalletReady() || s.lnd.IsNone() {
+		return nil, errAssetWalletNotReady
+	}
+
+	return s.lnd.UnsafeFromSome().Signer, nil
+}
+
+// ECDH returns the SHA-256 of the compressed shared point of the key at
+// locator and pubKey, with which the engine decrypts a mailbox message sent
+// to an address.
+func (k *assetKeyRing) ECDH(ctx context.Context, locator keychain.KeyLocator,
+	pubKey *btcec.PublicKey) ([32]byte, error) {
+
+	signer, err := k.lndSigner()
+	if err != nil {
+		return [32]byte{}, err
+	}
+	if signer != nil {
+		return signer.DeriveSharedKey(ctx, pubKey, &locator)
+	}
+
+	ring, err := k.ring()
+	if err != nil {
+		return [32]byte{}, err
+	}
+
+	return embedded.NewKeyRingReceiveKeys(ring).ECDH(ctx, locator, pubKey)
+}
+
+// SignMessageSchnorr returns the BIP-340 signature of the key at locator
+// over the SHA-256 of msg, with which the engine answers the challenge of a
+// mailbox. lnd signs that digest for a Schnorr signature without a tag.
+func (k *assetKeyRing) SignMessageSchnorr(ctx context.Context,
+	locator keychain.KeyLocator, msg []byte) (*schnorr.Signature, error) {
+
+	signer, err := k.lndSigner()
+	if err != nil {
+		return nil, err
+	}
+	if signer != nil {
+		sig, err := signer.SignMessage(
+			ctx, msg, locator, lndclient.SignSchnorr(nil),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return schnorr.ParseSignature(sig)
+	}
+
+	ring, err := k.ring()
+	if err != nil {
+		return nil, err
+	}
+
+	return embedded.NewKeyRingReceiveKeys(ring).SignMessageSchnorr(
+		ctx, locator, msg,
 	)
 }
 

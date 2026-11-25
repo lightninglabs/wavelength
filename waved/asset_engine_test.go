@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
@@ -20,6 +22,7 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -148,7 +151,116 @@ func TestAssetChainNotReady(t *testing.T) {
 			t.Context(), wire.NewMsgTx(2), &input.SignDescriptor{},
 		)
 		require.ErrorIs(t, err, errAssetWalletNotReady)
+
+		// Nor does it decrypt a mailbox message or answer a mailbox
+		// challenge.
+		locator := keychain.KeyLocator{Family: 212, Index: 1}
+		peer, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+		_, err = keys.ECDH(t.Context(), locator, peer.PubKey())
+		require.ErrorIs(t, err, errAssetWalletNotReady)
+		_, err = keys.SignMessageSchnorr(
+			t.Context(), locator, []byte("challenge"),
+		)
+		require.ErrorIs(t, err, errAssetWalletNotReady)
 	}
+}
+
+// fakeReceiveSigner is an lnd signer that holds one key, and records how it
+// was asked to sign.
+type fakeReceiveSigner struct {
+	lndclient.SignerClient
+
+	locator keychain.KeyLocator
+	key     *btcec.PrivateKey
+
+	signReq *signrpc.SignMessageReq
+}
+
+// DeriveSharedKey returns the shared key of the signer's key and a peer's,
+// as lnd derives it.
+func (s *fakeReceiveSigner) DeriveSharedKey(_ context.Context,
+	peer *btcec.PublicKey, locator *keychain.KeyLocator) ([32]byte, error) {
+
+	if locator == nil || *locator != s.locator {
+		return [32]byte{}, fmt.Errorf("unknown key %v", locator)
+	}
+
+	return (&keychain.PrivKeyECDH{PrivKey: s.key}).ECDH(peer)
+}
+
+// SignMessage signs the SHA-256 of a message with the signer's key, as lnd
+// does for a Schnorr signature without a tag.
+func (s *fakeReceiveSigner) SignMessage(_ context.Context, msg []byte,
+	locator keychain.KeyLocator, opts ...lndclient.SignMessageOption) (
+	[]byte, error) {
+
+	if locator != s.locator {
+		return nil, fmt.Errorf("unknown key %v", locator)
+	}
+
+	s.signReq = &signrpc.SignMessageReq{}
+	for _, opt := range opts {
+		opt(s.signReq)
+	}
+
+	sig, err := schnorr.Sign(s.key, chainhash.HashB(msg))
+	if err != nil {
+		return nil, err
+	}
+
+	return sig.Serialize(), nil
+}
+
+// TestAssetReceiveKeysLnd decrypts and answers a mailbox challenge through
+// lnd's signer when the daemon wallet is lnd, with the key at the locator
+// the engine names.
+func TestAssetReceiveKeysLnd(t *testing.T) {
+	t.Parallel()
+
+	key, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	signer := &fakeReceiveSigner{
+		locator: keychain.KeyLocator{
+			Family: 212,
+			Index:  3,
+		},
+		key: key,
+	}
+
+	server := newAssetChainTestServer(&headerlessChainBackend{})
+	server.cfg.Wallet.Type = WalletTypeLnd
+	server.lnd = fn.Some(&lndclient.GrpcLndServices{
+		LndServices: lndclient.LndServices{Signer: signer},
+	})
+	keys := &assetKeyRing{server: server}
+	ctx := t.Context()
+
+	// Both sides of a mailbox message derive the same key.
+	sender, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	shared, err := keys.ECDH(ctx, signer.locator, sender.PubKey())
+	require.NoError(t, err)
+	want, err := (&keychain.PrivKeyECDH{PrivKey: sender}).ECDH(key.PubKey())
+	require.NoError(t, err)
+	require.Equal(t, want, shared)
+
+	// A courier checks the answer to its challenge as a BIP-340 signature
+	// over the SHA-256 of the challenge, with no tag.
+	challenge := []byte("mailbox challenge")
+	sig, err := keys.SignMessageSchnorr(ctx, signer.locator, challenge)
+	require.NoError(t, err)
+	require.True(t, sig.Verify(chainhash.HashB(challenge), key.PubKey()))
+	require.True(t, signer.signReq.SchnorrSig)
+	require.Empty(t, signer.signReq.Tag)
+	require.Empty(t, signer.signReq.SchnorrSigTapTweak)
+	require.False(t, signer.signReq.DoubleHash)
+
+	other := keychain.KeyLocator{Family: 212, Index: 4}
+	_, err = keys.ECDH(ctx, other, sender.PubKey())
+	require.ErrorContains(t, err, "unknown key")
+	_, err = keys.SignMessageSchnorr(ctx, other, challenge)
+	require.ErrorContains(t, err, "unknown key")
 }
 
 // TestAssetChainHeadersAndBroadcast reads the tip and headers through the

@@ -173,6 +173,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 - `NewAssetFundingAddress` hands out a backing-wallet address through
   `NewWalletAddress`. A deposit spends the daemon wallet's coins, and a
   wallet SDK host has no other way to learn an address of that wallet.
+- `assetKeyRing.ECDH` and `SignMessageSchnorr` decrypt a mailbox message and
+  answer a mailbox challenge with the script key of an address. An lnd
+  wallet uses lnd's signer (`DeriveSharedKey`, and `SignMessage` for a
+  Schnorr signature with no tag), and a wallet holding the seed its key ring.
 - `DepositAsset` needs an asset backend; without one the RPC returns
   `FailedPrecondition`. It also refuses, before recording anything, an
   asset the operator does not list in `GetInfo`'s `assets`
