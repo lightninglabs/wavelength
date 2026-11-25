@@ -324,6 +324,10 @@ type Options struct {
 	// Additional nodes continue to use LNDImage.
 	PrimaryLNDImage string
 
+	// PrimaryLNDExtraArgs configures only the primary node, for cases
+	// that depend on an opt-in lnd capability.
+	PrimaryLNDExtraArgs []string
+
 	// LNDRequireInterceptor, when true, starts the main lnd node with
 	// --requireinterceptor so held HTLCs are retained on interceptor
 	// disconnect and replayed on reconnect, rather than resumed and failed.
@@ -2357,9 +2361,9 @@ func (h *Harness) bitcoindSendToAddress(address string, amount float64) string {
 // startLND launches an lnd container and waits until its gRPC is responsive
 // and TLS cert and admin macaroon are available.
 func (h *Harness) startLND() *LndInstance {
-	inst := h.startLNDInstance(
+	inst := h.startLNDInstanceWithOptions(
 		"lnd", h.lndDataDir, h.opts.LNDRequireInterceptor,
-		LNDChainBackendBitcoind,
+		LNDChainBackendBitcoind, false, h.opts.PrimaryLNDExtraArgs,
 	)
 	h.lnd = inst.Resource
 	h.LNDGRPCPort = inst.GRPCPort
@@ -2368,14 +2372,6 @@ func (h *Harness) startLND() *LndInstance {
 	h.lndMacaroon = inst.Macaroon
 
 	return inst
-}
-
-func (h *Harness) startLNDInstance(name, dataDir string,
-	requireInterceptor bool, chainBackend string) *LndInstance {
-
-	return h.startLNDInstanceWithOptions(
-		name, dataDir, requireInterceptor, chainBackend, false, nil,
-	)
 }
 
 // startLNDInstanceWithOptions starts an lnd container whose wallet can either
@@ -2869,6 +2865,7 @@ func (h *Harness) SetupChannelBetween(local *LndInstance, peer *LndInstance,
 		NodePubkey:         peerInfo.IdentityPubkey[:],
 		LocalFundingAmount: capacitySat,
 		PushSat:            pushAmt,
+		Private:            false,
 	})
 	require.NoError(
 		t, err, "OpenChannel failed for %s -> %s", local.Name,
