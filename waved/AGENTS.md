@@ -195,6 +195,24 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   answer a mailbox challenge with the script key of an address. An lnd
   wallet uses lnd's signer (`DeriveSharedKey`, and `SignMessage` for a
   Schnorr signature with no tag), and a wallet holding the seed its key ring.
+- `NewAssetAddress` returns one address per asset and proof courier. It
+  reuses a stored address of the asset that names no amount and the
+  configured courier, and creates one only when none exists, under
+  `RPCServer.assetAddressMu`. The engine holds a mailbox stream open for
+  every stored address, so the daemon must not create an address per
+  request. The call fails with `FailedPrecondition` without
+  `assets.courier.addr`, and the four address calls fail with `Unimplemented`
+  where the engine has no receive configuration.
+- `ListAssetReceives` lists per anchor output and asset ID, never per engine
+  event. An event is one announcement of a transfer: anyone who knows an
+  address can announce an output, so one output can have several events, and
+  more than one can be confirmed. `receivedOutputs` folds the events of an
+  output and address into the state of the one that got furthest, and the
+  amounts come from the wallet's asset records at the output, spent ones
+  included. The engine's events carry no asset, no amount and no failure
+  text.
+- `SyncAssetReceives` runs one mailbox pass (`embedded.Client.SyncReceives`)
+  and maps a failed pass to `Unavailable`.
 - The engine's `Logger.Errorf` covers every failure the engine retries, a
   dropped mailbox stream included, so `assetEngineLogger` writes it at Info.
 - The engine follows a confirmed receive through re-orgs. When the
