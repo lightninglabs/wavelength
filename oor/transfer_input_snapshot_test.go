@@ -120,10 +120,20 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 			SigHash: txscript.SigHashDefault,
 		},
 	}
+	in.ExternalArkSignatures = cloneExternalSignatures(
+		in.ExternalSignatures,
+	)
 
 	snap, err := in.ToSnapshot()
 	require.NoError(t, err)
 	require.NotNil(t, snap)
+	raw, err := encodeTransferInputSnapshot(snap)
+	require.NoError(t, err)
+	snap, err = decodeTransferInputSnapshot(raw)
+	require.NoError(t, err)
+	requireExternalSignatureEqual(
+		t, in.ExternalArkSignatures[0], snap.ExternalArkSignatures[0],
+	)
 	require.Equal(t, in.VTXO.Outpoint, snap.Outpoint)
 	require.Equal(t, int64(in.VTXO.Amount), snap.AmountSat)
 	require.Equal(
@@ -190,6 +200,10 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	)
 	requireExternalSignatureEqual(
 		t, in.ExternalSignatures[0], rebuilt.ExternalSignatures[0],
+	)
+	requireExternalSignatureEqual(
+		t, in.ExternalArkSignatures[0],
+		rebuilt.ExternalArkSignatures[0],
 	)
 }
 

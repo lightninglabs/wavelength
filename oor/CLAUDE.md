@@ -114,13 +114,15 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   descriptor's relative expiry comes from its matching policy template,
   not from operator configuration. Custom policies consider only canonical
   block-mode CSV sequences; CLTV non-final sentinels are not block delays.
-- Snapshots are versioned per direction (`OutgoingSnapshot.Version = 6`,
-  `IncomingSnapshot.Version = 1`); restore rejects a zero version. Outgoing
-  v5 adds the `FirstRejectUnixNanos` record (bounded transient submit-reject
-  retry window); a pre-v5 snapshot decodes it to 0 (a fresh window). Outgoing
-  v6 adds the `FailedPrePONR` record.
+- Snapshots are versioned per direction (`OutgoingSnapshot.Version = 8`,
+  `IncomingSnapshot.Version = 1`); restore rejects zero and unknown future
+  versions. Outgoing v5 adds `FirstRejectUnixNanos`; upstream v6 adds
+  `FailedPrePONR` at TLV 27. The channel branch's v7 used TLV 27 for
+  recipients and TLV 29 for failure proof. V8 keeps upstream's failure
+  marker at TLV 27 and moves recipients to TLV 31. Decode selects the
+  historical TLV meaning by version; absent proof stays false.
 - `Failed.PrePONR` is true only when an outgoing session failed from Idle,
-  `AwaitingArkSignatures`, or `AwaitingSubmitAccepted`, before the operator
+  `Prepared`, `AwaitingArkSignatures`, or `AwaitingSubmitAccepted`, before the operator
   co-signed a spend. A failure from `AwaitingCheckpointSignatures`,
   `AwaitingFinalizeAccepted`, or `AwaitingLocalVTXOUpdate` leaves it false
   because the outputs may exist, as does a pre-v6 failed snapshot.

@@ -5,8 +5,10 @@ import (
 	"math"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/tlvutil"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -38,6 +40,13 @@ const (
 	// failed before the point of no return (snapshot version 6+). A
 	// pre-v6 snapshot omits it, so it decodes to false.
 	snapshotFailedPrePONRRecordType tlv.Type = 27
+
+	// snapshotRecipientsRecordType stores semantic recipient metadata for
+	// prepared and pre-submit sessions in version 8 and later.
+	snapshotRecipientsRecordType tlv.Type = 31
+
+	// snapshotPrePONRFailureRecordType is the version-7 failure marker.
+	snapshotPrePONRFailureRecordType tlv.Type = 29
 )
 
 // encodeOutgoingSnapshot serializes outgoing transfer state, including retry
@@ -56,7 +65,6 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	inputSnapshots, err := encodeTransferInputSnapshots(
 		snapshot.TransferInputSnapshots,
 	)
@@ -74,7 +82,30 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		failedPrePONR = 1
 	}
 
+	recipientPayloads := make(
+		[]recipientPayload, 0, len(snapshot.RecipientOutputs),
+	)
+	for i := range snapshot.RecipientOutputs {
+		output := snapshot.RecipientOutputs[i]
+		recipientPayloads = append(recipientPayloads, recipientPayload{
+			PkScript:           output.PkScript,
+			ValueSat:           int64(output.Value),
+			VTXOPolicyTemplate: output.VTXOPolicyTemplate,
+		})
+	}
+	recipients, err := encodeRecipientPayloads(recipientPayloads)
+	if err != nil {
+		return nil, err
+	}
+
 	version := uint64(snapshot.Version)
+	failedRecord := []byte{failedPrePONR}
+	var legacyFailure uint8
+	if snapshot.Version == 7 {
+		failedRecord = recipients
+		legacyFailure = failedPrePONR
+		recipients = nil
+	}
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(snapshotVersionRecordType, &version),
 		tlv.MakePrimitiveRecord(
@@ -105,7 +136,13 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 			&dispatchRequestData,
 		),
 		tlv.MakePrimitiveRecord(
-			snapshotFailedPrePONRRecordType, &failedPrePONR,
+			snapshotFailedPrePONRRecordType, &failedRecord,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotPrePONRFailureRecordType, &legacyFailure,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotRecipientsRecordType, &recipients,
 		),
 	}
 
@@ -133,7 +170,9 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		idempotencyKeyRaw   []byte
 		firstRejectNanos    uint64
 		dispatchRequestData []byte
-		failedPrePONR       uint8
+		failedRecord        []byte
+		recipientsRaw       []byte
+		prePONRFailure      uint8
 	)
 
 	records := []tlv.Record{
@@ -166,7 +205,13 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 			&dispatchRequestData,
 		),
 		tlv.MakePrimitiveRecord(
-			snapshotFailedPrePONRRecordType, &failedPrePONR,
+			snapshotFailedPrePONRRecordType, &failedRecord,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotPrePONRFailureRecordType, &prePONRFailure,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotRecipientsRecordType, &recipientsRaw,
 		),
 	}
 
@@ -212,6 +257,10 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 	if err != nil {
 		return nil, err
 	}
+	if decodedVersion > outgoingSnapshotVersion {
+		return nil, fmt.Errorf("unknown outgoing snapshot version %d",
+			decodedVersion)
+	}
 
 	decodedRetryAfter, err := decodeUint64ToDuration(
 		retryAfterNanos, "snapshot retry_after nanos",
@@ -226,6 +275,58 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 	if err != nil {
 		return nil, err
 	}
+	if prePONRFailure > 1 {
+		return nil, fmt.Errorf("snapshot pre-PONR failure must be 0 " +
+			"or 1")
+	}
+
+	// The unmerged version-7 format assigned recipient bytes to record
+	// 27. Select its meaning by version before interpreting failure proof.
+	failedPrePONR := false
+	if version == 7 {
+		if len(recipientsRaw) != 0 {
+			return nil, fmt.Errorf("version-7 snapshot has " +
+				"duplicate recipients")
+		}
+		recipientsRaw = failedRecord
+		failedPrePONR = prePONRFailure == 1
+	} else if len(failedRecord) != 0 {
+		if len(failedRecord) != 1 || failedRecord[0] > 1 {
+			return nil, fmt.Errorf("invalid snapshot pre-PONR " +
+				"failure marker")
+		}
+		failedPrePONR = failedRecord[0] == 1
+	}
+
+	var recipientOutputs []oortx.RecipientOutput
+	if len(recipientsRaw) > 0 {
+		recipientPayloads, err := decodeRecipientPayloadsWithLimits(
+			recipientsRaw, limits,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if len(recipientPayloads) > 0 {
+			recipientOutputs = make(
+				[]oortx.RecipientOutput, 0,
+				len(recipientPayloads),
+			)
+			for i := range recipientPayloads {
+				payload := recipientPayloads[i]
+				recipientOutputs = append(
+					recipientOutputs,
+					oortx.RecipientOutput{
+						PkScript: payload.PkScript,
+						Value: btcutil.Amount(
+							payload.ValueSat,
+						),
+						VTXOPolicyTemplate: payload.
+							VTXOPolicyTemplate,
+					},
+				)
+			}
+		}
+	}
 
 	return &OutgoingSnapshot{
 		Version:                decodedVersion,
@@ -239,7 +340,8 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		IdempotencyKey:         string(idempotencyKeyRaw),
 		FirstRejectUnixNanos:   decodedFirstReject,
 		DispatchRequestData:    dispatchRequestData,
-		FailedPrePONR:          failedPrePONR == 1,
+		FailedPrePONR:          failedPrePONR,
+		RecipientOutputs:       recipientOutputs,
 	}, nil
 }
 
