@@ -93,3 +93,50 @@ ON CONFLICT (journal_key) DO UPDATE SET value = EXCLUDED.value;
 
 -- name: GetAssetJournalEntry :one
 SELECT value FROM asset_journal WHERE journal_key = $1;
+
+-- name: InsertAssetEngineAddress :execrows
+-- InsertAssetEngineAddress records an address. A recorded script key inserts
+-- nothing.
+INSERT INTO asset_engine_addresses (
+    script_key, encoded, internal_key, creation_height, created_at
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (script_key) DO NOTHING;
+
+-- name: ListAssetEngineAddresses :many
+-- ListAssetEngineAddresses returns the addresses oldest first. Addresses
+-- created at the same time keep the order of their insertion.
+SELECT * FROM asset_engine_addresses ORDER BY created_at, address_id;
+
+-- name: InsertAssetEngineReceive :execrows
+-- InsertAssetEngineReceive records an announced transfer. A recorded
+-- announcement inserts nothing.
+INSERT INTO asset_engine_receives (
+    outpoint_hash, outpoint_index, address_script_key, announcement, state,
+    block_hash, block_height, created_at, payload
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (outpoint_hash, outpoint_index, address_script_key, announcement)
+DO NOTHING;
+
+-- name: GetAssetEngineReceive :one
+SELECT * FROM asset_engine_receives
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+    AND address_script_key = $3 AND announcement = $4;
+
+-- name: UpdateAssetEngineReceive :execrows
+UPDATE asset_engine_receives SET
+    state = $5,
+    block_hash = $6,
+    block_height = $7,
+    payload = $8
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+    AND address_script_key = $3 AND announcement = $4;
+
+-- name: ListAssetEngineReceives :many
+SELECT * FROM asset_engine_receives ORDER BY created_at, receive_id;
+
+-- name: ListAssetEngineReceivesByOutpoint :many
+-- ListAssetEngineReceivesByOutpoint returns the announcements of one anchor
+-- output, oldest first.
+SELECT * FROM asset_engine_receives
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+ORDER BY created_at, receive_id;
