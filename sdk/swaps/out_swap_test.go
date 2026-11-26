@@ -2332,7 +2332,9 @@ func TestWaitIncomingVHTLCNotificationRejectsMissingAckCursor(t *testing.T) {
 		clientPubKey: clientPriv.PubKey(),
 	}
 
-	_, err = session.waitIncomingVHTLCNotification(t.Context(), nil)
+	notification, err := session.waitIncomingVHTLCNotification(t.Context())
+	require.NoError(t, err)
+	err = validateIncomingVHTLCAck(notification)
 	require.ErrorContains(t, err, "incoming vHTLC ack cursor")
 	require.Equal(t, ReceiveStateInvoiceCreated, session.State())
 	require.Zero(t, session.pendingHTLCAckCursor)
@@ -4283,7 +4285,9 @@ func TestReceiveSessionOverdueInvoiceAcceptsDeliveredEvent(t *testing.T) {
 	client := NewSwapClientWithStore(
 		serverConn, daemonConn, nil, creator, store,
 	)
-	client.overdueReceivePollWindow = 100 * time.Millisecond
+	// The cached event is already delivered, so acceptance must persist
+	// under the parent context even after the polling window closes.
+	client.overdueReceivePollWindow = 0
 	useTestOnionDecoder(client, 42_000)
 
 	session, err := client.StartReceiveViaLightning(
@@ -4307,6 +4311,15 @@ func TestReceiveSessionOverdueInvoiceAcceptsDeliveredEvent(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, ReceiveStateInvoiceCreated, resumed.State())
+
+	// A backend failure during acceptance must stay retryable even though
+	// the already-delivered event outlived the polling deadline.
+	daemonConn.blockHeightErr = errors.New("block height unavailable")
+	err = resumed.waitForHTLCEvent(t.Context())
+	require.ErrorContains(t, err, "block height unavailable")
+	require.NotErrorIs(t, err, errSwapExpired)
+	require.Equal(t, ReceiveStateInvoiceCreated, resumed.State())
+	daemonConn.blockHeightErr = nil
 
 	err = resumed.waitForHTLCEvent(t.Context())
 	require.NoError(t, err)

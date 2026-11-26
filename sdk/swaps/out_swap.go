@@ -913,9 +913,7 @@ func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
 	waitCtx, cancel := s.invoiceDeadlineContext(ctx)
 	defer cancel()
 
-	notification, err := s.waitIncomingVHTLCNotification(
-		waitCtx, authKey,
-	)
+	notification, err := s.waitIncomingVHTLCNotification(waitCtx)
 	if err != nil {
 		if invoiceDeadlineExceeded(ctx, waitCtx, err) {
 			return fmt.Errorf("receive invoice deadline "+
@@ -928,8 +926,13 @@ func (s *ReceiveSession) waitForHTLCEvent(ctx context.Context) error {
 		return fmt.Errorf("incoming vHTLC notification must be " +
 			"provided")
 	}
-	if notification.Ack != nil && notification.AckCursor == 0 {
-		return fmt.Errorf("incoming vHTLC ack cursor must be provided")
+	if err := validateIncomingVHTLCAck(notification); err != nil {
+		return err
+	}
+	if _, err := s.acceptIncomingVHTLCNotification(
+		ctx, notification, authKey,
+	); err != nil {
+		return err
 	}
 
 	return s.ackAcceptedHTLCEvent(ctx, notification.Ack)
@@ -1010,10 +1013,11 @@ func (s *ReceiveSession) waitForFunding(ctx context.Context) error {
 	return s.ensureReceiveClaimRecoveryArmed(ctx)
 }
 
-// waitIncomingVHTLCNotification waits for and validates the server notification
-// that tells this receiver which vHTLC script should be funded.
-func (s *ReceiveSession) waitIncomingVHTLCNotification(ctx context.Context,
-	authKey ReceiveAuthKey) (*IncomingVHTLCNotification, error) {
+// waitIncomingVHTLCNotification waits for the server notification that tells
+// this receiver which vHTLC script should be funded. The caller validates and
+// accepts a delivered notification outside the polling deadline.
+func (s *ReceiveSession) waitIncomingVHTLCNotification(ctx context.Context) (
+	*IncomingVHTLCNotification, error) {
 
 	if receiver, ok := s.client.outEvents.(IncomingVHTLCEventReceiver); ok {
 		notification, err := receiver.WaitIncomingVHTLC(
@@ -1023,13 +1027,8 @@ func (s *ReceiveSession) waitIncomingVHTLCNotification(ctx context.Context,
 			return nil, fmt.Errorf("wait for incoming vHTLC "+
 				"event: %w", err)
 		}
-		if err := validateIncomingVHTLCAck(notification); err != nil {
-			return nil, err
-		}
 
-		return s.acceptIncomingVHTLCNotification(
-			ctx, notification, authKey,
-		)
+		return notification, nil
 	}
 
 	notification, err := s.client.outEvents.WaitOutSwapHtlc(
@@ -1039,8 +1038,7 @@ func (s *ReceiveSession) waitIncomingVHTLCNotification(ctx context.Context,
 		return nil, fmt.Errorf("wait for out-swap HTLC event: %w", err)
 	}
 	if notification == nil {
-		return nil, fmt.Errorf("out-swap HTLC notification must be " +
-			"provided")
+		return nil, nil
 	}
 
 	incoming := &IncomingVHTLCNotification{
@@ -1048,11 +1046,8 @@ func (s *ReceiveSession) waitIncomingVHTLCNotification(ctx context.Context,
 		AckCursor: notification.AckCursor,
 		Ack:       notification.Ack,
 	}
-	if err := validateIncomingVHTLCAck(incoming); err != nil {
-		return nil, err
-	}
 
-	return s.acceptIncomingVHTLCNotification(ctx, incoming, authKey)
+	return incoming, nil
 }
 
 // validateIncomingVHTLCAck checks mailbox ack metadata before the notification
