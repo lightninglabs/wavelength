@@ -2,6 +2,7 @@ package lwwallet
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -416,8 +417,8 @@ func TestChainBackendConfRegistration(t *testing.T) {
 	}
 }
 
-// TestChainBackendSpendRegistration verifies that spend
-// registrations fire when an output is spent.
+// TestChainBackendSpendRegistration verifies that historical spends are
+// buffered before registration returns.
 func TestChainBackendSpendRegistration(t *testing.T) {
 	t.Parallel()
 
@@ -499,9 +500,176 @@ func TestChainBackendSpendRegistration(t *testing.T) {
 		require.Equal(t, uint32(1), spend.SpenderInputIndex)
 		require.Equal(t, int32(99), spend.SpendingHeight)
 
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for spend notification")
+	default:
+		t.Fatal("historical spend was not available on return")
 	}
+}
+
+// TestChainBackendSpendRegistrationLookupError verifies that a failed initial
+// lookup leaves no registration that a caller could mistake for an unspent
+// output.
+func TestChainBackendSpendRegistrationLookupError(t *testing.T) {
+	t.Parallel()
+
+	txid := chainhash.HashH([]byte("funding-tx"))
+	srv := mockEsploraServer(
+		t, func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/blocks/tip/height":
+				_, _ = fmt.Fprint(w, "100")
+
+			case "/block-height/100":
+				h := chainhash.HashH([]byte("block-100"))
+				_, _ = fmt.Fprint(w, h.String())
+
+			default:
+				http.Error(
+					w, "backend unavailable",
+					http.StatusServiceUnavailable,
+				)
+			}
+		},
+	)
+
+	backend := NewChainBackend(
+		NewEsploraClient(srv.URL, btclog.Disabled), 50*time.Millisecond,
+		btclog.Disabled,
+	)
+	require.NoError(t, backend.Start())
+	defer func() {
+		require.NoError(t, backend.Stop())
+	}()
+
+	reg, err := backend.RegisterSpend(
+		t.Context(), &wire.OutPoint{
+			Hash: txid,
+		},
+		nil,
+		90,
+	)
+	require.ErrorContains(t, err, "initial spend lookup")
+	require.Nil(t, reg)
+
+	backend.mu.Lock()
+	activeRegs := len(backend.spendRegs)
+	backend.mu.Unlock()
+	require.Zero(t, activeRegs)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	reg, err = backend.RegisterSpend(
+		ctx, &wire.OutPoint{
+			Hash: txid,
+		},
+		nil,
+		90,
+	)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, reg)
+
+	backend.mu.Lock()
+	activeRegs = len(backend.spendRegs)
+	backend.mu.Unlock()
+	require.Zero(t, activeRegs)
+}
+
+// TestChainBackendSpendRegistrationSharedTxTimeout verifies that a spend
+// registration respects its context while another caller owns the shared raw
+// transaction fetch.
+func TestChainBackendSpendRegistrationSharedTxTimeout(t *testing.T) {
+	t.Parallel()
+
+	txid := chainhash.HashH([]byte("funding-tx"))
+	spenderTxid := minimalRawTxID(t)
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseRequest) })
+	}
+	defer release()
+
+	srv := mockEsploraServer(
+		t, func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/blocks/tip/height":
+				_, _ = fmt.Fprint(w, "100")
+
+			case "/block-height/100":
+				h := chainhash.HashH([]byte("block-100"))
+				_, _ = fmt.Fprint(w, h.String())
+
+			case "/tx/" + txid.String() + "/outspend/0":
+				_ = json.NewEncoder(w).Encode(esploraOutspend{
+					Spent: true,
+					Txid:  spenderTxid.String(),
+					Status: esploraStatus{
+						Confirmed: true,
+					},
+				})
+
+			case "/tx/" + spenderTxid.String() + "/raw":
+				close(requestStarted)
+				select {
+				case <-releaseRequest:
+					_, _ = w.Write(minimalRawTx())
+
+				case <-r.Context().Done():
+				}
+
+			default:
+				http.NotFound(w, r)
+			}
+		},
+	)
+
+	client := NewEsploraClient(srv.URL, btclog.Disabled)
+	backend := NewChainBackend(client, time.Second, btclog.Disabled)
+	require.NoError(t, backend.Start())
+	defer func() {
+		require.NoError(t, backend.Stop())
+	}()
+
+	leaderResult := make(chan error, 1)
+	go func() {
+		_, err := client.GetRawTx(t.Context(), spenderTxid)
+		leaderResult <- err
+	}()
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("raw transaction request did not start")
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	registrationResult := make(chan error, 1)
+	go func() {
+		reg, err := backend.RegisterSpend(
+			ctx, &wire.OutPoint{
+				Hash: txid,
+			},
+			nil,
+			90,
+		)
+		if reg != nil {
+			reg.Cancel()
+		}
+		registrationResult <- err
+	}()
+
+	var regErr error
+	select {
+	case regErr = <-registrationResult:
+	case <-time.After(500 * time.Millisecond):
+		release()
+		regErr = <-registrationResult
+		t.Fatal("spend registration outlived its context")
+	}
+	require.ErrorIs(t, regErr, context.DeadlineExceeded)
+
+	release()
+	require.NoError(t, <-leaderResult)
 }
 
 // minimalRawTx returns a minimal valid serialized Bitcoin

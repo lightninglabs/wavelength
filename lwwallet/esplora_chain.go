@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -832,6 +833,10 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 	if err != nil {
 		return fmt.Errorf("get tip height for rescan: %w", err)
 	}
+	if startHeight > tipHeight {
+		return fmt.Errorf("rescan start height %d exceeds tip %d",
+			startHeight, tipHeight)
+	}
 
 	s.log.InfoS(ctx, "Starting chain rescan",
 		slog.Int("start_height", int(startHeight)),
@@ -842,7 +847,11 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 
 	// Collect all notifications first, then flush them
 	// asynchronously. See method doc for deadlock rationale.
-	var pending []interface{}
+	var (
+		pending   []interface{}
+		finalHash chainhash.Hash
+		finalTime time.Time
+	)
 
 	// Ask the address index which transactions in this range are
 	// relevant, instead of downloading every block and scanning it.
@@ -891,6 +900,8 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 			},
 			Time: time.Unix(blockHeader.Timestamp, 0),
 		}
+		finalHash = blockHash
+		finalTime = blockMeta.Time
 
 		// Build records for whatever the index attributed to this
 		// canonical block. An inconsistent index answer falls back to
@@ -961,6 +972,15 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 			chain.BlockConnected(blockMeta),
 		)
 	}
+
+	// btcwallet only marks its chain view synchronized after this terminal
+	// notification. Advancing SyncedTo without it leaves channel funding
+	// disabled even though every block has been processed.
+	pending = append(pending, &chain.RescanFinished{
+		Hash:   &finalHash,
+		Height: tipHeight,
+		Time:   finalTime,
+	})
 
 	s.log.InfoS(ctx, "Chain rescan complete",
 		slog.Int("tip_height", int(tipHeight)),
@@ -1219,10 +1239,34 @@ func (s *EsploraChainService) TestMempoolAccept(txns []*wire.MsgTx,
 	return results, nil
 }
 
-// MapRPCErr passes through errors unchanged since the Esplora backend
-// does not use RPC error codes.
-func (s *EsploraChainService) MapRPCErr(err error) error {
-	return err
+// MapRPCErr maps Bitcoin Core reject reasons returned by Esplora to the
+// sentinel errors expected by btcwallet and lnd.
+func (s *EsploraChainService) MapRPCErr(rpcErr error) error {
+	for code := chain.ErrMissingInputsOrSpent; code <=
+		chain.ErrBadWitnessNonStandard; code++ {
+
+		if chainErrorMatches(rpcErr, code.Error()) {
+			return code
+		}
+	}
+
+	for message, mappedErr := range chain.Bitcoind28ErrMap {
+		if chainErrorMatches(rpcErr, message) {
+			return mappedErr
+		}
+	}
+
+	return fmt.Errorf("%w: %w", chain.ErrUndefined, rpcErr)
+}
+
+// chainErrorMatches normalizes Core's dashed reject reasons before matching.
+func chainErrorMatches(err error, pattern string) bool {
+	errText := strings.ReplaceAll(err.Error(), "-", " ")
+	pattern = strings.ReplaceAll(pattern, "-", " ")
+
+	return strings.Contains(
+		strings.ToLower(errText), strings.ToLower(pattern),
+	)
 }
 
 // handleChainEvents drains the unified chain stream and translates
