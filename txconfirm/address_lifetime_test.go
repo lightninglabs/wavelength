@@ -345,10 +345,9 @@ func TestFanoutFallbackKeepsDestinations(t *testing.T) {
 	)
 }
 
-// TestFanoutPublishEndsScriptPlan models a broadcast timeout after the first
-// candidate may have reached the network. A later funding attempt using a
-// different input must not pay destinations from that published candidate.
-func TestFanoutPublishEndsScriptPlan(t *testing.T) {
+// TestFanoutAmbiguousPublishRetainsCandidate verifies that a lost initial
+// receipt cannot charge a second wallet input when the next block arrives.
+func TestFanoutAmbiguousPublishRetainsCandidate(t *testing.T) {
 	t.Parallel()
 
 	chain := newFakeChainSourceRef(100)
@@ -383,22 +382,26 @@ func TestFanoutPublishEndsScriptPlan(t *testing.T) {
 	first := chain.broadcastCalls[0].Tx.Copy()
 	require.Equal(t, 1, wallet.scriptCalls)
 
-	// The old input remains unavailable after the ambiguous attempt. The
-	// existing funding retry can select another coin and publish both txs.
+	require.Equal(t, first.TxHash(), c.PendingFanout().txid)
+	require.Contains(
+		t, b.excludedOutpointsForOtherParents(demands[0].parentTxid),
+		first.TxIn[0].PreviousOutPoint,
+	)
+
+	// Even with new confirmed supply only the original bytes may be
+	// retried.
 	wallet.utxos = []*walletcore.Utxo{makeWalletUTXOWithAmount(100_000, 8)}
 	chain.broadcastErr = nil
 	pending, err = c.EnsureSupply(t.Context(), demands, 5, 102, 1)
 	require.NoError(t, err)
-	require.NotNil(t, pending)
 	require.Len(t, chain.broadcastCalls, 2)
-	require.NotEqual(
-		t, first.TxIn[0].PreviousOutPoint,
-		pending.tx.TxIn[0].PreviousOutPoint,
-	)
-	require.NotEqual(
-		t, first.TxOut[0].PkScript, pending.tx.TxOut[0].PkScript,
-	)
-	require.Equal(t, 2, wallet.scriptCalls)
+	require.Equal(t, first, chain.broadcastCalls[1].Tx)
+	require.Equal(t, first.TxHash(), pending.txid)
+	require.Len(t, wallet.fundedTemplates, 1)
+	require.Equal(t, 1, wallet.scriptCalls)
+	c.OnFanoutConfirmed(t.Context(), first.TxHash())
+	require.Empty(t, b.fanoutInputs)
+	require.Nil(t, c.PendingFanout())
 }
 
 // TestFanoutPartialAllocationSurvivesFailure proves a failed later derivation

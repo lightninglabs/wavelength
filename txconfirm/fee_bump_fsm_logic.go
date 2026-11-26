@@ -235,50 +235,33 @@ func (s *feeBumpStateIdle) processDemands(ctx context.Context,
 		)
 	}
 
-	// Publishing ends this destination plan even when the response is
-	// ambiguous: the candidate may already be on chain. A later funded
-	// candidate can use other inputs and confirm alongside it, so it must
-	// not reuse these addresses. Pending retains its funded tx separately.
+	// Once submitted, the signed transaction may already be on chain.
+	// Track its local txid even when the backend loses the response.
 	env.fanoutScripts = fanoutScriptPlan{}
-
-	resp, err := b.cfg.ChainSource.Ask(
-		ctx, &chainsource.BroadcastTxRequest{
-			Tx:    fundedTx,
-			Label: "txconfirm-fee-input-fanout",
-		},
-	).Await(ctx).Unpack()
-	if err != nil {
-		env.releasePredictedFanoutOutputs(assignments)
-
-		return s.stayIdle(env, fmt.Errorf("broadcast fanout: %w", err))
-	}
-
-	broadcastResp, ok := resp.(*chainsource.BroadcastTxResponse)
-	if !ok {
-		env.releasePredictedFanoutOutputs(assignments)
-
-		return s.stayIdle(
-			env, fmt.Errorf("unexpected fanout response %T", resp),
-		)
-	}
-
 	pending := &pendingFeeInputFanout{
-		txid:                broadcastResp.Txid,
+		txid:                txid,
 		tx:                  fundedTx.Copy(),
 		watchScript:         watchScript,
 		assignments:         assignments,
 		lastBroadcastHeight: height,
 	}
 
-	// The fanout is now on the wire. Log it at info as a lifecycle event:
-	// this is the moment several blocked parents gain a supply path.
-	env.log.InfoS(ctx, "Fee-input fanout broadcast",
-		slog.String("txid", broadcastResp.Txid.String()),
+	err = env.broadcastFanout(ctx, pending)
+	if fanoutRejected(err) {
+		env.releasePredictedFanoutOutputs(assignments)
+
+		return s.stayIdle(env, err)
+	}
+	env.lastErr = err
+
+	env.log.InfoS(ctx, "Watching submitted fee-input fanout",
+		slog.String("txid", txid.String()),
 		slog.Int("num_outputs", len(fundedTx.TxOut)),
 		slog.Int("num_demands", len(fanoutDemands)),
 	)
 
 	env.consumeFanoutInputs(fundedTx.TxIn)
+	b.fanoutInputs = pending.tx.TxIn
 
 	// Advance to fanout-pending and ask the actor to register a
 	// confirmation watch on the fanout's chosen output script. The watch is
@@ -381,59 +364,58 @@ func (s *feeBumpStateFanoutPending) processDemands(ctx context.Context,
 		}, nil
 	}
 
-	resp, err := env.broadcaster.cfg.ChainSource.Ask(
-		ctx, &chainsource.BroadcastTxRequest{
-			Tx:    pending.tx.Copy(),
-			Label: "txconfirm-fee-input-fanout",
-		},
-	).Await(ctx).Unpack()
-	if err != nil {
-		// Keep the existing watch on known transactions and ambiguous
-		// spent inputs. A confirmed fanout may return the latter on
-		// rebroadcast before its confirmation notification is
-		// processed. Neither case justifies discarding it and funding a
-		// new fanout.
-		if IsIgnorableBroadcastError(err) ||
-			isAmbiguousSpendError(err) {
-			return env.refreshRebroadcast(ctx, pending, height), nil
-		}
-
-		// A timeout, canceled RPC or unclassified backend response does
-		// not prove that the previously submitted fanout was rejected.
-		// Preserve its candidate, reservations and confirmation watch.
-		// Surface the operational failure without destroying recovery.
-		if ClassifyBroadcastFailure(err) == BroadcastFailureUnknown {
-			env.lastErr = fmt.Errorf("rebroadcast fanout: %w", err)
-
-			return env.refreshRebroadcast(ctx, pending, height), nil
-		}
-
-		// A hard rejection means the fanout is no longer valid; release
-		// it and return to idle, then immediately rebuild from scratch
-		// within this same turn by routing the demand event back into
-		// the (now idle) FSM as an internal event. The watch teardown
-		// for the abandoned fanout is left to the actor via the unwatch
-		// outbox.
+	err := env.broadcastFanout(ctx, pending)
+	if fanoutRejected(err) {
 		env.log.WarnS(ctx, "Pending fee-input fanout rejected; "+
 			"rebuilding", err, "txid", pending.txid)
 
 		return env.clearAndRebuild(ctx, pending, event), nil
 	}
 
-	broadcastResp, ok := resp.(*chainsource.BroadcastTxResponse)
-	if !ok {
-		env.lastErr = fmt.Errorf("unexpected fanout response %T", resp)
-
-		return env.clearPendingFanout(ctx, pending), nil
-	}
-
-	if broadcastResp.Txid != pending.txid {
-		env.lastErr = fmt.Errorf("fanout rebroadcast txid changed")
-
-		return env.clearPendingFanout(ctx, pending), nil
-	}
+	env.lastErr = err
 
 	return env.refreshRebroadcast(ctx, pending, height), nil
+}
+
+// broadcastFanout submits the retained bytes. A malformed response or an
+// unknown transport result leaves the caller responsible for the same txid.
+func (env *feeBumpEnvironment) broadcastFanout(ctx context.Context,
+	pending *pendingFeeInputFanout) error {
+
+	future := env.broadcaster.cfg.ChainSource.Ask(
+		ctx, &chainsource.BroadcastTxRequest{
+			Tx:    pending.tx.Copy(),
+			Label: "txconfirm-fee-input-fanout",
+		},
+	)
+
+	// A lost reply can follow a successful submit. Keep tracking the
+	// signed candidate when the backend cannot distinguish that case.
+	//actor:allow-await bounded chain submit has no callback
+	resp, err := future.Await(ctx).Unpack()
+	if err != nil {
+		if IsIgnorableBroadcastError(err) ||
+			isAmbiguousSpendError(err) {
+			return nil
+		}
+
+		return fmt.Errorf("broadcast fanout: %w", err)
+	}
+
+	// Only a receipt for our locally signed bytes acknowledges this split.
+	reply, ok := resp.(*chainsource.BroadcastTxResponse)
+	if !ok || reply == nil || reply.Txid != pending.txid {
+		return fmt.Errorf("invalid broadcast receipt for fanout %s",
+			pending.txid)
+	}
+
+	return nil
+}
+
+// fanoutRejected reports an explicit rejection that permits a fresh attempt.
+func fanoutRejected(err error) bool {
+	return err != nil &&
+		ClassifyBroadcastFailure(err) != BroadcastFailureUnknown
 }
 
 // processConfirmed promotes a confirmed fanout's predicted outputs into used
@@ -451,6 +433,7 @@ func (s *feeBumpStateFanoutPending) processConfirmed(ctx context.Context,
 		}, nil
 	}
 
+	env.broadcaster.fanoutInputs = nil
 	env.promoteConfirmedFanout(ctx, pending)
 
 	// Returning to idle: tell the actor to tear down the confirmation watch
@@ -551,6 +534,7 @@ func (env *feeBumpEnvironment) releasePendingFanout(ctx context.Context,
 		slog.String("txid", pending.txid.String()),
 	)
 
+	env.broadcaster.fanoutInputs = nil
 	env.releasePredictedFanoutOutputs(pending.assignments)
 	if pending.tx != nil {
 		for _, txIn := range pending.tx.TxIn {
