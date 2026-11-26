@@ -166,25 +166,30 @@ func handleNotifiedTimerRetry(state *ReceiveNotified) *StateTransition {
 		return giveUp
 	}
 
-	// Re-extract recipients to rebuild the query. The Ark PSBT was already
-	// validated on entry to ReceiveNotified, so this cannot fail here; on
-	// the off chance it does, still re-arm the give-up timer so the session
-	// keeps moving toward the terminal give-up.
-	recipients, err := ExtractArkRecipients(state.ArkPSBT)
-	if err != nil {
-		return &StateTransition{
-			NextState: next,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					&ScheduleRetryRequest{
-						After: metadataRetryBackoff(
-							next.MetadataAttempts,
-						),
-						Reason: notifiedGiveUpReason,
-					},
-				},
-			}),
+	// Preserve the policy and optional asset metadata stored on state; fall
+	// back to structural extraction only for legacy snapshots without
+	// persisted recipients.
+	recipients := CloneArkRecipients(state.Recipients)
+	if len(recipients) == 0 {
+		extracted, err := ExtractArkRecipients(state.ArkPSBT)
+		if err != nil {
+			retryAfter := metadataRetryBackoff(
+				next.MetadataAttempts,
+			)
+			retryReq := &ScheduleRetryRequest{
+				After:  retryAfter,
+				Reason: notifiedGiveUpReason,
+			}
+
+			return &StateTransition{
+				NextState: next,
+				NewEvents: fn.Some(EmittedEvent{
+					Outbox: []OutboxEvent{retryReq},
+				}),
+			}
 		}
+
+		recipients = extracted
 	}
 
 	return &StateTransition{
@@ -239,8 +244,9 @@ func waitsOnGiveUpTimer(state SessionState) bool {
 
 // transitionIncomingTransfer validates and applies a fully resolved incoming
 // transfer event, moving the receive FSM into the notified/materialize phase.
-func transitionIncomingTransfer(evt *IncomingTransferEvent) (*StateTransition,
-	error) {
+func transitionIncomingTransfer(evt *IncomingTransferEvent,
+	recipientEventID uint64,
+	completedEventIDs []uint64) (*StateTransition, error) {
 
 	if evt.ArkPSBT == nil || evt.ArkPSBT.UnsignedTx == nil {
 		return nil, fmt.Errorf("ark psbt must be provided")
@@ -278,6 +284,11 @@ func transitionIncomingTransfer(evt *IncomingTransferEvent) (*StateTransition,
 		FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
 		AncestorPackages:     evt.AncestorPackages,
 		Recipients:           recipients,
+		TaprootAssetTransfer: evt.TaprootAssetTransfer.Clone(),
+		RecipientEventID:     recipientEventID,
+		CompletedEventIDs: append(
+			[]uint64(nil), completedEventIDs...,
+		),
 	}
 
 	// The metadata query (like the phase-1 hint query) has no failure
@@ -312,7 +323,7 @@ func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *IncomingTransferEvent:
-		return transitionIncomingTransfer(evt)
+		return transitionIncomingTransfer(evt, 0, nil)
 
 	case *FailEvent:
 		return &StateTransition{
@@ -341,7 +352,9 @@ func (s *ReceiveResolving) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *IncomingTransferEvent:
-		return transitionIncomingTransfer(evt)
+		return transitionIncomingTransfer(
+			evt, s.RecipientEventID, s.CompletedEventIDs,
+		)
 
 	case *RetryDueEvent:
 		return handleResolveRetry(s), nil
@@ -462,9 +475,26 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *IncomingMetadataResolvedEvent:
+		recipients := CloneArkRecipients(s.Recipients)
+		if len(recipients) == 0 {
+			extracted, err := ExtractArkRecipients(s.ArkPSBT)
+			if err != nil {
+				return nil, err
+			}
+
+			recipients = extracted
+		}
+
 		if !evt.ExpiryAuthenticated {
 			authenticate := &AuthenticateIncomingMetadataRequest{
-				Matches: evt.Matches,
+				SessionID:            s.SessionID,
+				Matches:              evt.Matches,
+				ArkPSBT:              s.ArkPSBT,
+				FinalCheckpointPSBTs: s.FinalCheckpointPSBTs,
+				AncestorPackages:     s.AncestorPackages,
+				Recipients:           recipients,
+				TaprootAssetTransfer: s.TaprootAssetTransfer.
+					Clone(),
 			}
 
 			return &StateTransition{
@@ -475,16 +505,6 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 					},
 				}),
 			}, nil
-		}
-
-		recipients := CloneArkRecipients(s.Recipients)
-		if len(recipients) == 0 {
-			extracted, err := ExtractArkRecipients(s.ArkPSBT)
-			if err != nil {
-				return nil, err
-			}
-
-			recipients = extracted
 		}
 
 		return &StateTransition{
@@ -500,6 +520,9 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 						MetadataMatches: evt.Matches,
 						AncestorPackages: s.
 							AncestorPackages,
+						TaprootAssetTransfer: s.
+							TaprootAssetTransfer.
+							Clone(),
 					},
 				},
 			}),
@@ -514,7 +537,11 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 
 		return &StateTransition{
 			NextState: &ReceiveAwaitingAck{
-				SessionID: s.SessionID,
+				SessionID:        s.SessionID,
+				RecipientEventID: s.RecipientEventID,
+				CompletedEventIDs: append(
+					[]uint64(nil), s.CompletedEventIDs...,
+				),
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -580,7 +607,11 @@ func (s *ReceiveAwaitingAck) ProcessEvent(ctx context.Context, event Event,
 		_ = evt
 
 		return &StateTransition{
-			NextState: &ReceiveCompleted{},
+			NextState: &ReceiveCompleted{
+				CompletedEventIDs: appendCompletedEventID(
+					s.CompletedEventIDs, s.RecipientEventID,
+				),
+			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 

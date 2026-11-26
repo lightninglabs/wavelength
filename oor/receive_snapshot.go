@@ -2,10 +2,12 @@ package oor
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/lightninglabs/wavelength/baselib/tlvutil"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -23,6 +25,8 @@ const (
 	incomingSnapshotMetadataAttemptsType      tlv.Type = 19
 	incomingSnapshotResolveAttemptsType       tlv.Type = 21
 	incomingSnapshotRecipientsType            tlv.Type = 23
+	incomingSnapshotTaprootAssetTransferType  tlv.Type = 25
+	incomingSnapshotCompletedEventIDsType     tlv.Type = 27
 )
 
 // IncomingPhase identifies the coarse stage of an incoming OOR receive
@@ -81,6 +85,10 @@ type IncomingSnapshot struct {
 	// metadata needed to materialize custom incoming VTXOs.
 	Recipients []ArkRecipientOutput
 
+	// TaprootAssetTransfer carries the sealed Taproot Asset packages for an
+	// incoming asset OOR transfer while materialization is pending.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
+
 	// FailReason is the terminal failure reason, when Phase is Failed.
 	FailReason string
 
@@ -89,8 +97,13 @@ type IncomingSnapshot struct {
 	RecipientPkScript []byte
 
 	// RecipientEventID is the per-script cursor hint paired with
-	// RecipientPkScript during resolve-pending restart.
+	// RecipientPkScript during resolve-pending restart and carried through
+	// ReceiveNotified/ReceiveAwaitingAck until ReceiveCompleted records it.
 	RecipientEventID uint64
+
+	// CompletedEventIDs records recipient event IDs already processed by
+	// this session across sequential receive passes.
+	CompletedEventIDs []uint64
 
 	// MetadataAttempts is the persisted retry count for the authoritative
 	// metadata resolution, used to bound backoff and the terminal give-up
@@ -128,6 +141,9 @@ func NewIncomingSnapshot(sessionID SessionID,
 			[]byte(nil), s.RecipientPkScript...,
 		)
 		snap.RecipientEventID = s.RecipientEventID
+		snap.CompletedEventIDs = append(
+			[]uint64(nil), s.CompletedEventIDs...,
+		)
 		snap.ResolveAttempts = s.ResolveAttempts
 
 	case *ReceiveNotified:
@@ -150,13 +166,25 @@ func NewIncomingSnapshot(sessionID SessionID,
 			[]PackageArtifact(nil), s.AncestorPackages...,
 		)
 		snap.Recipients = CloneArkRecipients(s.Recipients)
+		snap.TaprootAssetTransfer = s.TaprootAssetTransfer.Clone()
+		snap.RecipientEventID = s.RecipientEventID
+		snap.CompletedEventIDs = append(
+			[]uint64(nil), s.CompletedEventIDs...,
+		)
 		snap.MetadataAttempts = s.MetadataAttempts
 
 	case *ReceiveAwaitingAck:
 		snap.Phase = IncomingPhaseAckPending
+		snap.RecipientEventID = s.RecipientEventID
+		snap.CompletedEventIDs = append(
+			[]uint64(nil), s.CompletedEventIDs...,
+		)
 
 	case *ReceiveCompleted:
 		snap.Phase = IncomingPhaseCompleted
+		snap.CompletedEventIDs = append(
+			[]uint64(nil), s.CompletedEventIDs...,
+		)
 
 	case *Failed:
 		snap.Phase = IncomingPhaseFailed
@@ -215,7 +243,10 @@ func IncomingStateFromSnapshot(snapshot *IncomingSnapshot) (SessionState,
 				[]byte(nil), snapshot.RecipientPkScript...,
 			),
 			RecipientEventID: snapshot.RecipientEventID,
-			ResolveAttempts:  snapshot.ResolveAttempts,
+			CompletedEventIDs: append(
+				[]uint64(nil), snapshot.CompletedEventIDs...,
+			),
+			ResolveAttempts: snapshot.ResolveAttempts,
 		}, nil
 
 	case IncomingPhaseMaterializePending:
@@ -242,16 +273,30 @@ func IncomingStateFromSnapshot(snapshot *IncomingSnapshot) (SessionState,
 			Recipients: CloneArkRecipients(
 				snapshot.Recipients,
 			),
+			TaprootAssetTransfer: snapshot.TaprootAssetTransfer.
+				Clone(),
+			RecipientEventID: snapshot.RecipientEventID,
+			CompletedEventIDs: append(
+				[]uint64(nil), snapshot.CompletedEventIDs...,
+			),
 			MetadataAttempts: snapshot.MetadataAttempts,
 		}, nil
 
 	case IncomingPhaseAckPending:
 		return &ReceiveAwaitingAck{
-			SessionID: snapshot.SessionID,
+			SessionID:        snapshot.SessionID,
+			RecipientEventID: snapshot.RecipientEventID,
+			CompletedEventIDs: append(
+				[]uint64(nil), snapshot.CompletedEventIDs...,
+			),
 		}, nil
 
 	case IncomingPhaseCompleted:
-		return &ReceiveCompleted{}, nil
+		return &ReceiveCompleted{
+			CompletedEventIDs: append(
+				[]uint64(nil), snapshot.CompletedEventIDs...,
+			),
+		}, nil
 
 	case IncomingPhaseFailed:
 		return &Failed{Reason: snapshot.FailReason}, nil
@@ -291,6 +336,16 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 	recipients, err := encodeIncomingRecipients(snapshot.Recipients)
 	if err != nil {
 		return nil, err
+	}
+
+	var assetTransferRaw []byte
+	if snapshot.TaprootAssetTransfer != nil {
+		assetTransferRaw, err = snapshot.TaprootAssetTransfer.
+			MarshalBinary()
+		if err != nil {
+			return nil, fmt.Errorf("encode incoming snapshot "+
+				"taproot asset transfer: %w", err)
+		}
 	}
 
 	metadataAttempts := uint64(snapshot.MetadataAttempts)
@@ -336,6 +391,23 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 			incomingSnapshotRecipientsType, &recipients,
 		),
 	}
+	if len(assetTransferRaw) > 0 {
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				incomingSnapshotTaprootAssetTransferType,
+				&assetTransferRaw,
+			),
+		)
+	}
+	if len(snapshot.CompletedEventIDs) > 0 {
+		completedIDsRaw := encodeUint64List(snapshot.CompletedEventIDs)
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				incomingSnapshotCompletedEventIDsType,
+				&completedIDsRaw,
+			),
+		)
+	}
 
 	return tlvutil.EncodeRecordsToBytes(records...)
 }
@@ -358,6 +430,8 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		metadataAttempts  uint64
 		resolveAttempts   uint64
 		recipientsRaw     []byte
+		assetTransferRaw  []byte
+		completedIDsRaw   []byte
 	)
 
 	records := []tlv.Record{
@@ -398,6 +472,13 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			incomingSnapshotRecipientsType, &recipientsRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotTaprootAssetTransferType,
+			&assetTransferRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotCompletedEventIDsType, &completedIDsRaw,
 		),
 	}
 
@@ -440,6 +521,30 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		return nil, err
 	}
 
+	var decodedAssetTransfer *oortx.TaprootAssetTransfer
+	if len(assetTransferRaw) > 0 {
+		var transfer oortx.TaprootAssetTransfer
+		if err := transfer.UnmarshalBinary(
+			assetTransferRaw,
+		); err != nil {
+			return nil, fmt.Errorf("decode incoming snapshot "+
+				"taproot asset transfer: %w", err)
+		}
+		if err := transfer.Validate(len(checkpoints)); err != nil {
+			return nil, fmt.Errorf("validate incoming snapshot "+
+				"taproot asset transfer: %w", err)
+		}
+		decodedAssetTransfer = &transfer
+	}
+
+	completedEventIDs, err := decodeUint64List(
+		completedIDsRaw, maxCompletedIncomingEventIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decode incoming snapshot completed "+
+			"event ids: %w", err)
+	}
+
 	decodedVersion, err := decodeUint64ToUint8(
 		version, "incoming snapshot version",
 	)
@@ -456,15 +561,49 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		AncestorPackages: append(
 			[]PackageArtifact(nil), decodedPackages...,
 		),
-		Recipients: CloneArkRecipients(decodedRecipients),
-		FailReason: string(failReasonRaw),
+		Recipients:           CloneArkRecipients(decodedRecipients),
+		TaprootAssetTransfer: decodedAssetTransfer,
+		FailReason:           string(failReasonRaw),
 		RecipientPkScript: append(
 			[]byte(nil), recipientPkScript...,
 		),
-		RecipientEventID: recipientEventID,
-		MetadataAttempts: uint32(metadataAttempts),
-		ResolveAttempts:  uint32(resolveAttempts),
+		RecipientEventID:  recipientEventID,
+		CompletedEventIDs: completedEventIDs,
+		MetadataAttempts:  uint32(metadataAttempts),
+		ResolveAttempts:   uint32(resolveAttempts),
 	}, nil
+}
+
+// encodeUint64List encodes a slice of uint64 values as big-endian 8-byte words.
+func encodeUint64List(ids []uint64) []byte {
+	out := make([]byte, len(ids)*8)
+	for i, id := range ids {
+		binary.BigEndian.PutUint64(out[i*8:(i+1)*8], id)
+	}
+
+	return out
+}
+
+// decodeUint64List decodes big-endian 8-byte words into a bounded uint64 slice.
+func decodeUint64List(raw []byte, maxCount int) ([]uint64, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if len(raw)%8 != 0 {
+		return nil, fmt.Errorf("byte length %d is not a multiple of 8",
+			len(raw))
+	}
+	count := len(raw) / 8
+	if maxCount > 0 && count > maxCount {
+		return nil, fmt.Errorf("count %d exceeds limit %d", count,
+			maxCount)
+	}
+	out := make([]uint64, count)
+	for i := range count {
+		out[i] = binary.BigEndian.Uint64(raw[i*8 : (i+1)*8])
+	}
+
+	return out, nil
 }
 
 // parseIncomingPSBTs parses the Ark and checkpoint PSBTs stored in an incoming

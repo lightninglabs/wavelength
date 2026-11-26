@@ -443,13 +443,36 @@ func (m *QueryIncomingMetadataRequest) outboxType() string {
 // outboxSealed marks this as implementing the sealed OutboxEvent interface.
 func (m *QueryIncomingMetadataRequest) outboxSealed() {}
 
-// AuthenticateIncomingMetadataRequest asks the local chain boundary to
-// replace indexer expiry hints with authenticated absolute expiries before
+// AuthenticateIncomingMetadataRequest asks the local chain and asset
+// verification boundary to replace indexer expiry hints with authenticated
+// absolute expiries and verify any incoming Taproot Asset package before
 // materialization enters the durable database transaction.
 type AuthenticateIncomingMetadataRequest struct {
 	actor.BaseMessage
 
+	// SessionID identifies the incoming transfer session.
+	SessionID SessionID
+
+	// Matches carries the resolved incoming VTXO metadata per output.
 	Matches []IncomingMetadataMatch
+
+	// ArkPSBT is the canonical Ark transaction PSBT for this transfer.
+	ArkPSBT *psbt.Packet
+
+	// FinalCheckpointPSBTs are the finalized checkpoint PSBTs for this
+	// transfer.
+	FinalCheckpointPSBTs []*psbt.Packet
+
+	// AncestorPackages are finalized prior OOR packages for this transfer.
+	AncestorPackages []PackageArtifact
+
+	// Recipients are the Ark outputs with optional policy and asset
+	// metadata.
+	Recipients []ArkRecipientOutput
+
+	// TaprootAssetTransfer carries the sealed Taproot Asset packages when
+	// this transfer creates an asset VTXO.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
 }
 
 // outboxType returns a stable identifier for this outbox message.
@@ -491,6 +514,10 @@ type MaterializeIncomingVTXOsRequest struct {
 	// AncestorPackages are finalized OOR packages needed to unroll the
 	// incoming VTXO's OOR parent chain.
 	AncestorPackages []PackageArtifact
+
+	// TaprootAssetTransfer carries the sealed Taproot Asset packages when
+	// this transfer creates an asset VTXO.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
 }
 
 // outboxType returns a stable identifier for this outbox message.

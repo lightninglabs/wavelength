@@ -60,16 +60,16 @@ func NewSessionWithIdempotencyKey(ctx context.Context,
 	}
 
 	return newSessionWithDispatchRequest(
-		ctx, policy, inputs, outputs, idempotencyKey,
+		ctx, policy, inputs, outputs, nil, idempotencyKey,
 		dispatchRequestData, envCfg,
 	)
 }
 
 func newSessionWithDispatchRequest(ctx context.Context,
 	policy arkscript.CheckpointPolicy, inputs []TransferInput,
-	outputs []oortx.RecipientOutput, idempotencyKey string,
-	dispatchRequestData []byte, envCfg EnvConfig) (*Session, []OutboxEvent,
-	error) {
+	outputs []oortx.RecipientOutput, preparedSubmit *PreparedSubmitPackage,
+	idempotencyKey string, dispatchRequestData []byte, envCfg EnvConfig) (
+	*Session, []OutboxEvent, error) {
 
 	logger(ctx).DebugS(ctx, "Creating new OOR session",
 		slog.Int("num_inputs", len(inputs)),
@@ -97,6 +97,7 @@ func newSessionWithDispatchRequest(ctx context.Context,
 		VTXOInputs:       inputs,
 		RecipientOutputs: outputs,
 		Policy:           policy,
+		PreparedSubmit:   preparedSubmit,
 		IdempotencyKey:   idempotencyKey,
 		DispatchRequestData: append(
 			[]byte(nil), dispatchRequestData...,

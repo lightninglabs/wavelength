@@ -182,6 +182,10 @@ type IncomingTransferEvent struct {
 	// structural extraction from ArkPSBT for compatibility with older
 	// servers.
 	Recipients []ArkRecipientOutput
+
+	// TaprootAssetTransfer carries the sealed Taproot Asset transition
+	// packages when this incoming transfer creates an asset VTXO.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
 }
 
 // eventSealed marks this as implementing the sealed Event interface.

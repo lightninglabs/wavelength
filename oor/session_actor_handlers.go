@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 	clientdb "github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/ledger"
 	libtypes "github.com/lightninglabs/wavelength/lib/types"
@@ -89,8 +90,8 @@ func (b *sessionBehavior) handleStartTransfer(ctx context.Context,
 	}
 
 	session, outbox, err := newSessionWithDispatchRequest(
-		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
-		req.DispatchRequestData, b.envConfig(),
+		ctx, req.Policy, req.Inputs, req.Recipients, req.PreparedSubmit,
+		req.IdempotencyKey, req.DispatchRequestData, b.envConfig(),
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)
@@ -450,6 +451,8 @@ func (b *sessionBehavior) buildTransportMessage(ctx context.Context,
 		}
 
 		pkScripts := make([][]byte, 0, len(recipients))
+		var signerScripts [][]byte
+		hasCustomSigner := false
 		for i := range recipients {
 			pkScripts = append(
 				pkScripts,
@@ -457,11 +460,31 @@ func (b *sessionBehavior) buildTransportMessage(ctx context.Context,
 					[]byte(nil), recipients[i].PkScript...,
 				),
 			)
+			if recipients[i].Asset != nil {
+				routingScript, err := recipients[i].
+					RoutingPkScript()
+				if err != nil {
+					return nil, terminalOutboxErrorf(
+						"derive incoming asset "+
+							"routing script for "+
+							"output %d: %v",
+						recipients[i].OutputIndex, err,
+					)
+				}
+				if !hasCustomSigner {
+					signerScripts = make(
+						[][]byte, len(recipients),
+					)
+					hasCustomSigner = true
+				}
+				signerScripts[i] = routingScript
+			}
 		}
 
 		return &serverconn.SendListVTXOsByScriptsRequest{
-			PkScripts: pkScripts,
-			Limit:     b.cfg.Limits.MaxVTXOMatches,
+			PkScripts:     pkScripts,
+			SignerScripts: signerScripts,
+			Limit:         b.cfg.Limits.MaxVTXOMatches,
 			CorrelationID: IncomingMetadataCorrelationID(
 				queryReq.SessionID,
 			),
@@ -553,10 +576,53 @@ func (b *sessionBehavior) handleResolveIncomingTransfer(ctx context.Context,
 		)
 	}
 
-	// A duplicate hint for an already-admitted session is a no-op; the
-	// resolve query is already in flight or the session has progressed.
+	// Handle hints targeting an already-loaded incoming session:
+	//   - While a pass is in flight for another recipient event of the
+	//     same session, postpone so the new event runs once the current
+	//     pass completes (rather than dropping it as a duplicate).
+	//   - Once completed, allow a distinct new recipient event ID (such as
+	//     asset change + Bitcoin carrier return in one transfer) to start a
+	//     fresh ReceiveResolving pass while keeping previously completed
+	//     event IDs and legacy completed snapshots idempotent.
+	var priorCompleted []uint64
 	if b.loaded && b.fsm != nil {
-		return fn.Ok[ActorResp](&DriveEventResponse{})
+		curState, err := b.fsm.CurrentState()
+		if err != nil {
+			return fn.Err[ActorResp](err)
+		}
+
+		completed, isCompleted := curState.(*ReceiveCompleted)
+		if !isCompleted {
+			activeID := activeIncomingEventID(curState)
+			if req.RecipientEventID > 0 && activeID > 0 &&
+				activeID != req.RecipientEventID {
+
+				postpone := actor.Postpone(
+					selfHintRedeliveryBackoff,
+				)
+
+				return fn.Err[ActorResp](
+					fmt.Errorf("incoming session %s busy "+
+						"with event %d: %w",
+						req.SessionID, activeID,
+						postpone),
+				)
+			}
+
+			return fn.Ok[ActorResp](&DriveEventResponse{})
+		}
+
+		if req.RecipientEventID == 0 ||
+			len(completed.CompletedEventIDs) == 0 ||
+			completed.HasEventID(req.RecipientEventID) ||
+			len(completed.CompletedEventIDs) >=
+				maxCompletedIncomingEventIDs {
+			return fn.Ok[ActorResp](&DriveEventResponse{})
+		}
+
+		priorCompleted = append(
+			[]uint64(nil), completed.CompletedEventIDs...,
+		)
 	}
 
 	session, err := newReceiveSessionWithState(
@@ -565,7 +631,8 @@ func (b *sessionBehavior) handleResolveIncomingTransfer(ctx context.Context,
 			RecipientPkScript: append(
 				[]byte(nil), req.RecipientPkScript...,
 			),
-			RecipientEventID: req.RecipientEventID,
+			RecipientEventID:  req.RecipientEventID,
+			CompletedEventIDs: priorCompleted,
 		}, b.envConfig(),
 	)
 	if err != nil {

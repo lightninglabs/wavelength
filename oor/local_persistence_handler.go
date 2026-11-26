@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/ledger"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	libtypes "github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -25,6 +26,12 @@ var (
 	// materialization.
 	ErrIncomingRecipientNotOwned = errors.New("incoming recipient not " +
 		"owned by wallet")
+
+	// ErrInvalidIncomingAssetPackage signals that an incoming asset OOR
+	// package failed cryptographic or structural asset verification and
+	// must fail the receive session terminally rather than retry.
+	ErrInvalidIncomingAssetPackage = errors.New("invalid incoming asset " +
+		"package")
 )
 
 // IsIncomingRecipientNotOwned reports whether an error means the recipient
@@ -51,6 +58,40 @@ type IncomingMetadataResolver func(ctx context.Context, sessionID SessionID,
 // commitment height from authenticated ancestry and local chain evidence.
 type IncomingExpiryAuthenticator func(ctx context.Context,
 	ancestry []vtxo.Ancestry) (vtxo.AuthenticatedBatchEvidence, error)
+
+// IncomingAssetVerification carries all authenticated lineage, OOR packages,
+// and sealed Taproot Asset transition data needed to verify one incoming
+// asset-bearing OOR output before persisting it on the local VTXO descriptor.
+type IncomingAssetVerification struct {
+	// SessionID identifies the incoming OOR session (Ark txid).
+	SessionID SessionID
+
+	// Recipient is the matched asset-bearing Ark output being received.
+	Recipient ArkRecipientOutput
+
+	// ArkPSBT is the canonical Ark transaction PSBT.
+	ArkPSBT *psbt.Packet
+
+	// FinalCheckpointPSBTs are the finalized checkpoint PSBTs for this
+	// transfer.
+	FinalCheckpointPSBTs []*psbt.Packet
+
+	// AncestorPackages are finalized prior OOR packages for this transfer.
+	AncestorPackages []PackageArtifact
+
+	// Metadata carries the authenticated commitment-tree ancestry for this
+	// output.
+	Metadata IncomingVTXOMetadata
+
+	// TaprootAssetTransfer holds the sealed asset packages for this
+	// transfer, including ArkPackage.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
+}
+
+// IncomingAssetVerifier validates one incoming asset-bearing OOR output
+// against the local asset backend and authenticated Bitcoin lineage.
+type IncomingAssetVerifier func(ctx context.Context,
+	req IncomingAssetVerification) error
 
 // IncomingMetadataRecipientFilter filters an incoming Ark package down to the
 // recipient outputs controlled by the local wallet.
@@ -125,6 +166,12 @@ type LocalPersistenceOutboxHandler struct {
 	// materialization starts its DB transaction.
 	AuthenticateIncomingExpiry IncomingExpiryAuthenticator
 
+	// VerifyIncomingAssetPackage validates an incoming asset OOR output's
+	// sealed Ark transition package before materialization persists it on
+	// the received VTXO descriptor. When nil, incoming asset outputs fail
+	// closed.
+	VerifyIncomingAssetPackage IncomingAssetVerifier
+
 	// NotifyIncomingVTXOs is invoked after incoming VTXOs are persisted.
 	// Production wiring should use this to notify the VTXO manager so newly
 	// received OOR VTXOs are actively monitored when the handler is used
@@ -191,6 +238,14 @@ func (h *LocalPersistenceOutboxHandler) handleAuthenticateIncomingMetadata(
 			"be provided")
 	}
 
+	recipientsByIndex := make(
+		map[uint32]ArkRecipientOutput, len(msg.Recipients),
+	)
+	for i := range msg.Recipients {
+		recipientsByIndex[msg.Recipients[i].OutputIndex] = msg.
+			Recipients[i]
+	}
+
 	matches := make([]IncomingMetadataMatch, len(msg.Matches))
 	copy(matches, msg.Matches)
 	for i := range matches {
@@ -215,6 +270,49 @@ func (h *LocalPersistenceOutboxHandler) handleAuthenticateIncomingMetadata(
 		matches[i].Metadata.CreatedHeight =
 			evidence.EarliestCommitmentHeight
 		matches[i].Metadata.ExpiryAuthenticated = true
+
+		recipient, hasRecipient := recipientsByIndex[matches[i].
+			OutputIndex]
+		if !hasRecipient || recipient.Asset == nil {
+			continue
+		}
+
+		if h.VerifyIncomingAssetPackage == nil {
+			return nil, &terminalOutboxError{
+				cause: fmt.Errorf("incoming asset output %d "+
+					"requires an asset package verifier",
+					recipient.OutputIndex),
+			}
+		}
+		if msg.TaprootAssetTransfer == nil ||
+			len(msg.TaprootAssetTransfer.ArkPackage) == 0 {
+			return nil, &terminalOutboxError{
+				cause: fmt.Errorf("incoming asset output %d "+
+					"missing sealed ark asset package",
+					recipient.OutputIndex),
+			}
+		}
+
+		err = h.VerifyIncomingAssetPackage(
+			ctx, IncomingAssetVerification{
+				SessionID:            msg.SessionID,
+				Recipient:            recipient,
+				ArkPSBT:              msg.ArkPSBT,
+				FinalCheckpointPSBTs: msg.FinalCheckpointPSBTs,
+				AncestorPackages:     msg.AncestorPackages,
+				Metadata:             matches[i].Metadata,
+				TaprootAssetTransfer: msg.TaprootAssetTransfer,
+			},
+		)
+		if err != nil {
+			if errors.Is(err, ErrInvalidIncomingAssetPackage) {
+				return nil, &terminalOutboxError{cause: err}
+			}
+
+			return nil, err
+		}
+
+		matches[i].Metadata.AssetVerified = true
 	}
 
 	return []Event{&IncomingMetadataResolvedEvent{
@@ -527,6 +625,13 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 				"incoming output %d", recipient.OutputIndex)
 		}
 
+		sealedAssetPackage, err := h.ensureIncomingAssetVerified(
+			ctx, msg, recipient, &metadata,
+		)
+		if err != nil {
+			return nil, err
+		}
+
 		desc, err := BuildIncomingVTXODescriptor(msg.ArkPSBT,
 			IncomingVTXOConfig{
 				OutputIndex: recipient.OutputIndex,
@@ -535,7 +640,9 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 				ExitDelay:   h.ExitDelay,
 				PolicyTemplate: recipient.
 					VTXOPolicyTemplate,
-				Metadata: metadata,
+				Metadata:                  metadata,
+				Asset:                     recipient.Asset,
+				TaprootAssetSealedPackage: sealedAssetPackage,
 			},
 		)
 		if err != nil {
@@ -558,6 +665,10 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 			}
 
 			if !bytes.Equal(existing.PkScript, desc.PkScript) {
+				return nil, err
+			}
+
+			if !descriptorsMatchAssetState(existing, desc) {
 				return nil, err
 			}
 
@@ -734,6 +845,89 @@ func (h *LocalPersistenceOutboxHandler) handleIncomingAck(ctx context.Context,
 	followUps = append(followUps, &IncomingAckSentEvent{})
 
 	return followUps, nil
+}
+
+// ensureIncomingAssetVerified verifies an asset-bearing incoming output's
+// sealed Ark package before materialization and returns the sealed package
+// bytes. Plain Bitcoin outputs return nil, nil.
+func (h *LocalPersistenceOutboxHandler) ensureIncomingAssetVerified(
+	ctx context.Context, msg *MaterializeIncomingVTXOsRequest,
+	recipient ArkRecipientOutput, metadata *IncomingVTXOMetadata) ([]byte,
+	error) {
+
+	if recipient.Asset == nil {
+		return nil, nil
+	}
+
+	if msg.TaprootAssetTransfer == nil ||
+		len(msg.TaprootAssetTransfer.ArkPackage) == 0 {
+		return nil, &terminalOutboxError{
+			cause: fmt.Errorf("incoming asset output %d missing "+
+				"sealed ark asset package",
+				recipient.OutputIndex),
+		}
+	}
+
+	if metadata.AssetVerified {
+		return msg.TaprootAssetTransfer.ArkPackage, nil
+	}
+
+	if hasActorDBTx(ctx) {
+		return nil, fmt.Errorf("incoming asset output %d package was "+
+			"not verified before materialization",
+			recipient.OutputIndex)
+	}
+	if h.VerifyIncomingAssetPackage == nil {
+		return nil, &terminalOutboxError{
+			cause: fmt.Errorf("incoming asset output %d requires "+
+				"an asset package verifier",
+				recipient.OutputIndex),
+		}
+	}
+
+	verifyErr := h.VerifyIncomingAssetPackage(
+		ctx, IncomingAssetVerification{
+			SessionID:            msg.SessionID,
+			Recipient:            recipient,
+			ArkPSBT:              msg.ArkPSBT,
+			FinalCheckpointPSBTs: msg.FinalCheckpointPSBTs,
+			AncestorPackages:     msg.AncestorPackages,
+			Metadata:             *metadata,
+			TaprootAssetTransfer: msg.TaprootAssetTransfer,
+		},
+	)
+	if verifyErr != nil {
+		if errors.Is(verifyErr, ErrInvalidIncomingAssetPackage) {
+			return nil, &terminalOutboxError{
+				cause: verifyErr,
+			}
+		}
+
+		return nil, verifyErr
+	}
+	metadata.AssetVerified = true
+
+	return msg.TaprootAssetTransfer.ArkPackage, nil
+}
+
+// descriptorsMatchAssetState reports whether two descriptors carry identical
+// Taproot Asset state so duplicate-save idempotency checks fail closed on any
+// mismatch.
+func descriptorsMatchAssetState(a, b *vtxo.Descriptor) bool {
+	if (a.TaprootAssetRoot == nil) != (b.TaprootAssetRoot == nil) {
+		return false
+	}
+	if a.TaprootAssetRoot != nil &&
+		*a.TaprootAssetRoot != *b.TaprootAssetRoot {
+		return false
+	}
+
+	return a.TaprootAssetRef == b.TaprootAssetRef &&
+		a.TaprootAssetAmount == b.TaprootAssetAmount &&
+		bytes.Equal(
+			a.TaprootAssetSealedPackage,
+			b.TaprootAssetSealedPackage,
+		)
 }
 
 var _ OutboxHandler = (*LocalPersistenceOutboxHandler)(nil)
