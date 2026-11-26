@@ -46,6 +46,7 @@ type Config struct {
 	FeeMaxUpdateTimeout  time.Duration
 	PackageSubmitter     chainbackends.PackageSubmitter
 	PersistFilters       bool
+	NeutrinoSQLite       bool
 	DisableGlobalLoggers bool
 }
 
@@ -64,6 +65,11 @@ type NeutrinoService struct{}
 
 // WithoutGlobalDependencyLoggers disables native package-global loggers.
 func WithoutGlobalDependencyLoggers() NeutrinoServiceOption {
+	return func(*NeutrinoService) {}
+}
+
+// WithNeutrinoSQLite is a no-op in browser builds.
+func WithNeutrinoSQLite(bool) NeutrinoServiceOption {
 	return func(*NeutrinoService) {}
 }
 

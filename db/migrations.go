@@ -2,6 +2,7 @@ package db
 
 import (
 	"github.com/golang-migrate/migrate/v4"
+	dbmigrate "github.com/lightninglabs/wavelength/db/migrate"
 )
 
 const (
@@ -40,7 +41,7 @@ var (
 // migrateOptions holds options for migration execution.
 type migrateOptions struct {
 	latestVersion     uint
-	postStepCallbacks map[uint]migrate.PostStepCallback
+	postStepCallbacks map[uint]dbmigrate.PostStepCallback
 }
 
 // defaultMigrateOptions returns a new migrateOptions instance with default
@@ -48,7 +49,7 @@ type migrateOptions struct {
 func defaultMigrateOptions() *migrateOptions {
 	return &migrateOptions{
 		latestVersion:     LatestMigrationVersion,
-		postStepCallbacks: make(map[uint]migrate.PostStepCallback),
+		postStepCallbacks: make(map[uint]dbmigrate.PostStepCallback),
 	}
 }
 
@@ -72,7 +73,7 @@ func WithLatestVersion(version uint) MigrateOpt {
 // cleanly executed). An error returned from the callback will cause the
 // migration to fail and the step to be marked as dirty.
 func WithPostStepCallbacks(
-	postStepCallbacks map[uint]migrate.PostStepCallback) MigrateOpt {
+	postStepCallbacks map[uint]dbmigrate.PostStepCallback) MigrateOpt {
 
 	return func(o *migrateOptions) {
 		o.postStepCallbacks = postStepCallbacks

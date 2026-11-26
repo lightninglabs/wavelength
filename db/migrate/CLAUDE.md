@@ -21,8 +21,8 @@ pulling the modernc sqlite driver into the browser bundle.
   migrations).
 - `Config` — Migration control: `MigrationsTable`, `DatabaseName`,
   `LatestVersion` (downgrade guard), `PostStepCallbacks
-  map[uint]golangmigrate.PostStepCallback` (Go callback run after the
-  matching SQL step applies), `PostgresReplacements map[string]string`
+  map[uint]PostStepCallback` (Go callback run after the matching SQL step
+  applies, via the `postStepDriver` wrapper in `poststep.go`), `PostgresReplacements map[string]string`
   (SQLite→Postgres token map), optional `Log btclog.Logger`.
 - `RunMigrations(db, backend, sourceFS, sourcePath, target, cfg)` — Top-level
   entry point. Builds the driver, wraps the `fs.FS` with `replacerFS` if
@@ -59,7 +59,10 @@ pulling the modernc sqlite driver into the browser bundle.
   rewritten by the generic primary-key rule.
 - `PostStepCallbacks` are invoked after the golang-migrate step number they
   are keyed on; use for data-migration side effects that must run between
-  schema steps.
+  schema steps. The upstream hook was removed from the golang-migrate fork,
+  so `postStepDriver` wraps the migration driver and runs the callback just
+  before the step's final clean `SetVersion`. A callback error leaves the
+  version dirty, as before. Downward steps never fire callbacks.
 
 ## Deep Docs
 
