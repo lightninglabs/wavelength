@@ -1,12 +1,17 @@
 package waved
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
@@ -20,6 +25,7 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -91,6 +97,13 @@ type headerlessChainBackend struct {
 	chainsource.ChainBackend
 }
 
+// BestBlock returns a tip above the heights the tests ask for.
+func (b *headerlessChainBackend) BestBlock(context.Context) (int32,
+	chainhash.Hash, error) {
+
+	return 200, chainhash.Hash{2}, nil
+}
+
 // newAssetChainTestServer returns a server whose wallet is ready on the
 // given chain backend.
 func newAssetChainTestServer(backend chainsource.ChainBackend) *Server {
@@ -141,7 +154,116 @@ func TestAssetChainNotReady(t *testing.T) {
 			t.Context(), wire.NewMsgTx(2), &input.SignDescriptor{},
 		)
 		require.ErrorIs(t, err, errAssetWalletNotReady)
+
+		// Nor does it decrypt a mailbox message or answer a mailbox
+		// challenge.
+		locator := keychain.KeyLocator{Family: 212, Index: 1}
+		peer, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+		_, err = keys.ECDH(t.Context(), locator, peer.PubKey())
+		require.ErrorIs(t, err, errAssetWalletNotReady)
+		_, err = keys.SignMessageSchnorr(
+			t.Context(), locator, []byte("challenge"),
+		)
+		require.ErrorIs(t, err, errAssetWalletNotReady)
 	}
+}
+
+// fakeReceiveSigner is an lnd signer that holds one key, and records how it
+// was asked to sign.
+type fakeReceiveSigner struct {
+	lndclient.SignerClient
+
+	locator keychain.KeyLocator
+	key     *btcec.PrivateKey
+
+	signReq *signrpc.SignMessageReq
+}
+
+// DeriveSharedKey returns the shared key of the signer's key and a peer's,
+// as lnd derives it.
+func (s *fakeReceiveSigner) DeriveSharedKey(_ context.Context,
+	peer *btcec.PublicKey, locator *keychain.KeyLocator) ([32]byte, error) {
+
+	if locator == nil || *locator != s.locator {
+		return [32]byte{}, fmt.Errorf("unknown key %v", locator)
+	}
+
+	return (&keychain.PrivKeyECDH{PrivKey: s.key}).ECDH(peer)
+}
+
+// SignMessage signs the SHA-256 of a message with the signer's key, as lnd
+// does for a Schnorr signature without a tag.
+func (s *fakeReceiveSigner) SignMessage(_ context.Context, msg []byte,
+	locator keychain.KeyLocator, opts ...lndclient.SignMessageOption) (
+	[]byte, error) {
+
+	if locator != s.locator {
+		return nil, fmt.Errorf("unknown key %v", locator)
+	}
+
+	s.signReq = &signrpc.SignMessageReq{}
+	for _, opt := range opts {
+		opt(s.signReq)
+	}
+
+	sig, err := schnorr.Sign(s.key, chainhash.HashB(msg))
+	if err != nil {
+		return nil, err
+	}
+
+	return sig.Serialize(), nil
+}
+
+// TestAssetReceiveKeysLnd decrypts and answers a mailbox challenge through
+// lnd's signer when the daemon wallet is lnd, with the key at the locator
+// the engine names.
+func TestAssetReceiveKeysLnd(t *testing.T) {
+	t.Parallel()
+
+	key, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	signer := &fakeReceiveSigner{
+		locator: keychain.KeyLocator{
+			Family: 212,
+			Index:  3,
+		},
+		key: key,
+	}
+
+	server := newAssetChainTestServer(&headerlessChainBackend{})
+	server.cfg.Wallet.Type = WalletTypeLnd
+	server.lnd = fn.Some(&lndclient.GrpcLndServices{
+		LndServices: lndclient.LndServices{Signer: signer},
+	})
+	keys := &assetKeyRing{server: server}
+	ctx := t.Context()
+
+	// Both sides of a mailbox message derive the same key.
+	sender, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	shared, err := keys.ECDH(ctx, signer.locator, sender.PubKey())
+	require.NoError(t, err)
+	want, err := (&keychain.PrivKeyECDH{PrivKey: sender}).ECDH(key.PubKey())
+	require.NoError(t, err)
+	require.Equal(t, want, shared)
+
+	// A courier checks the answer to its challenge as a BIP-340 signature
+	// over the SHA-256 of the challenge, with no tag.
+	challenge := []byte("mailbox challenge")
+	sig, err := keys.SignMessageSchnorr(ctx, signer.locator, challenge)
+	require.NoError(t, err)
+	require.True(t, sig.Verify(chainhash.HashB(challenge), key.PubKey()))
+	require.True(t, signer.signReq.SchnorrSig)
+	require.Empty(t, signer.signReq.Tag)
+	require.Empty(t, signer.signReq.SchnorrSigTapTweak)
+	require.False(t, signer.signReq.DoubleHash)
+
+	other := keychain.KeyLocator{Family: 212, Index: 4}
+	_, err = keys.ECDH(ctx, other, sender.PubKey())
+	require.ErrorContains(t, err, "unknown key")
+	_, err = keys.SignMessageSchnorr(ctx, other, challenge)
+	require.ErrorContains(t, err, "unknown key")
 }
 
 // TestAssetChainHeadersAndBroadcast reads the tip and headers through the
@@ -166,6 +288,16 @@ func TestAssetChainHeadersAndBroadcast(t *testing.T) {
 	header, err := chain.BlockHeader(ctx, 100)
 	require.NoError(t, err)
 	require.EqualValues(t, 7, header.Nonce)
+
+	// The backend serves a header at any height, but the engine gets
+	// none above the tip.
+	header, err = chain.BlockHeader(ctx, 120)
+	require.NoError(t, err)
+	require.EqualValues(t, 7, header.Nonce)
+	_, err = chain.BlockHeader(ctx, 121)
+	require.ErrorContains(t, err, "above the chain tip at height 120")
+	_, err = chain.BlockHash(ctx, 121)
+	require.ErrorContains(t, err, "above the chain tip at height 120")
 
 	tx := wire.NewMsgTx(2)
 	require.NoError(t, chain.PublishTransaction(ctx, tx, "label"))
@@ -342,6 +474,86 @@ func TestAssetChainConfirmationEvents(t *testing.T) {
 
 	events.Cancel()
 	requireAssetConfSignal(t, backend.canceled)
+}
+
+// perWatchConfBackend is a chain backend that scripts the events of each
+// confirmation registration on its own.
+type perWatchConfBackend struct {
+	*fakeAssetChainBackend
+
+	// watches delivers the script of each registration as it is made.
+	watches chan *fakeAssetChainBackend
+}
+
+// RegisterConf returns a registration over event channels of its own.
+func (b *perWatchConfBackend) RegisterConf(ctx context.Context,
+	txid *chainhash.Hash, pkScript []byte, numConfs, heightHint uint32,
+	includeBlock bool) (*chainsource.ConfRegistration, error) {
+
+	watch := newAssetConfBackend(b.height)
+	b.watches <- watch
+
+	return watch.RegisterConf(
+		ctx, txid, pkScript, numConfs, heightHint, includeBlock,
+	)
+}
+
+// TestAssetChainConfirmationWatches registers two watches of one transaction
+// and script, as the engine would for a transfer of its own that pays one of
+// its addresses. Each watch gets the confirmation, and cancelling one leaves
+// the other delivering.
+func TestAssetChainConfirmationWatches(t *testing.T) {
+	t.Parallel()
+
+	backend := &perWatchConfBackend{
+		fakeAssetChainBackend: newAssetConfBackend(100),
+		watches:               make(chan *fakeAssetChainBackend, 2),
+	}
+	chain := newAssetConfTestChain(t, backend)
+
+	txid, pkScript := chainhash.Hash{9}, []byte{0x51}
+	first, err := chain.RegisterConfirmation(
+		t.Context(), txid, pkScript, 100,
+	)
+	require.NoError(t, err)
+	firstWatch := <-backend.watches
+	second, err := chain.RegisterConfirmation(
+		t.Context(), txid, pkScript, 100,
+	)
+	require.NoError(t, err)
+	secondWatch := <-backend.watches
+
+	confirm := func(watch *fakeAssetChainBackend,
+		events *embedded.ConfirmationEvents, height uint32,
+		seq uint64) {
+
+		t.Helper()
+
+		conf := assetTestConfirmation(height, &wire.MsgBlock{})
+		conf.Seq = seq
+		watch.confirmed <- conf
+
+		select {
+		case conf := <-events.Confirmed:
+			require.EqualValues(t, height, conf.Height)
+
+		case <-time.After(5 * time.Second):
+			t.Fatal("confirmation never arrived")
+		}
+	}
+
+	confirm(firstWatch, first, 101, 1)
+	confirm(secondWatch, second, 101, 1)
+
+	first.Cancel()
+	requireAssetConfSignal(t, firstWatch.canceled)
+
+	secondWatch.reorged <- 2
+	requireAssetConfSignal(t, second.Reorged)
+	confirm(secondWatch, second, 102, 3)
+
+	second.Cancel()
+	requireAssetConfSignal(t, secondWatch.canceled)
 }
 
 // TestAssetChainConfirmationBeforeFinal checks that the engine holds the
@@ -533,6 +745,31 @@ func TestGroupTrustingClaimer(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, 1, inner.prepares)
 	require.Equal(t, 1, inner.calls)
+}
+
+// TestAssetEngineLogger writes the failures the engine retries, a dropped
+// mailbox stream among them, below the levels that alert a human.
+func TestAssetEngineLogger(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	logger := &assetEngineLogger{
+		log: btclog.NewSLogger(btclog.NewDefaultHandler(&out)),
+	}
+
+	logger.Errorf("Reading the mailbox of address %x: %v", []byte{2},
+		io.EOF)
+	logger.Infof("Receive %v confirmed at height %d", "aa:0", 115)
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	require.Len(t, lines, 2)
+	require.Contains(t, lines[0], "[INF]")
+	require.Contains(
+		t, lines[0],
+		"Asset engine: Reading the mailbox of address 02: EOF",
+	)
+	require.Contains(t, lines[1], "[INF]")
+	require.Contains(t, lines[1], "Receive aa:0 confirmed at height 115")
 }
 
 // TestAssetJournal maps an absent journal entry to the journal's not-found

@@ -7,11 +7,15 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/lndclient"
 	tapsdk "github.com/lightninglabs/tap-sdk"
 	"github.com/lightninglabs/tap-sdk/embedded"
 	"github.com/lightninglabs/wavelength/baselib/actor"
@@ -27,8 +31,8 @@ import (
 )
 
 const (
-	// assetConfCallerID names the engine's confirmation watches at the
-	// chain source.
+	// assetConfCallerID prefixes the caller ID of each confirmation watch
+	// of the engine at the chain source.
 	assetConfCallerID = "asset-engine"
 
 	// assetConfQueueSize is how many events of one confirmation watch
@@ -47,9 +51,10 @@ var errAssetWalletNotReady = errors.New("wallet is not ready")
 // initEmbeddedAssets creates the asset engine on the daemon's
 // database, wallet seed and chain backend, and installs its asset VTXO
 // verifier and its claimer. The wallet may still be locked, so the engine
-// reaches the wallet and the chain backend on each call, and follows the
-// transfers an earlier run left unconfirmed once the wallet services are up.
-// The returned cleanup stops following transfers.
+// reaches the wallet and the chain backend on each call. Once the wallet
+// services are up it follows the transfers an earlier run left unconfirmed
+// and holds the mailbox of every Taproot Asset address open. The returned
+// cleanup stops both.
 func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 	func(), error) {
 
@@ -64,6 +69,10 @@ func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 
 	engineStore := db.NewAssetEngineStore(store)
 	keys := &assetKeyRing{server: s}
+	receive, err := s.assetReceiveConfig(engineStore, keys)
+	if err != nil {
+		return nil, err
+	}
 	client, err := embedded.NewClient(&embedded.Config{
 		Network:   tapsdk.Network(s.cfg.Network),
 		Store:     engineStore,
@@ -72,6 +81,7 @@ func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 		Chain:     &assetChain{server: s},
 		GroupKeys: groupKeys,
 		Logger:    &assetEngineLogger{log: s.log},
+		Receive:   receive,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create asset engine: %w", err)
@@ -99,6 +109,7 @@ func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 
 	s.assetClient = client
 	s.embeddedAssets = client
+	s.assetAddresses = receive != nil
 	s.assetVTXOVerifier = &groupTrustingVerifier{
 		verifier: verifier,
 		engine:   client,
@@ -108,8 +119,9 @@ func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 		engine:  client,
 	}
 
-	// The engine follows its transfers through the chain backend, which
-	// exists only once the wallet is unlocked.
+	// The engine follows its transfers through the chain backend and
+	// answers a mailbox challenge with the wallet's keys, and both exist
+	// only once the wallet is unlocked.
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
@@ -121,6 +133,13 @@ func (s *Server) initEmbeddedAssets(ctx context.Context, store *db.Store) (
 		if err := client.ResumeTransfers(runCtx); err != nil {
 			s.log.ErrorS(runCtx, "Unable to resume asset "+
 				"transfers", err)
+		}
+		if receive == nil {
+			return
+		}
+		if err := client.ResumeReceives(runCtx); err != nil {
+			s.log.ErrorS(runCtx, "Unable to resume asset "+
+				"receives", err)
 		}
 	}()
 
@@ -218,9 +237,9 @@ func trustAssetGroup(engine *embedded.Client, assetRef string) error {
 	return nil
 }
 
-// assetKeyRing derives and signs with the embedded engine's keys through
-// the daemon wallet. An lnd wallet derives and signs through lnd, so its
-// keys never leave lnd. A wallet holding the seed signs with its key ring.
+// assetKeyRing derives, signs and decrypts with the embedded engine's keys
+// through the daemon wallet. An lnd wallet does all three through lnd, so
+// its keys never leave lnd. A wallet holding the seed uses its key ring.
 type assetKeyRing struct {
 	server *Server
 }
@@ -321,10 +340,80 @@ func (k *assetKeyRing) SignOutputRaw(ctx context.Context, tx *wire.MsgTx,
 	)
 }
 
+// lndSigner returns the signer of the connected lnd, or nil when the daemon
+// wallet is not lnd.
+func (k *assetKeyRing) lndSigner() (lndclient.SignerClient, error) {
+	s := k.server
+	if s.cfg.Wallet.Type != WalletTypeLnd {
+		return nil, nil
+	}
+	if !s.isWalletReady() || s.lnd.IsNone() {
+		return nil, errAssetWalletNotReady
+	}
+
+	return s.lnd.UnsafeFromSome().Signer, nil
+}
+
+// ECDH returns the SHA-256 of the compressed shared point of the key at
+// locator and pubKey, with which the engine decrypts a mailbox message sent
+// to an address.
+func (k *assetKeyRing) ECDH(ctx context.Context, locator keychain.KeyLocator,
+	pubKey *btcec.PublicKey) ([32]byte, error) {
+
+	signer, err := k.lndSigner()
+	if err != nil {
+		return [32]byte{}, err
+	}
+	if signer != nil {
+		return signer.DeriveSharedKey(ctx, pubKey, &locator)
+	}
+
+	ring, err := k.ring()
+	if err != nil {
+		return [32]byte{}, err
+	}
+
+	return embedded.NewKeyRingReceiveKeys(ring).ECDH(ctx, locator, pubKey)
+}
+
+// SignMessageSchnorr returns the BIP-340 signature of the key at locator
+// over the SHA-256 of msg, with which the engine answers the challenge of a
+// mailbox. lnd signs that digest for a Schnorr signature without a tag.
+func (k *assetKeyRing) SignMessageSchnorr(ctx context.Context,
+	locator keychain.KeyLocator, msg []byte) (*schnorr.Signature, error) {
+
+	signer, err := k.lndSigner()
+	if err != nil {
+		return nil, err
+	}
+	if signer != nil {
+		sig, err := signer.SignMessage(
+			ctx, msg, locator, lndclient.SignSchnorr(nil),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return schnorr.ParseSignature(sig)
+	}
+
+	ring, err := k.ring()
+	if err != nil {
+		return nil, err
+	}
+
+	return embedded.NewKeyRingReceiveKeys(ring).SignMessageSchnorr(
+		ctx, locator, msg,
+	)
+}
+
 // assetChain is the embedded engine's view of the chain through the
 // daemon's chain backend.
 type assetChain struct {
 	server *Server
+
+	// confWatches counts the confirmation watches registered so far.
+	confWatches atomic.Uint64
 }
 
 // backend returns the chain backend of the unlocked daemon wallet.
@@ -358,13 +447,28 @@ func (c *assetChain) BestBlock(ctx context.Context) (uint32, chainhash.Hash,
 	return uint32(height), hash, nil
 }
 
-// BlockHeader returns the header of the best-chain block at height.
+// BlockHeader returns the header of the best-chain block at height, which
+// must not be above the best block.
 func (c *assetChain) BlockHeader(ctx context.Context, height uint32) (
 	*wire.BlockHeader, error) {
 
 	backend, err := c.backend()
 	if err != nil {
 		return nil, err
+	}
+
+	// A backend can serve the header of a block its tip has not reached:
+	// the lwwallet backend polls its tip and reads headers from Esplora
+	// directly. The engine takes a block above the tip for one that left
+	// the chain, so it gets no header the tip does not cover and waits
+	// for the tip instead.
+	tip, _, err := c.BestBlock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if height > tip {
+		return nil, fmt.Errorf("block at height %d is above the chain "+
+			"tip at height %d", height, tip)
 	}
 
 	if headers, ok := backend.(chainsource.BlockHeaderSource); ok {
@@ -453,9 +557,16 @@ func (c *assetChain) RegisterConfirmation(ctx context.Context,
 		return nil, err
 	}
 
+	// The chain source keeps one watch per caller ID, transaction, script
+	// and confirmation target: a second registration replaces the first,
+	// and unregistering either ends both. Each watch therefore gets a
+	// caller ID of its own.
+	callerID := fmt.Sprintf("%s-%d", assetConfCallerID,
+		c.confWatches.Add(1))
+
 	watch := newAssetConfWatch()
 	_, err = chainSource.Ask(ctx, &chainsource.RegisterConfRequest{
-		CallerID:      assetConfCallerID,
+		CallerID:      callerID,
 		Txid:          &txid,
 		PkScript:      pkScript,
 		TargetConfs:   1,
@@ -491,7 +602,7 @@ func (c *assetChain) RegisterConfirmation(ctx context.Context,
 
 			_ = chainSource.Tell(
 				ctx, &chainsource.UnregisterConfRequest{
-					CallerID:    assetConfCallerID,
+					CallerID:    callerID,
 					Txid:        &txid,
 					PkScript:    pkScript,
 					TargetConfs: 1,
@@ -735,8 +846,9 @@ func (l *assetEngineLogger) Infof(format string, args ...any) {
 	l.log.Infof("Asset engine: "+format, args...)
 }
 
-// Errorf logs a failure the engine retries. The engine keeps retrying on its
-// own, so nobody has to act on it.
+// Errorf logs a failure the engine retries, such as a transfer it cannot
+// confirm yet or a mailbox stream that dropped. The engine keeps retrying on
+// its own, so nobody has to act on it.
 func (l *assetEngineLogger) Errorf(format string, args ...any) {
 	l.log.Infof("Asset engine: "+format, args...)
 }

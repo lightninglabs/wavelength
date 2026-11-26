@@ -111,6 +111,10 @@ type RPCServer struct {
 	// currently reserved by an in-flight SendOOR call.
 	customInputLocks map[wire.OutPoint]struct{}
 
+	// assetAddressMu serializes NewAssetAddress, so two calls for one
+	// asset create one address.
+	assetAddressMu sync.Mutex
+
 	// receiveScriptLocksMu guards receiveScriptLocks. The keyed locks keep
 	// two exact NewReceiveScript retries from using the same mailbox
 	// correlation id concurrently.

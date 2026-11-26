@@ -143,6 +143,8 @@ waved \
 | `--lnd.account` | _(empty)_ | lnd wallet account to spend from; empty uses lnd's default account. Set when sharing an lnd node with another daemon. The account must already exist and be taproot-scoped; a watch-only account is accepted only on a remote-signing lnd (one whose default account is itself watch-only) and must report an extended public key and derivation path |
 | `--assets.enabled` | `false` | Hold and verify Taproot Assets inside the daemon (regtest only). When off, the daemon refuses asset VTXOs |
 | `--assets.groupkeys` | | Asset groups the daemon trusts, as hex compressed public keys |
+| `--assets.courier.addr` | | Proof courier of the daemon's Taproot Asset addresses, as `authmailbox+universerpc://host:port`. Without it the daemon creates no address |
+| `--assets.courier.endpoints` | | Proof couriers reached at another host or with their own TLS certificate, each as `host:port=target` or `host:port=target=tlscertpath` |
 | `--server.host` | network default | Ark operator address override for the selected transport |
 | `--server.transport` | `grpc` | Ark operator transport: `grpc` or `rest` |
 | `--server.insecure` | `false` | Disable TLS for server connection |
@@ -461,6 +463,40 @@ wavecli dev daemon NewAssetReceiveKeys
 wavecli dev daemon ImportAssetProof --proof_file <base64 proof file> \
     --asset_ref <asset id or group key>
 wavecli dev daemon ListOwnedAssets
+```
+
+### `dev daemon NewAssetAddress` / `ListAssetAddresses` / `ListAssetReceives` / `SyncAssetReceives`
+
+Receive a Taproot Asset at an address. `NewAssetAddress` returns the wallet's
+address for the asset named in `asset_ref`. The first call creates the
+address, and later calls return the same one. The address names no amount, so
+a sender pays it any number of times and chooses each amount.
+`ListAssetAddresses` lists the wallet's addresses.
+
+The daemon needs a proof courier for this, set with `--assets.courier.addr`.
+A sender uploads the proofs of a transfer to the courier and announces the
+transfer in the courier's mailbox. The daemon reads that mailbox while it
+runs, fetches the proofs and verifies them back to the issuance.
+`SyncAssetReceives` reads the mailboxes once on demand.
+
+`ListAssetReceives` lists what each anchor output paid: `detected` once the
+sender announced the transfer, `confirmed` once the wallet holds its assets,
+with one entry per asset ID and its amount, and `failed` when the wallet took
+nothing from it.
+
+The daemon follows a confirmed transfer through chain reorganizations until
+its confirmation is final. When the confirming block leaves the chain, the
+receive lists as `detected` and its units leave the wallet. When the anchor
+transaction confirms again, the daemon writes the new block into the proof
+and the units return. It rewrites only the block of the received output's own
+transaction: if a reorganization also removes the block of an earlier
+transfer in the proof file, the receive stays `detected` with nothing owned.
+
+```bash
+wavecli dev daemon NewAssetAddress --asset_ref <asset id or group key>
+wavecli dev daemon ListAssetAddresses
+wavecli dev daemon SyncAssetReceives
+wavecli dev daemon ListAssetReceives
 ```
 
 ### `dev daemon deposit-asset` / `dev daemon list-asset-deposits`

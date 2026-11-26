@@ -425,6 +425,17 @@ func registerAssetFlags(f *pflag.FlagSet, cfg *waved.Config) {
 		"assets.groupkeys", cfg.Assets.GroupKeys,
 		"asset groups the daemon trusts, as hex compressed public keys",
 	)
+	f.String(
+		"assets.courier.addr", cfg.Assets.Courier.Addr, "proof "+
+			"courier of the daemon's Taproot Asset addresses, "+
+			"as authmailbox+universerpc://host:port",
+	)
+	f.StringSlice(
+		"assets.courier.endpoints", cfg.Assets.Courier.Endpoints, "p"+
+			"roof couriers reached at another host or with "+
+			"their own TLS certificate, each as "+
+			"host:port=target or host:port=target=tlscertpath",
+	)
 }
 
 // registerArkServerFlags registers the daemon's outbound Ark operator flags.

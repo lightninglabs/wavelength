@@ -98,6 +98,14 @@ type DaemonServiceMailboxServer interface {
 	ListOwnedAssets(ctx context.Context, req *ListOwnedAssetsRequest) (*ListOwnedAssetsResponse, error)
 	// NewAssetFundingAddress handles NewAssetFundingAddress.
 	NewAssetFundingAddress(ctx context.Context, req *NewAssetFundingAddressRequest) (*AssetFundingAddress, error)
+	// NewAssetAddress handles NewAssetAddress.
+	NewAssetAddress(ctx context.Context, req *NewAssetAddressRequest) (*AssetAddress, error)
+	// ListAssetAddresses handles ListAssetAddresses.
+	ListAssetAddresses(ctx context.Context, req *ListAssetAddressesRequest) (*ListAssetAddressesResponse, error)
+	// ListAssetReceives handles ListAssetReceives.
+	ListAssetReceives(ctx context.Context, req *ListAssetReceivesRequest) (*ListAssetReceivesResponse, error)
+	// SyncAssetReceives handles SyncAssetReceives.
+	SyncAssetReceives(ctx context.Context, req *SyncAssetReceivesRequest) (*SyncAssetReceivesResponse, error)
 	// JoinNextRound handles JoinNextRound.
 	JoinNextRound(ctx context.Context, req *JoinNextRoundRequest) (*JoinNextRoundResponse, error)
 	// SweepBoardingUTXOs handles SweepBoardingUTXOs.
@@ -511,6 +519,46 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.NewAssetFundingAddress(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "NewAssetAddress", func() proto.Message {
+		return &NewAssetAddressRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*NewAssetAddressRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.NewAssetAddress(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "ListAssetAddresses", func() proto.Message {
+		return &ListAssetAddressesRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListAssetAddressesRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListAssetAddresses(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "ListAssetReceives", func() proto.Message {
+		return &ListAssetReceivesRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListAssetReceivesRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListAssetReceives(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "SyncAssetReceives", func() proto.Message {
+		return &SyncAssetReceivesRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SyncAssetReceivesRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SyncAssetReceives(ctx, req)
 	})
 	r.Handle("waverpc.DaemonService", "JoinNextRound", func() proto.Message {
 		return &JoinNextRoundRequest{}
@@ -1558,6 +1606,98 @@ func (c *DaemonServiceMailboxClient) NewAssetFundingAddress(ctx context.Context,
 	}
 
 	resp := new(AssetFundingAddress)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// NewAssetAddress calls the NewAssetAddress RPC.
+func (c *DaemonServiceMailboxClient) NewAssetAddress(ctx context.Context, req *NewAssetAddressRequest, opts ...rpc.RPCOptions) (*AssetAddress, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "NewAssetAddress",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(AssetAddress)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListAssetAddresses calls the ListAssetAddresses RPC.
+func (c *DaemonServiceMailboxClient) ListAssetAddresses(ctx context.Context, req *ListAssetAddressesRequest, opts ...rpc.RPCOptions) (*ListAssetAddressesResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "ListAssetAddresses",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListAssetAddressesResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListAssetReceives calls the ListAssetReceives RPC.
+func (c *DaemonServiceMailboxClient) ListAssetReceives(ctx context.Context, req *ListAssetReceivesRequest, opts ...rpc.RPCOptions) (*ListAssetReceivesResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "ListAssetReceives",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListAssetReceivesResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SyncAssetReceives calls the SyncAssetReceives RPC.
+func (c *DaemonServiceMailboxClient) SyncAssetReceives(ctx context.Context, req *SyncAssetReceivesRequest, opts ...rpc.RPCOptions) (*SyncAssetReceivesResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "SyncAssetReceives",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SyncAssetReceivesResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

@@ -295,7 +295,10 @@ func applyConfigOverrides(daemonCfg *waved.Config, cfg Config) {
 	if cfg.AllowMainnet {
 		daemonCfg.AllowMainnet = true
 	}
-	if cfg.AssetsEnabled || len(cfg.AssetGroupKeys) != 0 {
+	if cfg.AssetsEnabled || len(cfg.AssetGroupKeys) != 0 ||
+		cfg.AssetCourierAddr != "" ||
+		len(cfg.AssetCourierEndpoints) != 0 {
+
 		if daemonCfg.Assets == nil {
 			daemonCfg.Assets = &waved.AssetsConfig{}
 		}
@@ -305,6 +308,14 @@ func applyConfigOverrides(daemonCfg *waved.Config, cfg Config) {
 		if len(cfg.AssetGroupKeys) != 0 {
 			daemonCfg.Assets.GroupKeys = append(
 				[]string(nil), cfg.AssetGroupKeys...,
+			)
+		}
+		if cfg.AssetCourierAddr != "" {
+			daemonCfg.Assets.Courier.Addr = cfg.AssetCourierAddr
+		}
+		if len(cfg.AssetCourierEndpoints) != 0 {
+			daemonCfg.Assets.Courier.Endpoints = append(
+				[]string(nil), cfg.AssetCourierEndpoints...,
 			)
 		}
 	}
@@ -445,6 +456,9 @@ func cloneDaemonConfig(cfg *waved.Config) *waved.Config {
 		assetsCfg := *cfg.Assets
 		assetsCfg.GroupKeys = append(
 			[]string(nil), cfg.Assets.GroupKeys...,
+		)
+		assetsCfg.Courier.Endpoints = append(
+			[]string(nil), cfg.Assets.Courier.Endpoints...,
 		)
 		clone.Assets = &assetsCfg
 	}

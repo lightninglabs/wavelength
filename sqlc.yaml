@@ -9,6 +9,8 @@ sql:
         package: sqlc
         emit_interface: true
         emit_exported_queries: true
+        rename:
+          asset_engine_receife: AssetEngineReceive
   - engine: "postgresql"
     schema: "db/actordelivery/migrations"
     queries: "db/actordelivery/queries"

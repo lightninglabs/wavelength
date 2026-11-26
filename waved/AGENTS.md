@@ -140,11 +140,17 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   and its `Signer`: an lnd wallet derives and signs through lnd's wallet
   kit and signer, and a wallet holding the seed signs with its key ring.
   An lnd chain backend serves no headers, so headers then come from lnd's
-  chain kit. It follows a transfer's confirmation through
+  chain kit. The chain port serves no header above the backend's best
+  block: the lwwallet backend polls its tip and reads headers from Esplora
+  directly, and the engine takes a block above the tip for one that left
+  the chain. It follows a transfer's confirmation through
   the chain source actor, which orders the events of every backend and
   reports the confirmation final once it is buried; `assetConfWatch` hands
   those events to the engine one at a time, and ends them on a confirmation
   whose block the backend could not fetch, so the engine registers again.
+  Each watch registers under a caller ID of its own, because the chain
+  source keeps one watch per caller ID, transaction, script and confirmation
+  target, and two watches of the engine can name the same transaction.
   It is refused outside regtest. `initEmbeddedAssets` creates it after the
   database opens and before any round starts; the engine opens no listener.
   The wallet may still be locked then, so
@@ -167,6 +173,56 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 - `NewAssetFundingAddress` hands out a backing-wallet address through
   `NewWalletAddress`. A deposit spends the daemon wallet's coins, and a
   wallet SDK host has no other way to learn an address of that wallet.
+- `assets.courier.addr` names the proof courier of the daemon's Taproot
+  Asset addresses and has no default. It must be a full
+  `authmailbox+universerpc://host:port` address: the engine rejects another
+  scheme and completes no missing part, so `validateAssetsConfig` refuses
+  anything else when assets are on. `assets.courier.endpoints` lists the
+  couriers the daemon reaches at another host or with a certificate file of
+  its own (`host:port=target` or `host:port=target=tlscertpath`). They
+  become the endpoints of tap-sdk's gRPC courier dialer.
+- `assetReceiveConfig` (`asset_receive_native.go`) hands the engine its
+  `embedded.ReceiveConfig`: `db.AssetEngineStore` as address store,
+  `assetKeyRing` as `embedded.ReceiveKeys`, and the courier dialer. A daemon
+  with assets on gets it also with no courier configured, so it keeps
+  receiving at the addresses an earlier configuration created. The js/wasm
+  build (`asset_receive_wasm.go`) returns none: a browser creates no address,
+  and `Server.assetAddresses` stays false. Once the wallet services are
+  ready, `initEmbeddedAssets` calls `ResumeReceives` after `ResumeTransfers`.
+  The engine then holds one mailbox stream open per stored address and works
+  on the receives an earlier run left unfinished.
+- `assetKeyRing.ECDH` and `SignMessageSchnorr` decrypt a mailbox message and
+  answer a mailbox challenge with the script key of an address. An lnd
+  wallet uses lnd's signer (`DeriveSharedKey`, and `SignMessage` for a
+  Schnorr signature with no tag), and a wallet holding the seed its key ring.
+- `NewAssetAddress` returns one address per asset and proof courier. It
+  reuses a stored address of the asset that names no amount and the
+  configured courier, and creates one only when none exists, under
+  `RPCServer.assetAddressMu`. The engine holds a mailbox stream open for
+  every stored address, so the daemon must not create an address per
+  request. The call fails with `FailedPrecondition` without
+  `assets.courier.addr`, and the four address calls fail with `Unimplemented`
+  where the engine has no receive configuration.
+- `ListAssetReceives` lists per anchor output and asset ID, never per engine
+  event. An event is one announcement of a transfer: anyone who knows an
+  address can announce an output, so one output can have several events, and
+  more than one can be confirmed. `receivedOutputs` folds the events of an
+  output and address into the state of the one that got furthest, and the
+  amounts come from the wallet's asset records at the output, spent ones
+  included. The engine's events carry no asset, no amount and no failure
+  text.
+- `SyncAssetReceives` runs one mailbox pass (`embedded.Client.SyncReceives`)
+  and maps a failed pass to `Unavailable`.
+- The engine's `Logger.Errorf` covers every failure the engine retries, a
+  dropped mailbox stream included, so `assetEngineLogger` writes it at Info.
+- The engine follows a confirmed receive through re-orgs. When the
+  confirming block leaves the chain, the receive lists as detected and its
+  units leave the wallet. When the anchor transaction confirms again, the
+  engine writes the new block into the proof and the units return. The
+  engine stops following a receive once the chain source reports its
+  confirmation final. It rewrites only the block of the received output's
+  own transaction: if a re-org also removes the block of an earlier transfer
+  in the proof file, the receive stays detected with nothing owned.
 - `DepositAsset` needs an asset backend; without one the RPC returns
   `FailedPrecondition`. It also refuses, before recording anything, an
   asset the operator does not list in `GetInfo`'s `assets`

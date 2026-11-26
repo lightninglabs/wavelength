@@ -225,6 +225,33 @@ service DaemonService {
     rpc NewAssetFundingAddress (NewAssetFundingAddressRequest)
         returns (AssetFundingAddress);
 
+    // NewAssetAddress returns the Taproot Asset address at which the
+    // daemon's asset wallet receives an asset. The first call for an asset
+    // creates the address, and later calls return the same one. The address
+    // names no amount: a sender pays it any number of times and chooses each
+    // amount. The daemon detects a payment through the mailbox of the
+    // address's proof courier. Requires an asset backend and a configured
+    // proof courier.
+    rpc NewAssetAddress (NewAssetAddressRequest) returns (AssetAddress);
+
+    // ListAssetAddresses returns the Taproot Asset addresses of the daemon's
+    // asset wallet, oldest first.
+    rpc ListAssetAddresses (ListAssetAddressesRequest)
+        returns (ListAssetAddressesResponse);
+
+    // ListAssetReceives returns the transfers sent to the Taproot Asset
+    // addresses of the daemon's asset wallet, oldest first.
+    rpc ListAssetReceives (ListAssetReceivesRequest)
+        returns (ListAssetReceivesResponse);
+
+    // SyncAssetReceives reads the proof courier mailbox of every Taproot
+    // Asset address once and works once on every unfinished receive. The
+    // daemon also receives on its own while it runs. A transfer whose block
+    // or proofs are not available yet is left to a later call without an
+    // error.
+    rpc SyncAssetReceives (SyncAssetReceivesRequest)
+        returns (SyncAssetReceivesResponse);
+
     // JoinNextRound asks the client round FSM to commit any currently
     // queued round intents and emit a JoinRoundRequest to the operator.
     // Useful after queueing refresh or leave intents that intentionally
@@ -2061,6 +2088,94 @@ message OwnedAsset {
 
     // anchor_value_sat is the Bitcoin value of the anchor output.
     int64 anchor_value_sat = 6;
+}
+
+message NewAssetAddressRequest {
+    // asset_ref is the asset to receive: the asset ID, or the group key of
+    // a grouped asset. Naming a group accepts the proofs of that group.
+    string asset_ref = 1;
+}
+
+// AssetAddress is a Taproot Asset address of the daemon's asset wallet.
+message AssetAddress {
+    // address is the encoded Taproot Asset address a sender pays.
+    string address = 1;
+
+    // asset_ref is the asset the address receives: the group key of a
+    // grouped asset, else the asset ID.
+    string asset_ref = 2;
+
+    // proof_courier_addr is the proof courier in whose mailbox a sender
+    // announces a transfer to the address.
+    string proof_courier_addr = 3;
+}
+
+message ListAssetAddressesRequest {
+}
+
+message ListAssetAddressesResponse {
+    repeated AssetAddress addresses = 1;
+}
+
+message ListAssetReceivesRequest {
+}
+
+message ListAssetReceivesResponse {
+    repeated AssetReceive receives = 1;
+}
+
+// AssetReceiveStatus is the lifecycle stage of a transfer to an address.
+enum AssetReceiveStatus {
+    ASSET_RECEIVE_STATUS_UNSPECIFIED = 0;
+
+    // ASSET_RECEIVE_STATUS_DETECTED means a sender announced the transfer.
+    // The wallet does not hold its assets yet.
+    ASSET_RECEIVE_STATUS_DETECTED = 1;
+
+    // ASSET_RECEIVE_STATUS_CONFIRMED means the proofs of the transfer
+    // verified and the wallet took its assets.
+    ASSET_RECEIVE_STATUS_CONFIRMED = 2;
+
+    // ASSET_RECEIVE_STATUS_FAILED means the wallet took no asset from the
+    // announced transfer.
+    ASSET_RECEIVE_STATUS_FAILED = 3;
+}
+
+// AssetReceive is what one anchor output paid to an address. A confirmed
+// output has one entry for each asset ID it carries. An output that is
+// detected or failed has one entry without an asset ID or an amount.
+message AssetReceive {
+    // outpoint is the anchor output that carries the transfer.
+    string outpoint = 1;
+
+    // address is the encoded Taproot Asset address the transfer pays.
+    string address = 2;
+
+    AssetReceiveStatus status = 3;
+
+    // asset_ref is the asset of the address: the group key of a grouped
+    // asset, else the asset ID.
+    string asset_ref = 4;
+
+    // asset_id is the ID of the issuance the received units belong to,
+    // empty unless the receive is confirmed.
+    string asset_id = 5;
+
+    // amount is the number of received units of asset_id, zero unless the
+    // receive is confirmed. It still counts units the wallet has spent
+    // since.
+    uint64 amount = 6;
+
+    // confirmation_height is the height of the block that confirms the
+    // anchor output, as the sender announced it until the receive is
+    // confirmed.
+    uint32 confirmation_height = 7;
+}
+
+message SyncAssetReceivesRequest {
+}
+
+message SyncAssetReceivesResponse {
 }
 
 message JoinNextRoundRequest {

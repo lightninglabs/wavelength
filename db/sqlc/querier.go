@@ -113,6 +113,7 @@ type Querier interface {
 	GetAssetDepositRound(ctx context.Context, requestID string) (GetAssetDepositRoundRow, error)
 	GetAssetEngineKey(ctx context.Context, pubkey []byte) (AssetEngineKey, error)
 	GetAssetEngineProof(ctx context.Context, arg GetAssetEngineProofParams) (AssetEngineProof, error)
+	GetAssetEngineReceive(ctx context.Context, arg GetAssetEngineReceiveParams) (AssetEngineReceive, error)
 	GetAssetEngineScriptKey(ctx context.Context, tweakedKey []byte) (AssetEngineScriptKey, error)
 	GetAssetEngineTransfer(ctx context.Context, anchorTxid []byte) (AssetEngineTransfer, error)
 	GetAssetJournalEntry(ctx context.Context, journalKey string) ([]byte, error)
@@ -195,8 +196,14 @@ type Querier interface {
 	// InsertAssetDepositClaim records a signed claim. A deposit that already has
 	// a claim inserts nothing.
 	InsertAssetDepositClaim(ctx context.Context, arg InsertAssetDepositClaimParams) (int64, error)
+	// InsertAssetEngineAddress records an address. A recorded script key inserts
+	// nothing.
+	InsertAssetEngineAddress(ctx context.Context, arg InsertAssetEngineAddressParams) (int64, error)
 	// InsertAssetEngineKey records a derived key. A known key inserts nothing.
 	InsertAssetEngineKey(ctx context.Context, arg InsertAssetEngineKeyParams) error
+	// InsertAssetEngineReceive records an announced transfer. A recorded
+	// announcement inserts nothing.
+	InsertAssetEngineReceive(ctx context.Context, arg InsertAssetEngineReceiveParams) (int64, error)
 	// InsertAssetEngineTransfer records a transfer. A recorded anchor
 	// transaction inserts nothing.
 	InsertAssetEngineTransfer(ctx context.Context, arg InsertAssetEngineTransferParams) (int64, error)
@@ -274,7 +281,14 @@ type Querier interface {
 	ListAssetDepositClaimsByStatus(ctx context.Context, status string) ([]AssetDepositClaim, error)
 	ListAssetDeposits(ctx context.Context) ([]AssetDeposit, error)
 	ListAssetDepositsByStatus(ctx context.Context, status string) ([]AssetDeposit, error)
+	// ListAssetEngineAddresses returns the addresses oldest first. Addresses
+	// created at the same time keep the order of their insertion.
+	ListAssetEngineAddresses(ctx context.Context) ([]AssetEngineAddress, error)
 	ListAssetEngineProofsByKey(ctx context.Context, arg ListAssetEngineProofsByKeyParams) ([]AssetEngineProof, error)
+	ListAssetEngineReceives(ctx context.Context) ([]AssetEngineReceive, error)
+	// ListAssetEngineReceivesByOutpoint returns the announcements of one anchor
+	// output, oldest first.
+	ListAssetEngineReceivesByOutpoint(ctx context.Context, arg ListAssetEngineReceivesByOutpointParams) ([]AssetEngineReceive, error)
 	ListAssetEngineTransfers(ctx context.Context) ([]AssetEngineTransfer, error)
 	ListBoardingIntentOutpoints(ctx context.Context) ([]ListBoardingIntentOutpointsRow, error)
 	ListBoardingIntentsByConfHeight(ctx context.Context, confHeight int32) ([]BoardingIntent, error)
@@ -624,6 +638,7 @@ type Querier interface {
 	// per (event, classification) pair. The checker decides which pairs are
 	// expected to have booked a ledger leg.
 	SumWalletUTXOLogByEventAndClassification(ctx context.Context) ([]SumWalletUTXOLogByEventAndClassificationRow, error)
+	UpdateAssetEngineReceive(ctx context.Context, arg UpdateAssetEngineReceiveParams) (int64, error)
 	UpdateAssetEngineTransfer(ctx context.Context, arg UpdateAssetEngineTransferParams) (int64, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
 	UpdateLedgerEntryIdempotencyKey(ctx context.Context, arg UpdateLedgerEntryIdempotencyKeyParams) (int64, error)

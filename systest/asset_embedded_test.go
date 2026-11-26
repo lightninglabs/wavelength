@@ -5,7 +5,9 @@ package systest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -312,7 +314,22 @@ func startEmbeddedAssetDaemon(t *testing.T, h *SysTestHarness, dataDir string,
 	cfg.RPC.Gateway.ListenAddr = "127.0.0.1:0"
 	cfg.RPC.NoTLS = true
 	cfg.RPC.NoMacaroons = true
-	cfg.Assets = &waved.AssetsConfig{Enabled: true}
+
+	// The harness tapd is the proof courier of the daemon's addresses.
+	// The tapd reaches itself under its container name, and the daemon
+	// reaches it at the published port.
+	courierHost := h.Harness.TapdUniverseHost()
+	cfg.Assets = &waved.AssetsConfig{
+		Enabled: true,
+		Courier: waved.AssetCourierConfig{
+			Addr: "authmailbox+universerpc://" + courierHost,
+			Endpoints: []string{
+				courierHost + "=" + net.JoinHostPort(
+					"127.0.0.1", h.Harness.TapdGRPCPort,
+				) + "=" + h.Harness.TapdTLSCertPath(),
+			},
+		},
+	}
 
 	server, err := waved.NewServer(cfg)
 	require.NoError(t, err)
@@ -423,8 +440,10 @@ func startEmbeddedAssetDaemon(t *testing.T, h *SysTestHarness, dataDir string,
 	return daemon
 }
 
-// receiveEmbeddedAsset sends units of ref from the issuer to keys the daemon
-// derives, and imports the transfer's proof into the daemon's asset wallet.
+// receiveEmbeddedAsset pays units of ref from the issuer to the daemon's
+// Taproot Asset address for it, and waits until the daemon holds them. The
+// daemon learns of the payment from the mailbox of the issuer, which is the
+// proof courier of the address.
 func receiveEmbeddedAsset(t *testing.T, h *SysTestHarness,
 	issuer *tapgrpc.Client, client waverpc.DaemonServiceClient,
 	ref tapsdk.AssetRef, amount uint64) {
@@ -434,73 +453,107 @@ func receiveEmbeddedAsset(t *testing.T, h *SysTestHarness,
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 
-	keys, err := client.NewAssetReceiveKeys(
-		ctx, &waverpc.NewAssetReceiveKeysRequest{},
+	addr, err := client.NewAssetAddress(
+		ctx, &waverpc.NewAssetAddressRequest{
+			AssetRef: ref.String(),
+		},
 	)
 	require.NoError(t, err)
-	scriptKey, err := tapsdk.ParsePubKey(keys.ScriptKey)
-	require.NoError(t, err)
-	rawScriptKey, err := tapsdk.ParsePubKey(keys.RawScriptKey)
-	require.NoError(t, err)
-	anchorKey, err := tapsdk.ParsePubKey(keys.AnchorInternalKey)
-	require.NoError(t, err)
+
+	txid := payAssetAddress(t, h, issuer, addr.Address, amount)
+	received := waitForAssetReceive(
+		t, client, txid,
+		waverpc.AssetReceiveStatus_ASSET_RECEIVE_STATUS_CONFIRMED, true,
+	)
+	require.Equal(t, addr.Address, received.Address)
+	require.Equal(t, amount, received.Amount)
+}
+
+// payAssetAddress sends amount units from the issuer to a Taproot Asset
+// address, mines the transfer and returns the ID of its anchor transaction.
+func payAssetAddress(t *testing.T, h *SysTestHarness, issuer *tapgrpc.Client,
+	addr string, amount uint64) string {
+
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
 
 	issuerWallet := tapsdk.NewWallet(issuer, tapsdk.Network("regtest"))
-	transfer, err := issuerWallet.NewInteractiveTxBuilder().
-		SetAsset(ref, amount).
-		SetReceiverKeys(tapsdk.DerivedKeys{
-			ScriptKey: tapsdk.ScriptKey{
-				PubKey: scriptKey,
-				KeyDesc: tapsdk.KeyDescriptor{
-					RawKeyBytes: rawScriptKey,
-				},
-			},
-			InternalKey: tapsdk.InternalKey{PubKey: anchorKey},
-		}).
-		Execute(ctx)
+	transfer, err := issuerWallet.Send(
+		ctx, addr, tapsdk.WithAmount(amount),
+	)
 	require.NoError(t, err)
 
 	h.Harness.WaitMempoolTx(transfer.AnchorTxid)
 	h.Harness.Generate(1)
 
-	var received *tapsdk.TransferOutput
-	for idx := range transfer.Outputs {
-		if transfer.Outputs[idx].ScriptKey == scriptKey {
-			received = &transfer.Outputs[idx]
-		}
-	}
-	require.NotNil(t, received, "transfer has no output for the daemon")
+	return transfer.AnchorTxid
+}
 
-	// The issuer writes the proof once it sees the confirmation.
-	var proofFile []byte
+// assetReceiveWait is what a wait for a receive last saw of the daemon.
+type assetReceiveWait struct {
+	listed []*waverpc.AssetReceive
+	err    error
+}
+
+// String describes the last observation when the wait fails.
+func (w *assetReceiveWait) String() string {
+	return fmt.Sprintf("listed %v, last error %v", w.listed, w.err)
+}
+
+// waitForAssetReceive waits until the daemon lists exactly one receive of
+// the transaction with the given status, and returns it. With sync set it
+// asks the daemon to read its mailboxes while it waits, and otherwise relies
+// on the mailboxes the daemon holds open.
+func waitForAssetReceive(t *testing.T, client waverpc.DaemonServiceClient,
+	txid string, want waverpc.AssetReceiveStatus,
+	sync bool) *waverpc.AssetReceive {
+
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+
+	var (
+		found *waverpc.AssetReceive
+		seen  assetReceiveWait
+	)
 	require.Eventually(t, func() bool {
-		exported, err := issuer.ExportProof(
-			ctx, tapsdk.AssetRefFromAssetID(received.IssuanceID),
-			received.ScriptKey, &received.AnchorOutpoint,
+		if sync {
+			_, seen.err = client.SyncAssetReceives(
+				ctx, &waverpc.SyncAssetReceivesRequest{},
+			)
+		}
+
+		resp, err := client.ListAssetReceives(
+			ctx, &waverpc.ListAssetReceivesRequest{},
 		)
-		if err != nil || exported == nil {
+		if err != nil {
+			seen.err = err
+
 			return false
 		}
-		proofFile = exported.RawProofFile
+		seen.listed = resp.Receives
 
-		return len(proofFile) != 0
-	}, time.Minute, time.Second, "issuer never exported the proof")
+		// An output lists once per asset ID, and these transfers
+		// carry one.
+		var matches []*waverpc.AssetReceive
+		for _, receive := range resp.Receives {
+			if strings.HasPrefix(receive.Outpoint, txid+":") {
+				matches = append(matches, receive)
+			}
+		}
+		if len(matches) != 1 || matches[0].Status != want {
+			return false
+		}
+		found = matches[0]
 
-	// The daemon accepts the proof once its chain backend has the block.
-	var imported *waverpc.OwnedAsset
-	require.Eventually(t, func() bool {
-		imported, err = client.ImportAssetProof(
-			ctx, &waverpc.ImportAssetProofRequest{
-				ProofFile: proofFile,
-				AssetRef:  ref.String(),
-			},
-		)
+		return true
+	}, 3*time.Minute, time.Second, "receive of %s never reached %v: %v",
+		txid, want, &seen)
 
-		return err == nil
-	}, time.Minute, time.Second, "daemon never imported the proof: %v",
-		err)
-	require.Equal(t, amount, imported.Amount)
-	require.Equal(t, keys.ScriptKey, imported.ScriptKey)
+	return found
 }
 
 // embeddedAssetUnits sums the units of ref in the daemon's asset wallet.

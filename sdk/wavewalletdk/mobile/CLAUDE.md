@@ -51,12 +51,18 @@ application-facing wallet API.
   unknown outcomes require reconciliation rather than replay or unroll.
 - Asset verbs (`assets.go`: `NewAssetReceiveKeys`,
   `NewAssetFundingAddress`, `ImportAssetProof`, `ListOwnedAssets`,
-  `DepositAsset`, `ListAssetDeposits`, `BoardAssetDeposit`) — the asset
-  wallet and deposits of the daemon's asset backend.
-  `mobileConfig.AssetsEnabled` (`assets_enabled`) turns it on, and
-  `asset_group_keys` lists trusted groups. Reads use
-  `readContext`; the verbs that verify proofs or publish use the two-minute
-  `assetWriteTimeout`.
+  `NewAssetAddress`, `ListAssetAddresses`, `ListAssetReceives`,
+  `SyncAssetReceives`, `DepositAsset`, `ListAssetDeposits`,
+  `BoardAssetDeposit`) — the asset wallet, its Taproot Asset addresses and
+  the deposits of the daemon's asset backend.
+  `mobileConfig.AssetsEnabled` (`assets_enabled`) turns it on,
+  `asset_group_keys` lists trusted groups, and `asset_courier_addr` with
+  `asset_courier_endpoints` names the proof courier of the addresses. Reads
+  use `readContext`; the verbs that fetch or verify proofs or publish use the
+  two-minute `assetWriteTimeout`. `SyncAssetReceives` returns only an error:
+  an app calls it when it returns to the foreground, since no mailbox
+  connection survives a suspension. The WebAssembly host maps none of the
+  address verbs.
 - Scalar conveniences (`ConfirmedBalanceSat`, `PendingInboundSat`,
   `WalletReady`, `IsRunning`) — avoid a JSON round trip for hot-path reads;
   `IsRunning` never blocks on an RPC.

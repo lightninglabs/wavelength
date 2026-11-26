@@ -460,3 +460,39 @@ func TestParseConfigAssets(t *testing.T) {
 			got.AssetsEnabled, got.AssetGroupKeys)
 	}
 }
+
+// TestParseConfigAssetCourier verifies the proof courier and its dial
+// overrides reach the SDK config, and that omitting them names no courier.
+func TestParseConfigAssetCourier(t *testing.T) {
+	const (
+		courier  = "authmailbox+universerpc://tapd:10029"
+		endpoint = "tapd:10029=localhost:12029=/data/tls.cert"
+	)
+
+	got, err := parseConfig(`{
+		"assets_enabled": true,
+		"asset_courier_addr": "` + courier + `",
+		"asset_courier_endpoints": ["` + endpoint + `"]
+	}`)
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if got.AssetCourierAddr != courier {
+		t.Fatalf("asset courier = %q", got.AssetCourierAddr)
+	}
+	if len(got.AssetCourierEndpoints) != 1 ||
+		got.AssetCourierEndpoints[0] != endpoint {
+
+		t.Fatalf("asset courier endpoints = %v",
+			got.AssetCourierEndpoints)
+	}
+
+	got, err = parseConfig(`{"assets_enabled": true}`)
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if got.AssetCourierAddr != "" || len(got.AssetCourierEndpoints) != 0 {
+		t.Fatalf("asset courier configured without being set: %q %v",
+			got.AssetCourierAddr, got.AssetCourierEndpoints)
+	}
+}

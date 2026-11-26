@@ -230,6 +230,10 @@ type Server struct {
 	// embeddedAssets is the asset engine, nil when assets are disabled.
 	embeddedAssets *embedded.Client
 
+	// assetAddresses is set when the asset engine creates Taproot Asset
+	// addresses and receives at them.
+	assetAddresses bool
+
 	// assetClaimer claims asset deposits and asset VTXOs back to the
 	// asset wallet of the asset backend, nil when assets are disabled.
 	assetClaimer assetClaimer
