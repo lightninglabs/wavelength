@@ -145,6 +145,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   reports the confirmation final once it is buried; `assetConfWatch` hands
   those events to the engine one at a time, and ends them on a confirmation
   whose block the backend could not fetch, so the engine registers again.
+  Each watch registers under a caller ID of its own, because the chain
+  source keeps one watch per caller ID, transaction, script and confirmation
+  target, and two watches of the engine can name the same transaction.
   It is refused outside regtest. `initEmbeddedAssets` creates it after the
   database opens and before any round starts; the engine opens no listener.
   The wallet may still be locked then, so

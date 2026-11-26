@@ -344,6 +344,86 @@ func TestAssetChainConfirmationEvents(t *testing.T) {
 	requireAssetConfSignal(t, backend.canceled)
 }
 
+// perWatchConfBackend is a chain backend that scripts the events of each
+// confirmation registration on its own.
+type perWatchConfBackend struct {
+	*fakeAssetChainBackend
+
+	// watches delivers the script of each registration as it is made.
+	watches chan *fakeAssetChainBackend
+}
+
+// RegisterConf returns a registration over event channels of its own.
+func (b *perWatchConfBackend) RegisterConf(ctx context.Context,
+	txid *chainhash.Hash, pkScript []byte, numConfs, heightHint uint32,
+	includeBlock bool) (*chainsource.ConfRegistration, error) {
+
+	watch := newAssetConfBackend(b.height)
+	b.watches <- watch
+
+	return watch.RegisterConf(
+		ctx, txid, pkScript, numConfs, heightHint, includeBlock,
+	)
+}
+
+// TestAssetChainConfirmationWatches registers two watches of one transaction
+// and script, as the engine would for a transfer of its own that pays one of
+// its addresses. Each watch gets the confirmation, and cancelling one leaves
+// the other delivering.
+func TestAssetChainConfirmationWatches(t *testing.T) {
+	t.Parallel()
+
+	backend := &perWatchConfBackend{
+		fakeAssetChainBackend: newAssetConfBackend(100),
+		watches:               make(chan *fakeAssetChainBackend, 2),
+	}
+	chain := newAssetConfTestChain(t, backend)
+
+	txid, pkScript := chainhash.Hash{9}, []byte{0x51}
+	first, err := chain.RegisterConfirmation(
+		t.Context(), txid, pkScript, 100,
+	)
+	require.NoError(t, err)
+	firstWatch := <-backend.watches
+	second, err := chain.RegisterConfirmation(
+		t.Context(), txid, pkScript, 100,
+	)
+	require.NoError(t, err)
+	secondWatch := <-backend.watches
+
+	confirm := func(watch *fakeAssetChainBackend,
+		events *embedded.ConfirmationEvents, height uint32,
+		seq uint64) {
+
+		t.Helper()
+
+		conf := assetTestConfirmation(height, &wire.MsgBlock{})
+		conf.Seq = seq
+		watch.confirmed <- conf
+
+		select {
+		case conf := <-events.Confirmed:
+			require.EqualValues(t, height, conf.Height)
+
+		case <-time.After(5 * time.Second):
+			t.Fatal("confirmation never arrived")
+		}
+	}
+
+	confirm(firstWatch, first, 101, 1)
+	confirm(secondWatch, second, 101, 1)
+
+	first.Cancel()
+	requireAssetConfSignal(t, firstWatch.canceled)
+
+	secondWatch.reorged <- 2
+	requireAssetConfSignal(t, second.Reorged)
+	confirm(secondWatch, second, 102, 3)
+
+	second.Cancel()
+	requireAssetConfSignal(t, secondWatch.canceled)
+}
+
 // TestAssetChainConfirmationBeforeFinal checks that the engine holds the
 // confirmation of a transaction before it can learn that it is final, when
 // the backend has both ready at once, as for a transfer resumed long after

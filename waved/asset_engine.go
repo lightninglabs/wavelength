@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -27,8 +28,8 @@ import (
 )
 
 const (
-	// assetConfCallerID names the engine's confirmation watches at the
-	// chain source.
+	// assetConfCallerID prefixes the caller ID of each confirmation watch
+	// of the engine at the chain source.
 	assetConfCallerID = "asset-engine"
 
 	// assetConfQueueSize is how many events of one confirmation watch
@@ -325,6 +326,9 @@ func (k *assetKeyRing) SignOutputRaw(ctx context.Context, tx *wire.MsgTx,
 // daemon's chain backend.
 type assetChain struct {
 	server *Server
+
+	// confWatches counts the confirmation watches registered so far.
+	confWatches atomic.Uint64
 }
 
 // backend returns the chain backend of the unlocked daemon wallet.
@@ -453,9 +457,16 @@ func (c *assetChain) RegisterConfirmation(ctx context.Context,
 		return nil, err
 	}
 
+	// The chain source keeps one watch per caller ID, transaction, script
+	// and confirmation target: a second registration replaces the first,
+	// and unregistering either ends both. Each watch therefore gets a
+	// caller ID of its own.
+	callerID := fmt.Sprintf("%s-%d", assetConfCallerID,
+		c.confWatches.Add(1))
+
 	watch := newAssetConfWatch()
 	_, err = chainSource.Ask(ctx, &chainsource.RegisterConfRequest{
-		CallerID:      assetConfCallerID,
+		CallerID:      callerID,
 		Txid:          &txid,
 		PkScript:      pkScript,
 		TargetConfs:   1,
@@ -491,7 +502,7 @@ func (c *assetChain) RegisterConfirmation(ctx context.Context,
 
 			_ = chainSource.Tell(
 				ctx, &chainsource.UnregisterConfRequest{
-					CallerID:    assetConfCallerID,
+					CallerID:    callerID,
 					Txid:        &txid,
 					PkScript:    pkScript,
 					TargetConfs: 1,
