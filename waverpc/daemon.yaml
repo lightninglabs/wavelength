@@ -71,6 +71,9 @@ http:
     - selector: waverpc.DaemonService.SendOOR
       post: /v1/daemon/send-oor
       body: "*"
+    - selector: waverpc.DaemonService.SendAssetOOR
+      post: /v1/daemon/send-asset-oor
+      body: "*"
     - selector: waverpc.DaemonService.PrepareOOR
       post: /v1/daemon/prepare-oor
       body: "*"

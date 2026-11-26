@@ -308,6 +308,11 @@ message TreePath {
     // sweep_tapscript_root is the tapscript root hash for tweaking branch
     // outputs. Empty for connector trees.
     bytes sweep_tapscript_root = 4;
+
+    // batch_asset_root is the optional 32-byte Taproot Asset commitment leaf
+    // hash composed beside sweep_tapscript_root in batch_output. Empty for
+    // Bitcoin-only trees.
+    bytes batch_asset_root = 5;
 }
 
 // AncestryPath describes one rooted VTXO tree fragment that contributes
