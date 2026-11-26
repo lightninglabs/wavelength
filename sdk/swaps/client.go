@@ -931,7 +931,7 @@ type InSwapRefundAuthorization struct {
 // refundPayoutAuthorizer is an explicitly selected peer capability. The
 // existence of a new RPC client method does not indicate peer support.
 type refundPayoutAuthorizer interface {
-	SupportsRefundPayout() bool
+	SupportsRefundPayout(context.Context) (bool, error)
 
 	AuthorizeInSwapRefundPackage(context.Context,
 		*swaprpc.AuthorizeInSwapRefundRequest) (

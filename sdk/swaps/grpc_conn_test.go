@@ -22,6 +22,8 @@ type testSwapServiceClient struct {
 
 	authorizeErr     error
 	authorizeReply   *swaprpc.AuthorizeInSwapRefundResponse
+	recoveryInfo     *swaprpc.GetSwapRecoveryInfoResponse
+	recoveryInfoErr  error
 	ackErr           error
 	signForfeitResp  *swaprpc.SignInSwapForfeitResponse
 	signForfeitErr   error
@@ -37,6 +39,71 @@ func (c *testSwapServiceClient) AuthorizeInSwapRefund(context.Context,
 	*swaprpc.AuthorizeInSwapRefundResponse, error) {
 
 	return c.authorizeReply, c.authorizeErr
+}
+
+// GetSwapRecoveryInfo returns the peer capability advertisement.
+func (c *testSwapServiceClient) GetSwapRecoveryInfo(context.Context,
+	*swaprpc.GetSwapRecoveryInfoRequest, ...grpc.CallOption) (
+	*swaprpc.GetSwapRecoveryInfoResponse, error) {
+
+	return c.recoveryInfo, c.recoveryInfoErr
+}
+
+// TestRefundPayoutCapabilityRequiresPeerAdvertisement keeps old and
+// unavailable peers from being selected for the two-signature request.
+func TestRefundPayoutCapabilityRequiresPeerAdvertisement(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		advertise bool
+		peerErr   error
+		rest      bool
+		want      bool
+		wantErr   bool
+	}{
+		{
+			name:      "advertised",
+			advertise: true,
+			want:      true,
+		},
+		{
+			name: "not advertised",
+		},
+		{name: "old grpc peer", peerErr: status.Error(
+			codes.Unimplemented, "no discovery",
+		)},
+		{name: "old rest peer", rest: true, peerErr: status.Error(
+			codes.NotFound, "no route",
+		)},
+		{name: "discovery unavailable", peerErr: status.Error(
+			codes.Unavailable, "offline",
+		), wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			info := &swaprpc.GetSwapRecoveryInfoResponse{
+				SupportsRefundPayout: test.advertise,
+			}
+			client := &testSwapServiceClient{
+				recoveryInfo:    info,
+				recoveryInfoErr: test.peerErr,
+			}
+			conn := newSwapServerConn(client)
+			conn.isREST = test.rest
+			supported, err := conn.SupportsRefundPayout(
+				t.Context(),
+			)
+			if test.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, test.want, supported)
+		})
+	}
 }
 
 func (c *testSwapServiceClient) AcknowledgeOutSwapHtlc(_ context.Context,

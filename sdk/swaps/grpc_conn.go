@@ -354,6 +354,22 @@ func (g *GRPCSwapServerConn) supportsRecoveryMetadata(ctx context.Context) (
 	return err == nil, err
 }
 
+// SupportsRefundPayout checks the peer's advertised refund package capability.
+// An older peer without discovery keeps the checkpoint-only contract.
+func (g *GRPCSwapServerConn) SupportsRefundPayout(ctx context.Context) (bool,
+	error) {
+
+	info, err := g.GetSwapRecoveryInfo(ctx)
+	if status.Code(err) == codes.Unimplemented {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	return info.GetSupportsRefundPayout(), nil
+}
+
 // ListRecoverableSwapsPage sends the exact signed pagination fields without
 // normalizing defaults, since zero and an explicit default sign differently.
 func (g *GRPCSwapServerConn) ListRecoverableSwapsPage(ctx context.Context,

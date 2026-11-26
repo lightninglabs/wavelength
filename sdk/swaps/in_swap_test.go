@@ -177,8 +177,10 @@ func (c *testInSwapServerConn) AuthorizeInSwapRefund(context.Context,
 }
 
 // SupportsRefundPayout identifies this fixture as an explicitly capable peer.
-func (*testInSwapServerConn) SupportsRefundPayout() bool {
-	return true
+func (*testInSwapServerConn) SupportsRefundPayout(context.Context) (bool,
+	error) {
+
+	return true, nil
 }
 
 // AuthorizeInSwapRefundPackage records the complete transcript for assertions.

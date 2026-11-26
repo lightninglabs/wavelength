@@ -498,6 +498,10 @@ message GetSwapRecoveryInfoResponse {
     // supports_invoice_routing_key allows receive requests to delegate a
     // dedicated Lightning routing key.
     bool supports_invoice_routing_key = 3;
+    // supports_refund_payout authorizes use of the two-signature
+    // cooperative refund package. Absent or false keeps the legacy
+    // checkpoint-only request.
+    bool supports_refund_payout = 4;
 }
 
 // RecoverableSwap carries enough server-owned metadata for a restored client

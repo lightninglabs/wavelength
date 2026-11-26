@@ -1765,9 +1765,6 @@ func (s *paySession) tryCooperativeRefund(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
-	signer, ok := s.client.server.(refundPayoutAuthorizer)
-	fullPayout := ok && signer.SupportsRefundPayout()
-
 	funded, err := s.observeRefundableVHTLC(ctx)
 	if err != nil {
 		return false, newRetryableActionError(
@@ -1777,6 +1774,22 @@ func (s *paySession) tryCooperativeRefund(ctx context.Context) (bool, error) {
 	}
 	if !funded {
 		return false, nil
+	}
+
+	signer, ok := s.client.server.(refundPayoutAuthorizer)
+	var fullPayout bool
+	if ok {
+		capCtx, cancel := context.WithTimeout(
+			ctx, cooperativeRefundAuthTimeout,
+		)
+		fullPayout, err = signer.SupportsRefundPayout(capCtx)
+		cancel()
+		if err != nil {
+			return false, newRetryableActionError(
+				fmt.Errorf("discover refund payout "+
+					"support: %w", err),
+			)
+		}
 	}
 
 	refundPubKey, err := s.refundPubKey(ctx)

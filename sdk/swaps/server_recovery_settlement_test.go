@@ -26,8 +26,10 @@ type restoredRefundServer struct {
 }
 
 // SupportsRefundPayout selects the two-signature protocol for this fixture.
-func (*restoredRefundServer) SupportsRefundPayout() bool {
-	return true
+func (*restoredRefundServer) SupportsRefundPayout(context.Context) (bool,
+	error) {
+
+	return true, nil
 }
 
 // AuthorizeInSwapRefundPackage simulates a failed payment or unavailable peer.
