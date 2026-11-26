@@ -95,6 +95,11 @@ service WalletService {
     // needed, a backing-wallet address callers can fund before forced unroll.
     rpc GetExitPlan (GetExitPlanRequest) returns (GetExitPlanResponse);
 
+    // PreviewUnilateralExit quotes the selected targets as a single wallet
+    // operation. It never derives addresses, leases coins or starts jobs.
+    rpc PreviewUnilateralExit (GetExitPlanRequest)
+        returns (PreviewUnilateralExitResponse);
+
     // ExportExit exports signed ancestry for externally funded broadcasting.
     // It does not start an exit. A destination opts into a signed final sweep.
     rpc ExportExit (ExportExitRequest) returns (ExportExitResponse);
@@ -1400,6 +1405,87 @@ message GetExitPlanResponse {
     // total_recommended_funding_sat is the summed recommended funding across
     // entries.
     int64 total_recommended_funding_sat = 5;
+}
+
+// PreviewUnilateralExitResponse quotes a full recovery from its proof graphs
+// at the current fee estimate. The estimate assumes each package confirms at
+// the quoted rate. It does not authorize a fee or commit any wallet funds.
+message PreviewUnilateralExitResponse {
+    // entries retain request order and report the current per-target job.
+    repeated UnilateralExitTarget entries = 1;
+
+    // selected_amount_sat is the sum of known selected VTXO face values,
+    // including refused or completed targets. An unknown target contributes
+    // zero.
+    int64 selected_amount_sat = 2;
+
+    // estimated_transactions counts distinct parents, fee children and sweeps
+    // for viable unfinished targets. Active jobs are priced from their full
+    // proofs, including confirmed ancestors. This is not a remaining-cost
+    // estimate.
+    uint32 estimated_transactions = 3;
+
+    // fee_rate_sat_per_vbyte prices the proof packages and final spends.
+    int64 fee_rate_sat_per_vbyte = 4;
+
+    // estimated_network_fee_sat includes wallet-funded and sweep fees.
+    int64 estimated_network_fee_sat = 5;
+
+    // wallet_fee_sat is the part of the fee paid by the backing wallet.
+    int64 wallet_fee_sat = 6;
+
+    // additional_funding_sat is a sufficient single confirmed deposit for
+    // serial recovery when the existing fee coins cannot fund all quoted
+    // packages. Zero does not imply manual Unroll admission.
+    int64 additional_funding_sat = 7;
+
+    // funding_action describes the estimated use of confirmed wallet coins.
+    UnilateralExitFundingAction funding_action = 8;
+}
+
+// UnilateralExitTarget describes one selected coin and any existing job.
+message UnilateralExitTarget {
+    // Identifies the selected VTXO as txid:index.
+    string outpoint = 1;
+
+    // Face value of the selected VTXO before fees.
+    int64 amount_sat = 2;
+
+    // Absolute expiry height of the selected VTXO's batch.
+    int32 batch_expiry_height = 3;
+
+    // Current state of the target's existing exit job.
+    ExitJobStatus exit_status = 4;
+
+    // Final sweep transaction ID, when recorded.
+    string sweep_txid = 5;
+
+    // Most recent error from the target's exit job.
+    string last_error = 6;
+
+    // A structural or economic refusal excludes this entry from aggregate
+    // costs. Other selected targets can still contribute to the quote.
+    string admission_error = 7;
+
+    // A cooperative round currently holds the coin. Manual recovery remains
+    // available if the operator cannot complete the round.
+    string round_commitment = 8;
+}
+
+// UnilateralExitFundingAction describes the initial funding requirement.
+enum UnilateralExitFundingAction {
+    // No funding action was supplied.
+    UNILATERAL_EXIT_FUNDING_ACTION_UNSPECIFIED = 0;
+
+    // The estimated packages fit distinct confirmed inputs.
+    UNILATERAL_EXIT_FUNDING_ACTION_USE_CONFIRMED_INPUTS = 1;
+
+    // Later packages spend confirmed change from earlier packages. This may
+    // coincide with a proof dependency and implies no added delay by itself.
+    UNILATERAL_EXIT_FUNDING_ACTION_REUSE_CONFIRMED_CHANGE = 2;
+
+    // The wallet needs additional confirmed funds.
+    UNILATERAL_EXIT_FUNDING_ACTION_DEPOSIT = 3;
 }
 
 // SweepWalletRequest describes a backing-wallet sweep to preview or broadcast

@@ -19,26 +19,27 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WalletService_Create_FullMethodName          = "/wavewalletrpc.WalletService/Create"
-	WalletService_Unlock_FullMethodName          = "/wavewalletrpc.WalletService/Unlock"
-	WalletService_PrepareSend_FullMethodName     = "/wavewalletrpc.WalletService/PrepareSend"
-	WalletService_Send_FullMethodName            = "/wavewalletrpc.WalletService/Send"
-	WalletService_Recv_FullMethodName            = "/wavewalletrpc.WalletService/Recv"
-	WalletService_LookupRecv_FullMethodName      = "/wavewalletrpc.WalletService/LookupRecv"
-	WalletService_List_FullMethodName            = "/wavewalletrpc.WalletService/List"
-	WalletService_Deposit_FullMethodName         = "/wavewalletrpc.WalletService/Deposit"
-	WalletService_Balance_FullMethodName         = "/wavewalletrpc.WalletService/Balance"
-	WalletService_Status_FullMethodName          = "/wavewalletrpc.WalletService/Status"
-	WalletService_Refresh_FullMethodName         = "/wavewalletrpc.WalletService/Refresh"
-	WalletService_GetExitPlan_FullMethodName     = "/wavewalletrpc.WalletService/GetExitPlan"
-	WalletService_ExportExit_FullMethodName      = "/wavewalletrpc.WalletService/ExportExit"
-	WalletService_ExportExits_FullMethodName     = "/wavewalletrpc.WalletService/ExportExits"
-	WalletService_SweepWallet_FullMethodName     = "/wavewalletrpc.WalletService/SweepWallet"
-	WalletService_Exit_FullMethodName            = "/wavewalletrpc.WalletService/Exit"
-	WalletService_ExitBatch_FullMethodName       = "/wavewalletrpc.WalletService/ExitBatch"
-	WalletService_ExitStatus_FullMethodName      = "/wavewalletrpc.WalletService/ExitStatus"
-	WalletService_ExitSummary_FullMethodName     = "/wavewalletrpc.WalletService/ExitSummary"
-	WalletService_SubscribeWallet_FullMethodName = "/wavewalletrpc.WalletService/SubscribeWallet"
+	WalletService_Create_FullMethodName                = "/wavewalletrpc.WalletService/Create"
+	WalletService_Unlock_FullMethodName                = "/wavewalletrpc.WalletService/Unlock"
+	WalletService_PrepareSend_FullMethodName           = "/wavewalletrpc.WalletService/PrepareSend"
+	WalletService_Send_FullMethodName                  = "/wavewalletrpc.WalletService/Send"
+	WalletService_Recv_FullMethodName                  = "/wavewalletrpc.WalletService/Recv"
+	WalletService_LookupRecv_FullMethodName            = "/wavewalletrpc.WalletService/LookupRecv"
+	WalletService_List_FullMethodName                  = "/wavewalletrpc.WalletService/List"
+	WalletService_Deposit_FullMethodName               = "/wavewalletrpc.WalletService/Deposit"
+	WalletService_Balance_FullMethodName               = "/wavewalletrpc.WalletService/Balance"
+	WalletService_Status_FullMethodName                = "/wavewalletrpc.WalletService/Status"
+	WalletService_Refresh_FullMethodName               = "/wavewalletrpc.WalletService/Refresh"
+	WalletService_GetExitPlan_FullMethodName           = "/wavewalletrpc.WalletService/GetExitPlan"
+	WalletService_PreviewUnilateralExit_FullMethodName = "/wavewalletrpc.WalletService/PreviewUnilateralExit"
+	WalletService_ExportExit_FullMethodName            = "/wavewalletrpc.WalletService/ExportExit"
+	WalletService_ExportExits_FullMethodName           = "/wavewalletrpc.WalletService/ExportExits"
+	WalletService_SweepWallet_FullMethodName           = "/wavewalletrpc.WalletService/SweepWallet"
+	WalletService_Exit_FullMethodName                  = "/wavewalletrpc.WalletService/Exit"
+	WalletService_ExitBatch_FullMethodName             = "/wavewalletrpc.WalletService/ExitBatch"
+	WalletService_ExitStatus_FullMethodName            = "/wavewalletrpc.WalletService/ExitStatus"
+	WalletService_ExitSummary_FullMethodName           = "/wavewalletrpc.WalletService/ExitSummary"
+	WalletService_SubscribeWallet_FullMethodName       = "/wavewalletrpc.WalletService/SubscribeWallet"
 )
 
 // WalletServiceClient is the client API for WalletService service.
@@ -124,6 +125,9 @@ type WalletServiceClient interface {
 	// response includes CPFP fee input requirements and, when funding is
 	// needed, a backing-wallet address callers can fund before forced unroll.
 	GetExitPlan(ctx context.Context, in *GetExitPlanRequest, opts ...grpc.CallOption) (*GetExitPlanResponse, error)
+	// PreviewUnilateralExit quotes the selected targets as a single wallet
+	// operation. It never derives addresses, leases coins or starts jobs.
+	PreviewUnilateralExit(ctx context.Context, in *GetExitPlanRequest, opts ...grpc.CallOption) (*PreviewUnilateralExitResponse, error)
 	// ExportExit exports signed ancestry for externally funded broadcasting.
 	// It does not start an exit. A destination opts into a signed final sweep.
 	ExportExit(ctx context.Context, in *ExportExitRequest, opts ...grpc.CallOption) (*ExportExitResponse, error)
@@ -278,6 +282,16 @@ func (c *walletServiceClient) GetExitPlan(ctx context.Context, in *GetExitPlanRe
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetExitPlanResponse)
 	err := c.cc.Invoke(ctx, WalletService_GetExitPlan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletServiceClient) PreviewUnilateralExit(ctx context.Context, in *GetExitPlanRequest, opts ...grpc.CallOption) (*PreviewUnilateralExitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreviewUnilateralExitResponse)
+	err := c.cc.Invoke(ctx, WalletService_PreviewUnilateralExit_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -456,6 +470,9 @@ type WalletServiceServer interface {
 	// response includes CPFP fee input requirements and, when funding is
 	// needed, a backing-wallet address callers can fund before forced unroll.
 	GetExitPlan(context.Context, *GetExitPlanRequest) (*GetExitPlanResponse, error)
+	// PreviewUnilateralExit quotes the selected targets as a single wallet
+	// operation. It never derives addresses, leases coins or starts jobs.
+	PreviewUnilateralExit(context.Context, *GetExitPlanRequest) (*PreviewUnilateralExitResponse, error)
 	// ExportExit exports signed ancestry for externally funded broadcasting.
 	// It does not start an exit. A destination opts into a signed final sweep.
 	ExportExit(context.Context, *ExportExitRequest) (*ExportExitResponse, error)
@@ -531,6 +548,9 @@ func (UnimplementedWalletServiceServer) Refresh(context.Context, *RefreshRequest
 }
 func (UnimplementedWalletServiceServer) GetExitPlan(context.Context, *GetExitPlanRequest) (*GetExitPlanResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetExitPlan not implemented")
+}
+func (UnimplementedWalletServiceServer) PreviewUnilateralExit(context.Context, *GetExitPlanRequest) (*PreviewUnilateralExitResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PreviewUnilateralExit not implemented")
 }
 func (UnimplementedWalletServiceServer) ExportExit(context.Context, *ExportExitRequest) (*ExportExitResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ExportExit not implemented")
@@ -793,6 +813,24 @@ func _WalletService_GetExitPlan_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WalletService_PreviewUnilateralExit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetExitPlanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).PreviewUnilateralExit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_PreviewUnilateralExit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).PreviewUnilateralExit(ctx, req.(*GetExitPlanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WalletService_ExportExit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ExportExitRequest)
 	if err := dec(in); err != nil {
@@ -984,6 +1022,10 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetExitPlan",
 			Handler:    _WalletService_GetExitPlan_Handler,
+		},
+		{
+			MethodName: "PreviewUnilateralExit",
+			Handler:    _WalletService_PreviewUnilateralExit_Handler,
 		},
 		{
 			MethodName: "ExportExit",

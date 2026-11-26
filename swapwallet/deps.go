@@ -108,6 +108,11 @@ type RPCServer interface {
 
 	ExitSummary(ctx context.Context) (*waved.ExitSummaryResult, error)
 
+	// PreviewUnilateralExit reads an entire selection without wallet
+	// writes.
+	PreviewUnilateralExit(ctx context.Context,
+		req *waved.ExitPlanRequest) (*waved.WalletExitPreview, error)
+
 	GetExitPlan(ctx context.Context,
 		req *waved.ExitPlanRequest) (*waved.ExitPlanResponse, error)
 
