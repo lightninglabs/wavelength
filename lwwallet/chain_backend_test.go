@@ -2,6 +2,7 @@ package lwwallet
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -502,6 +503,74 @@ func TestChainBackendSpendRegistration(t *testing.T) {
 	default:
 		t.Fatal("historical spend was not available on return")
 	}
+}
+
+// TestChainBackendSpendRegistrationLookupError verifies that a failed initial
+// lookup leaves no registration that a caller could mistake for an unspent
+// output.
+func TestChainBackendSpendRegistrationLookupError(t *testing.T) {
+	t.Parallel()
+
+	txid := chainhash.HashH([]byte("funding-tx"))
+	srv := mockEsploraServer(
+		t, func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/blocks/tip/height":
+				_, _ = fmt.Fprint(w, "100")
+
+			case "/block-height/100":
+				h := chainhash.HashH([]byte("block-100"))
+				_, _ = fmt.Fprint(w, h.String())
+
+			default:
+				http.Error(
+					w, "backend unavailable",
+					http.StatusServiceUnavailable,
+				)
+			}
+		},
+	)
+
+	backend := NewChainBackend(
+		NewEsploraClient(srv.URL, btclog.Disabled), 50*time.Millisecond,
+		btclog.Disabled,
+	)
+	require.NoError(t, backend.Start())
+	defer func() {
+		require.NoError(t, backend.Stop())
+	}()
+
+	reg, err := backend.RegisterSpend(
+		t.Context(), &wire.OutPoint{
+			Hash: txid,
+		},
+		nil,
+		90,
+	)
+	require.ErrorContains(t, err, "initial spend lookup")
+	require.Nil(t, reg)
+
+	backend.mu.Lock()
+	activeRegs := len(backend.spendRegs)
+	backend.mu.Unlock()
+	require.Zero(t, activeRegs)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	reg, err = backend.RegisterSpend(
+		ctx, &wire.OutPoint{
+			Hash: txid,
+		},
+		nil,
+		90,
+	)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, reg)
+
+	backend.mu.Lock()
+	activeRegs = len(backend.spendRegs)
+	backend.mu.Unlock()
+	require.Zero(t, activeRegs)
 }
 
 // minimalRawTx returns a minimal valid serialized Bitcoin

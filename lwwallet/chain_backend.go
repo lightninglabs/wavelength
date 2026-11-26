@@ -722,7 +722,11 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 	// The check remains scoped to this registration, so registration is
 	// still O(1) rather than re-scanning all pending registrations.
 	b.wg.Add(1)
-	b.runSpendOneShot(ctx, id, reg)
+	if err := b.runSpendOneShot(ctx, id, reg); err != nil {
+		cancelFn()
+
+		return nil, fmt.Errorf("initial spend lookup: %w", err)
+	}
 
 	return &chainsource.SpendRegistration{
 		Spend:   spendChan,
@@ -757,25 +761,25 @@ func (b *ChainBackend) cancelSpendReg(id uint64, reg *spendRegistration) {
 // after delivery: a reorg may later reset it to stateWatching and
 // the next re-check must fire Spend again on the new chain.
 func (b *ChainBackend) runSpendOneShot(ctx context.Context, id uint64,
-	reg *spendRegistration) {
+	reg *spendRegistration) error {
 
 	defer b.wg.Done()
 
 	select {
 	case <-reg.cancelCh:
-		return
+		return context.Canceled
 
 	case <-b.stopCh:
-		return
+		return context.Canceled
 
 	default:
 	}
 
 	if reg.outpoint == nil {
-		return
+		return nil
 	}
 
-	b.deliverSpendIfNew(ctx, id, reg)
+	return b.deliverSpendIfNew(ctx, id, reg)
 }
 
 // deliverSpendIfNew runs a spend re-check and fires the Spend
@@ -783,13 +787,13 @@ func (b *ChainBackend) runSpendOneShot(ctx context.Context, id uint64,
 // now available. Mirror of deliverConfIfNew; see that function's
 // comment for the regMu / channel-send ordering rationale.
 func (b *ChainBackend) deliverSpendIfNew(ctx context.Context, id uint64,
-	reg *spendRegistration) {
+	reg *spendRegistration) error {
 
 	reg.regMu.Lock()
 	if reg.state == statePositive {
 		reg.regMu.Unlock()
 
-		return
+		return nil
 	}
 	reg.regMu.Unlock()
 
@@ -806,17 +810,17 @@ func (b *ChainBackend) deliverSpendIfNew(ctx context.Context, id uint64,
 			btclog.Fmt("err", "%v", err),
 		)
 
-		return
+		return err
 	}
 	if detail == nil {
-		return
+		return nil
 	}
 
 	reg.regMu.Lock()
 	if reg.state == statePositive {
 		reg.regMu.Unlock()
 
-		return
+		return nil
 	}
 	reg.state = statePositive
 	if detail.SpenderTxHash != nil {
@@ -828,10 +832,10 @@ func (b *ChainBackend) deliverSpendIfNew(ctx context.Context, id uint64,
 	select {
 	case reg.spendChan <- detail:
 	case <-reg.cancelCh:
-		return
+		return context.Canceled
 
 	case <-b.stopCh:
-		return
+		return context.Canceled
 	}
 
 	b.log.DebugS(ctx,
@@ -840,6 +844,8 @@ func (b *ChainBackend) deliverSpendIfNew(ctx context.Context, id uint64,
 		slog.String("outpoint", reg.outpoint.String()),
 		slog.String("spender_txid",
 			detail.SpenderTxHash.String()))
+
+	return nil
 }
 
 // RegisterBlocks registers for new block notifications.
@@ -1128,7 +1134,13 @@ func (b *ChainBackend) reorgSpendReg(id uint64, reg *spendRegistration,
 		slog.Uint64("reg_id", id),
 	)
 
-	b.deliverSpendIfNew(context.Background(), id, reg)
+	if err := b.deliverSpendIfNew(
+		context.Background(), id, reg,
+	); err != nil {
+
+		// The next tip or heartbeat will retry this watch.
+		return
+	}
 }
 
 // handleChainEvents drains the unified chain stream and dispatches
@@ -1508,7 +1520,13 @@ func (b *ChainBackend) checkSpends() {
 			continue
 		}
 
-		b.deliverSpendIfNew(context.Background(), id, reg)
+		if err := b.deliverSpendIfNew(
+			context.Background(), id, reg,
+		); err != nil {
+
+			// This watch remains active for the next retry.
+			continue
+		}
 	}
 }
 
