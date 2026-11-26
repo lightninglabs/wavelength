@@ -114,15 +114,21 @@ func ComposeWithSiblingRoot(policy *CompiledPolicy,
 	}, nil
 }
 
-// tapBranchHashCompose computes the BIP-341 TapBranch hash for combining two
-// roots.
-func tapBranchHashCompose(a, b chainhash.Hash) chainhash.Hash {
+// TapBranchHash computes the BIP-341 TapBranch hash combining two taproot
+// subtree or leaf hashes in lexicographical order.
+func TapBranchHash(a, b chainhash.Hash) chainhash.Hash {
 	// Sort lexicographically per BIP-341.
 	if bytes.Compare(a[:], b[:]) > 0 {
 		a, b = b, a
 	}
 
 	return *chainhash.TaggedHash(chainhash.TagTapBranch, a[:], b[:])
+}
+
+// tapBranchHashCompose computes the BIP-341 TapBranch hash for combining two
+// roots.
+func tapBranchHashCompose(a, b chainhash.Hash) chainhash.Hash {
+	return TapBranchHash(a, b)
 }
 
 // PolicyRoot returns just the policy root hash from a compiled policy.

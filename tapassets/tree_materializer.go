@@ -65,6 +65,10 @@ type TreeRootAssetSource struct {
 	// SigningTweak is the batch output's taproot tweak.
 	SigningTweak []byte
 
+	// BatchAssetRoot is the optional 32-byte Taproot Asset commitment leaf
+	// hash composed beside the sweep leaf in BatchPkScript.
+	BatchAssetRoot []byte
+
 	// BatchPkScript is the batch output's P2TR script.
 	BatchPkScript []byte
 }

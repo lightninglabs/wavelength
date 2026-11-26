@@ -173,6 +173,7 @@ func buildAssetTree(ctx context.Context, cfg TreeMaterializerConfig,
 		BatchOutpoint:      req.BatchOutpoint,
 		BatchOutput:        req.BatchOutput,
 		SweepTapscriptRoot: sweepRoot[:],
+		BatchAssetRoot:     bytes.Clone(cfg.Root.BatchAssetRoot),
 		AssetContext:       structure.AssetContext,
 	}
 	if err := built.Verify(); err != nil {

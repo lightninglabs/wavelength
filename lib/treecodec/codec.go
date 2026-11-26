@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/tlvutil"
 	"github.com/lightninglabs/wavelength/lib/tree"
@@ -18,13 +19,14 @@ import (
 
 // TLV type aliases for Tree serialization.
 type (
-	tlvTreeBatchOutpoint = tlv.TlvType0
-	tlvTreeBatchOutput   = tlv.TlvType1
-	tlvTreeSweepRoot     = tlv.TlvType2
-	tlvTreeRootNode      = tlv.TlvType3
-	tlvTreeAssetRef      = tlv.TlvType4
-	tlvTreeSweepKey      = tlv.TlvType5
-	tlvTreeSweepDelay    = tlv.TlvType6
+	tlvTreeBatchOutpoint  = tlv.TlvType0
+	tlvTreeBatchOutput    = tlv.TlvType1
+	tlvTreeSweepRoot      = tlv.TlvType2
+	tlvTreeRootNode       = tlv.TlvType3
+	tlvTreeAssetRef       = tlv.TlvType4
+	tlvTreeSweepKey       = tlv.TlvType5
+	tlvTreeSweepDelay     = tlv.TlvType6
+	tlvTreeBatchAssetRoot = tlv.TlvType7
 )
 
 // Tree-decode safety bounds. The wire layer feeds DeserializeTree from
@@ -661,9 +663,10 @@ type tlvTree struct {
 	RootNodeData tlv.RecordT[tlvTreeRootNode, tlv.Blob]
 
 	// AssetRef identifies the asset carried by the tree.
-	AssetRef   tlv.RecordT[tlvTreeAssetRef, tlv.Blob]
-	SweepKey   tlv.RecordT[tlvTreeSweepKey, pubKeyRecord]
-	SweepDelay tlv.RecordT[tlvTreeSweepDelay, uint32]
+	AssetRef       tlv.RecordT[tlvTreeAssetRef, tlv.Blob]
+	SweepKey       tlv.RecordT[tlvTreeSweepKey, pubKeyRecord]
+	SweepDelay     tlv.RecordT[tlvTreeSweepDelay, uint32]
+	BatchAssetRoot tlv.RecordT[tlvTreeBatchAssetRoot, tlv.Blob]
 }
 
 // newTlvTree creates a new tlvTree with initialized RecordT fields.
@@ -688,6 +691,11 @@ func newTlvTree() *tlvTree {
 		](
 			nil,
 		),
+		BatchAssetRoot: tlv.NewPrimitiveRecord[
+			tlvTreeBatchAssetRoot, tlv.Blob,
+		](
+			nil,
+		),
 	}
 }
 
@@ -709,6 +717,9 @@ func (t *tlvTree) EncodeRecords() []tlv.Record {
 	if t.SweepDelay.Val != 0 {
 		records = append(records, t.SweepDelay.Record())
 	}
+	if len(t.BatchAssetRoot.Val) != 0 {
+		records = append(records, t.BatchAssetRoot.Record())
+	}
 
 	return records
 }
@@ -723,6 +734,7 @@ func (t *tlvTree) DecodeRecords() []tlv.Record {
 		t.AssetRef.Record(),
 		t.SweepKey.Record(),
 		t.SweepDelay.Record(),
+		t.BatchAssetRoot.Record(),
 	}
 }
 
@@ -968,6 +980,14 @@ func serializeTree(t *tree.Tree, includeFinalKey, includeSweepPolicy,
 
 	// Set SweepRoot.
 	tlvT.SweepRoot.Val = t.SweepTapscriptRoot
+	if len(t.BatchAssetRoot) > 0 {
+		if len(t.BatchAssetRoot) != chainhash.HashSize {
+			return nil, fmt.Errorf("batch asset root must be %d "+
+				"bytes, got %d", chainhash.HashSize,
+				len(t.BatchAssetRoot))
+		}
+		tlvT.BatchAssetRoot.Val = bytes.Clone(t.BatchAssetRoot)
+	}
 	if t.AssetContext != nil {
 		tlvT.AssetRef.Val = []byte(t.AssetContext.AssetRef())
 	}
@@ -1015,9 +1035,17 @@ func deserializeTree(data []byte, snapshot bool) (*tree.Tree, error) {
 		return nil, fmt.Errorf("decode tree: %w", err)
 	}
 
+	if len(tlvT.BatchAssetRoot.Val) != 0 &&
+		len(tlvT.BatchAssetRoot.Val) != chainhash.HashSize {
+		return nil, fmt.Errorf("batch asset root must be %d "+
+			"bytes, got %d", chainhash.HashSize,
+			len(tlvT.BatchAssetRoot.Val))
+	}
+
 	t := &tree.Tree{
 		BatchOutpoint:      tlvT.BatchOutpoint.Val.OutPoint,
 		SweepTapscriptRoot: tlvT.SweepRoot.Val,
+		BatchAssetRoot:     bytes.Clone(tlvT.BatchAssetRoot.Val),
 		SweepKey:           tlvT.SweepKey.Val.Key,
 		SweepDelay:         tlvT.SweepDelay.Val,
 	}

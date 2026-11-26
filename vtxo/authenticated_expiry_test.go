@@ -299,3 +299,126 @@ func testExpiryAncestry(t *testing.T, delay uint32,
 		BlockHeight: height,
 	}
 }
+
+// TestAuthenticateBatchExpiryAssetBatchOutput checks that an asset batch
+// output composed from SweepTapscriptRoot and BatchAssetRoot authenticates
+// its sweep policy and rejects tampered or malformed asset roots.
+func TestAuthenticateBatchExpiryAssetBatchOutput(t *testing.T) {
+	t.Parallel()
+
+	const (
+		delay  uint32 = 50
+		height int32  = 100
+	)
+
+	sweepKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	sweepLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
+		sweepKey.PubKey(), delay,
+	)
+	require.NoError(t, err)
+	sweepRoot := sweepLeaf.TapHash()
+
+	var batchAssetRoot chainhash.Hash
+	copy(batchAssetRoot[:], []byte("batch-asset-root-32-bytes-012345"))
+	composedRoot := arkscript.TapBranchHash(sweepRoot, batchAssetRoot)
+
+	ownerKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	cosigners := []*btcec.PublicKey{ownerKey.PubKey()}
+	finalKey, err := tree.ComputeFinalKey(cosigners, composedRoot[:])
+	require.NoError(t, err)
+	batchScript, err := txscript.PayToTaprootScript(finalKey)
+	require.NoError(t, err)
+
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash: chainhash.Hash{0xaa},
+		},
+	})
+	tx.AddTxOut(&wire.TxOut{
+		Value:    2_000,
+		PkScript: batchScript,
+	})
+	txid := tx.TxHash()
+
+	fragment := Ancestry{
+		TreePath: &tree.Tree{
+			Root: &tree.Node{
+				CoSigners: cosigners,
+			},
+			BatchOutpoint: wire.OutPoint{
+				Hash: txid,
+			},
+			BatchOutput:        tx.TxOut[0],
+			SweepTapscriptRoot: sweepRoot[:],
+			BatchAssetRoot:     batchAssetRoot[:],
+		},
+		CommitmentTxID:       txid,
+		CommitmentHeight:     height,
+		CommitmentSweepDelay: delay,
+		CommitmentSweepKey:   sweepKey.PubKey(),
+	}
+	confirmation := CommitmentConfirmation{
+		Tx:          tx,
+		BlockHeight: height,
+	}
+	resolve := func(context.Context, chainhash.Hash, []byte, uint32) (
+		CommitmentConfirmation, error) {
+
+		return confirmation, nil
+	}
+
+	evidence, err := AuthenticateBatchEvidence(
+		t.Context(), []Ancestry{fragment}, resolve,
+	)
+	require.NoError(t, err)
+	require.Equal(t, height+int32(delay), evidence.BatchExpiry)
+	require.Equal(t, height, evidence.EarliestCommitmentHeight)
+
+	t.Run("missing batch asset root fails", func(t *testing.T) {
+		bad := fragment
+		badTree := *fragment.TreePath
+		badTree.BatchAssetRoot = nil
+		bad.TreePath = &badTree
+
+		_, err := AuthenticateBatchEvidence(
+			t.Context(), []Ancestry{bad}, resolve,
+		)
+		require.ErrorIs(t, err, ErrInvalidBatchExpiryEvidence)
+		require.ErrorContains(
+			t, err, "batch output does not match tree root",
+		)
+	})
+
+	t.Run("tampered batch asset root fails", func(t *testing.T) {
+		bad := fragment
+		badTree := *fragment.TreePath
+		badRoot := append([]byte(nil), batchAssetRoot[:]...)
+		badRoot[0] ^= 0xff
+		badTree.BatchAssetRoot = badRoot
+		bad.TreePath = &badTree
+
+		_, err := AuthenticateBatchEvidence(
+			t.Context(), []Ancestry{bad}, resolve,
+		)
+		require.ErrorIs(t, err, ErrInvalidBatchExpiryEvidence)
+		require.ErrorContains(
+			t, err, "batch output does not match tree root",
+		)
+	})
+
+	t.Run("malformed batch asset root length fails", func(t *testing.T) {
+		bad := fragment
+		badTree := *fragment.TreePath
+		badTree.BatchAssetRoot = []byte{0x01, 0x02}
+		bad.TreePath = &badTree
+
+		_, err := AuthenticateBatchEvidence(
+			t.Context(), []Ancestry{bad}, resolve,
+		)
+		require.ErrorIs(t, err, ErrInvalidBatchExpiryEvidence)
+		require.ErrorContains(t, err, "batch asset root must be 32")
+	})
+}

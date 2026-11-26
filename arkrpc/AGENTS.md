@@ -9,7 +9,9 @@ Proto source: `arkrpc/ark.proto`, `arkrpc/indexer.proto`.
 ## Key Types
 
 - `TreePath` / `TreePathNode` / `TxOut` — Structured proto messages for the
-  VTXO commitment tree path.
+  VTXO commitment tree path. `TreePath.batch_asset_root` carries the optional
+  32-byte Taproot Asset commitment sibling hash composed beside
+  `sweep_tapscript_root` in `batch_output` for asset trees.
 - `TreePathFromTree` / `TreePathToTree` — Lossless conversion between
   `tree.Tree` and `arkrpc.TreePath`. Uses deterministic pre-order flattening
   with sorted child indices. Re-exported under the narrower

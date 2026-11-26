@@ -1,6 +1,7 @@
 package arkrpc
 
 import (
+	"bytes"
 	"fmt"
 	"sort"
 
@@ -30,11 +31,19 @@ func TreePathFromTree(t *tree.Tree) (*TreePath, error) {
 		return nil, err
 	}
 
+	if len(t.BatchAssetRoot) != 0 &&
+		len(t.BatchAssetRoot) != chainhash.HashSize {
+		return nil, fmt.Errorf("batch asset root must be %d "+
+			"bytes, got %d", chainhash.HashSize,
+			len(t.BatchAssetRoot))
+	}
+
 	return &TreePath{
 		Nodes:              nodes,
 		BatchOutpoint:      outpointToProto(t.BatchOutpoint),
 		BatchOutput:        txOutToProto(t.BatchOutput),
 		SweepTapscriptRoot: t.SweepTapscriptRoot,
+		BatchAssetRoot:     bytes.Clone(t.BatchAssetRoot),
 	}, nil
 }
 
@@ -196,11 +205,19 @@ func TreePathToTree(tp *TreePath,
 		return nil, fmt.Errorf("batch output: %w", err)
 	}
 
+	if len(tp.BatchAssetRoot) != 0 &&
+		len(tp.BatchAssetRoot) != chainhash.HashSize {
+		return nil, fmt.Errorf("batch asset root must be %d "+
+			"bytes, got %d", chainhash.HashSize,
+			len(tp.BatchAssetRoot))
+	}
+
 	return &tree.Tree{
 		Root:               goNodes[0],
 		BatchOutpoint:      batchOP,
 		BatchOutput:        batchOut,
 		SweepTapscriptRoot: tp.SweepTapscriptRoot,
+		BatchAssetRoot:     bytes.Clone(tp.BatchAssetRoot),
 	}, nil
 }
 

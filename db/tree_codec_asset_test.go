@@ -76,6 +76,7 @@ func newAssetCodecTree(t *testing.T) *tree.Tree {
 			},
 		},
 		SweepTapscriptRoot: assetCodecHash("sweep"),
+		BatchAssetRoot:     assetCodecHash("batch-asset-root"),
 		AssetContext:       assetCtx,
 	}
 }
@@ -90,6 +91,7 @@ func TestTreeCodecAssetRoundTrip(t *testing.T) {
 
 	decoded, err := DeserializeTree(encoded)
 	require.NoError(t, err)
+	require.Equal(t, original.BatchAssetRoot, decoded.BatchAssetRoot)
 	require.NotNil(t, decoded.AssetContext)
 	require.Equal(
 		t, original.AssetContext.AssetRef(),

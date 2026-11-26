@@ -255,9 +255,23 @@ func validateExpiryFragment(fragment Ancestry) error {
 		)
 	}
 
+	rootTweak := fragment.TreePath.SweepTapscriptRoot
+	if len(fragment.TreePath.BatchAssetRoot) > 0 {
+		if len(fragment.TreePath.BatchAssetRoot) != chainhash.HashSize {
+			return invalidBatchExpiry(
+				"batch asset root must be %d bytes, got %d",
+				chainhash.HashSize,
+				len(fragment.TreePath.BatchAssetRoot),
+			)
+		}
+		var assetRoot chainhash.Hash
+		copy(assetRoot[:], fragment.TreePath.BatchAssetRoot)
+		composedRoot := arkscript.TapBranchHash(sweepRoot, assetRoot)
+		rootTweak = composedRoot[:]
+	}
+
 	finalKey, err := tree.ComputeFinalKey(
-		fragment.TreePath.Root.CoSigners,
-		fragment.TreePath.SweepTapscriptRoot,
+		fragment.TreePath.Root.CoSigners, rootTweak,
 	)
 	if err != nil {
 		return invalidBatchExpiry("recompute tree root key: %v", err)

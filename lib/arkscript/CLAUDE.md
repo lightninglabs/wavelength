@@ -56,7 +56,7 @@ validated invariants.
     supplying a control block for an unrelated tap tree and obtaining a
     signature over an attacker-chosen tapscript.
 - `StandardVTXOParams` — Decoded parameters for a standard Ark VTXO policy (owner key, operator key, CSV delay). Derived via `DecodeStandardVTXOParams`.
-- `ComposedPolicy` — Composes an existing `CompiledPolicy` with an additional sibling tap branch root, allowing sub-tree aggregation. Built with `ComposeWithSiblingRoot`.
+- `ComposedPolicy` — Composes an existing `CompiledPolicy` with an additional sibling tap branch root, allowing sub-tree aggregation. Built with `ComposeWithSiblingRoot` (which combines roots via `TapBranchHash`).
 - `ComposedBoardingScript` — Combines a boarding policy with a disclosed asset
   commitment leaf hash to reconstruct the deposit script and Taproot root.
   `ComposedBoardingExitSpend` returns the owner's exit spend of that deposit,
