@@ -5,13 +5,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
@@ -1027,4 +1030,191 @@ func TestCheckProofPathBounds(t *testing.T) {
 			require.ErrorContains(t, sdkErr, test.sdkErr)
 		})
 	}
+}
+
+// TestBuildOORTransferPlainOutputExclusionMetadata verifies that planOORArk
+// populates BIP-371 Taproot internal key and depth-first tap tree metadata on
+// every plain P2TR output of the Ark anchor PSBT so the asset engine can
+// generate Taproot exclusion proofs, and rejects plain P2TR outputs that omit
+// or mismatch their policy template.
+func TestBuildOORTransferPlainOutputExclusionMetadata(t *testing.T) {
+	t.Parallel()
+
+	f := newOORFixture(t)
+	driver := &fakeOORDriver{}
+	req := f.request(t)
+
+	_, err := buildOORTransfer(t.Context(), driver, req)
+	require.NoError(t, err)
+	require.Len(t, driver.requests, 2)
+
+	arkReq := driver.requests[1]
+	arkPkt, err := psbt.NewFromRawBytes(
+		bytes.NewReader(arkReq.AnchorPSBT), false,
+	)
+	require.NoError(t, err)
+
+	assetIndices := make(map[uint32]struct{}, len(arkReq.Outputs))
+	for _, out := range arkReq.Outputs {
+		assetIndices[out.AnchorOutputIndex] = struct{}{}
+	}
+
+	var plainP2TRCount int
+	for idx, txOut := range arkPkt.UnsignedTx.TxOut {
+		if _, isAsset := assetIndices[uint32(idx)]; isAsset {
+			continue
+		}
+		if !txscript.IsPayToTaproot(txOut.PkScript) {
+			require.Empty(t, arkPkt.Outputs[idx].TaprootInternalKey)
+			require.Empty(t, arkPkt.Outputs[idx].TaprootTapTree)
+			continue
+		}
+
+		plainP2TRCount++
+		pOut := arkPkt.Outputs[idx]
+		require.Len(t, pOut.TaprootInternalKey, schnorr.PubKeyBytesLen)
+		require.NotEmpty(t, pOut.TaprootTapTree)
+
+		internalKey, err := schnorr.ParsePubKey(pOut.TaprootInternalKey)
+		require.NoError(t, err)
+
+		rootHash := parseTestBIP371TapTreeRoot(t, pOut.TaprootTapTree)
+		outputKey := txscript.ComputeTaprootOutputKey(
+			internalKey, rootHash[:],
+		)
+		wantScript, err := txscript.PayToTaprootScript(outputKey)
+		require.NoError(t, err)
+		require.Equal(t, txOut.PkScript, wantScript)
+	}
+	require.Equal(t, len(req.Outputs), plainP2TRCount)
+
+	// Missing policy template on a plain P2TR output fails before any
+	// checkpoint commit.
+	missingPolicy := f.request(t)
+	missingPolicy.Outputs[0].VTXOPolicyTemplate = nil
+	missingDriver := &fakeOORDriver{}
+	_, err = buildOORTransfer(t.Context(), missingDriver, missingPolicy)
+	require.ErrorContains(t, err, "requires a policy template")
+	require.Empty(t, missingDriver.requests)
+
+	// Mismatched policy template on a plain P2TR output fails before any
+	// checkpoint commit.
+	wrongPolicy := f.request(t)
+	wrongPolicy.Outputs[0].VTXOPolicyTemplate =
+		wrongPolicy.Outputs[1].VTXOPolicyTemplate
+	wrongDriver := &fakeOORDriver{}
+	_, err = buildOORTransfer(t.Context(), wrongDriver, wrongPolicy)
+	require.ErrorContains(t, err, "does not match pkScript")
+	require.Empty(t, wrongDriver.requests)
+
+	// Non-P2TR plain outputs (e.g. P2WPKH) do not require a policy
+	// template and receive no Taproot exclusion metadata.
+	nonTaproot := f.request(t)
+	p2wpkh := append([]byte{txscript.OP_0, 0x14}, make([]byte, 20)...)
+	nonTaproot.Outputs[0] = oortx.RecipientOutput{
+		PkScript: p2wpkh,
+		Value:    1_000,
+	}
+	nonTaprootDriver := &fakeOORDriver{}
+	_, err = buildOORTransfer(t.Context(), nonTaprootDriver, nonTaproot)
+	require.NoError(t, err)
+	nonTaprootPkt, err := psbt.NewFromRawBytes(
+		bytes.NewReader(nonTaprootDriver.requests[1].AnchorPSBT), false,
+	)
+	require.NoError(t, err)
+	var sawP2WPKH bool
+	for idx, txOut := range nonTaprootPkt.UnsignedTx.TxOut {
+		if !bytes.Equal(txOut.PkScript, p2wpkh) {
+			continue
+		}
+		sawP2WPKH = true
+		require.Empty(t, nonTaprootPkt.Outputs[idx].TaprootInternalKey)
+		require.Empty(t, nonTaprootPkt.Outputs[idx].TaprootTapTree)
+	}
+	require.True(t, sawP2WPKH)
+}
+
+// TestEncodeBIP371TapTreeShapes verifies that encodeBIP371TapTree reproduces
+// arkscript.BuildTree's root hash for 1, 2, 3, and 5 leaves.
+func TestEncodeBIP371TapTreeShapes(t *testing.T) {
+	t.Parallel()
+
+	for _, leafCount := range []int{1, 2, 3, 5} {
+		leaves := make([]arkscript.PolicyLeaf, leafCount)
+		for i := range leaves {
+			leaves[i] = arkscript.PolicyLeaf{
+				Leaf: txscript.NewBaseTapLeaf(
+					[]byte{txscript.OP_1 + byte(i)},
+				),
+			}
+		}
+		compiled, err := arkscript.BuildTree(
+			leaves, &arkscript.ARKNUMSKey,
+		)
+		require.NoError(t, err)
+
+		encoded, err := encodeBIP371TapTree(compiled)
+		require.NoError(t, err)
+
+		gotRoot := parseTestBIP371TapTreeRoot(t, encoded)
+		require.Equal(
+			t, compiled.RootHash, gotRoot[:], "leafCount=%d",
+			leafCount,
+		)
+	}
+}
+
+// parseTestBIP371TapTreeRoot decodes a BIP-371 PSBT_OUT_TAP_TREE blob using
+// the exact depth-first tuple grammar expected by Taproot exclusion proof
+// builders and returns the reconstructed Taproot merkle root.
+func parseTestBIP371TapTreeRoot(t *testing.T, encoded []byte) chainhash.Hash {
+	t.Helper()
+
+	type bip371Leaf struct {
+		depth uint8
+		leaf  txscript.TapLeaf
+	}
+
+	r := bytes.NewReader(encoded)
+	var leaves []bip371Leaf
+	for r.Len() > 0 {
+		depth, err := r.ReadByte()
+		require.NoError(t, err)
+		version, err := r.ReadByte()
+		require.NoError(t, err)
+		scriptLen, err := wire.ReadVarInt(r, 0)
+		require.NoError(t, err)
+		script := make([]byte, int(scriptLen))
+		_, err = io.ReadFull(r, script)
+		require.NoError(t, err)
+
+		leaves = append(leaves, bip371Leaf{
+			depth: depth,
+			leaf: txscript.NewTapLeaf(
+				txscript.TapscriptLeafVersion(version), script,
+			),
+		})
+	}
+	require.NotEmpty(t, leaves)
+
+	next := 0
+	var parseNode func(depth uint8) txscript.TapNode
+	parseNode = func(depth uint8) txscript.TapNode {
+		require.Less(t, next, len(leaves))
+		if leaves[next].depth == depth {
+			leaf := leaves[next].leaf
+			next++
+
+			return leaf
+		}
+		left := parseNode(depth + 1)
+		right := parseNode(depth + 1)
+
+		return txscript.NewTapBranch(left, right)
+	}
+
+	root := parseNode(0)
+	require.Equal(t, len(leaves), next)
+
+	return root.TapHash()
 }

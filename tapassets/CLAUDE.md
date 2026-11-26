@@ -173,7 +173,10 @@ Durable journals retain committed packages for restart recovery.
   when the layout does not settle (`ErrOOROrderingUnresolved` after
   `maxOOROrderingNonces`). Two outputs may not pay the same value to the
   same script, where an asset output counts with its uncomposed policy
-  script.
+  script. Every plain (non-asset) P2TR output in `OORTransferRequest.Outputs`
+  must carry a matching `VTXOPolicyTemplate` so `planOORArk` can populate
+  BIP-371 `TaprootInternalKey` and `TaprootTapTree` on the anchor PSBT for
+  Taproot exclusion proofs.
 - **An OOR transfer keeps every new proof path within tap-sdk's bounds.**
   Each transfer adds two unconfirmed steps, and a merge nests the other
   VTXOs' paths one level deeper as co-input paths. `BuildOORTransfer`

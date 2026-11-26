@@ -8,6 +8,7 @@ import (
 	"math"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
@@ -344,6 +345,11 @@ func (r *OORTransferRequest) validate() error {
 		if err := addOutput(output.Value, output.PkScript); err != nil {
 			return err
 		}
+		if _, _, err := plainOutputTaprootMetadata(
+			*output,
+		); err != nil {
+			return fmt.Errorf("output %d: %w", idx, err)
+		}
 	}
 
 	return nil
@@ -660,6 +666,27 @@ func planOORArk(req OORTransferRequest, nonce int,
 			internalKey: output.internalKey,
 			leaves:      output.leaves,
 		})
+	}
+
+	// Populate BIP-371 Taproot internal key and tap tree on every plain
+	// P2TR output so the asset engine can construct Taproot exclusion
+	// proofs when committing the Ark transaction.
+	for idx := range req.Outputs {
+		plain := &req.Outputs[idx]
+		internalKey, tapTree, err := plainOutputTaprootMetadata(*plain)
+		if err != nil {
+			return nil, fmt.Errorf("output %d: %w", idx, err)
+		}
+		if len(internalKey) == 0 {
+			continue
+		}
+
+		index, err := oortx.RecipientOutputIndex(recipients, *plain)
+		if err != nil {
+			return nil, fmt.Errorf("output %d: %w", idx, err)
+		}
+		template.Outputs[index].TaprootInternalKey = internalKey
+		template.Outputs[index].TaprootTapTree = tapTree
 	}
 
 	anchorBytes, err := psbtutil.Serialize(template)
@@ -1221,6 +1248,100 @@ func policyAnchor(encoded []byte) (TreeLeafAnchor, error) {
 		InternalKey:        policy.InternalKey,
 		TapLeaves:          leaves,
 	}, nil
+}
+
+// plainOutputTaprootMetadata derives the BIP-371 PSBT Taproot internal key and
+// depth-first tap tree for a plain (non-asset) P2TR output from its Ark policy
+// template. Non-P2TR outputs need no exclusion proof metadata and return nil.
+func plainOutputTaprootMetadata(output oortx.RecipientOutput) ([]byte, []byte,
+	error) {
+
+	if !txscript.IsPayToTaproot(output.PkScript) {
+		return nil, nil, nil
+	}
+	if len(output.VTXOPolicyTemplate) == 0 {
+		return nil, nil, fmt.Errorf("plain P2TR output requires a " +
+			"policy template for taproot exclusion proof")
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(
+		output.VTXOPolicyTemplate,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decode plain output policy: %w",
+			err)
+	}
+	policy, err := template.Compile()
+	if err != nil {
+		return nil, nil, fmt.Errorf("compile plain output policy: %w",
+			err)
+	}
+	expectedScript, err := template.PkScript()
+	if err != nil {
+		return nil, nil, fmt.Errorf("derive plain output script: %w",
+			err)
+	}
+	if !bytes.Equal(expectedScript, output.PkScript) {
+		return nil, nil, fmt.Errorf("plain output policy script does " +
+			"not match pkScript")
+	}
+
+	tapTree, err := encodeBIP371TapTree(policy)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode plain output BIP-371 tap "+
+			"tree: %w", err)
+	}
+
+	return schnorr.SerializePubKey(policy.InternalKey), tapTree, nil
+}
+
+// encodeBIP371TapTree serializes a compiled Ark policy's script tree in the
+// BIP-371 PSBT_OUT_TAP_TREE depth-first tuple format
+// (depth || leaf_version || compact_size(script) || script).
+func encodeBIP371TapTree(policy *arkscript.CompiledPolicy) ([]byte, error) {
+	if policy == nil || len(policy.Leaves) == 0 {
+		return nil, fmt.Errorf("compiled policy has no leaves")
+	}
+
+	var buf bytes.Buffer
+	for idx, leaf := range policy.Leaves {
+		info, err := policy.SpendInfo(idx)
+		if err != nil {
+			return nil, fmt.Errorf("leaf %d spend info: %w", idx,
+				err)
+		}
+		cb, err := txscript.ParseControlBlock(info.ControlBlock)
+		if err != nil {
+			return nil, fmt.Errorf("leaf %d control block: %w", idx,
+				err)
+		}
+		if len(cb.InclusionProof)%chainhash.HashSize != 0 {
+			return nil, fmt.Errorf("leaf %d invalid inclusion "+
+				"proof length %d", idx, len(cb.InclusionProof))
+		}
+		depth := len(cb.InclusionProof) / chainhash.HashSize
+		if depth > txscript.ControlBlockMaxNodeCount {
+			return nil, fmt.Errorf("leaf %d depth %d exceeds "+
+				"maximum %d", idx, depth,
+				txscript.ControlBlockMaxNodeCount)
+		}
+
+		buf.WriteByte(byte(depth))
+		buf.WriteByte(byte(leaf.Leaf.LeafVersion))
+		err = wire.WriteVarInt(
+			&buf, 0,
+			uint64(
+				len(leaf.Leaf.Script),
+			),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("leaf %d script length: %w", idx,
+				err)
+		}
+		buf.Write(leaf.Leaf.Script)
+	}
+
+	return buf.Bytes(), nil
 }
 
 // composedPolicyScript returns the script of the policy leaves composed with
