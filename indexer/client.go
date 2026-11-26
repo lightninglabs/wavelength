@@ -539,6 +539,14 @@ type TaprootScriptScope struct {
 	// a valid pay-to-taproot script (OP_1 <32-byte key>).
 	PkScript []byte
 
+	// SignerScript optionally identifies the local receive script used to
+	// look up the signing key for the scope proof when the queried
+	// PkScript differs from the registered receive script (for example,
+	// when a Taproot Asset root is composed into an Ark output script).
+	// When empty, PkScript is used for signer key lookup. This field is
+	// local-only and never transmitted on the wire.
+	SignerScript []byte
+
 	// PolicyTemplate optionally carries the canonical policy for a
 	// registration-free funding query. The proof commits to this exact
 	// policy and output; empty preserves the existing scoped proof.
@@ -550,6 +558,14 @@ type TaprootScriptScope struct {
 func (c *Client) newTaprootScope(ctx context.Context, pkScript []byte,
 	purpose string) (*arkrpc.ScriptScope, error) {
 
+	return c.newTaprootScopeWithSigner(ctx, pkScript, nil, purpose)
+}
+
+// newTaprootScopeWithSigner builds a ScriptScope proto for pkScript while
+// looking up the proof signing key using signerScript when non-empty.
+func (c *Client) newTaprootScopeWithSigner(ctx context.Context, pkScript,
+	signerScript []byte, purpose string) (*arkrpc.ScriptScope, error) {
+
 	if err := validateTaprootPkScript(pkScript); err != nil {
 		return nil, err
 	}
@@ -557,9 +573,14 @@ func (c *Client) newTaprootScope(ctx context.Context, pkScript []byte,
 		return nil, fmt.Errorf("missing purpose")
 	}
 
+	lookupScript := pkScript
+	if len(signerScript) > 0 {
+		lookupScript = signerScript
+	}
+
 	now := time.Now()
 	expiresAt := now.Add(offlineReceiveProofTTL)
-	signerPubKey, err := proofSignerPubKey(pkScript, c.signer)
+	signerPubKey, err := proofSignerPubKey(lookupScript, c.signer)
 	if err != nil {
 		return nil, err
 	}
@@ -586,7 +607,7 @@ func (c *Client) newTaprootScope(ctx context.Context, pkScript []byte,
 	}
 
 	sig64, err := schnorrSigOverMessage(
-		ctx, msgBytes, pkScript, c.signer,
+		ctx, msgBytes, lookupScript, c.signer,
 	)
 	if err != nil {
 		return nil, err
@@ -672,8 +693,9 @@ func (c *Client) buildTaprootScopes(ctx context.Context,
 		if len(scope.PolicyTemplate) != 0 {
 			ss, err = c.newPolicyScope(ctx, scope, purpose)
 		} else {
-			ss, err = c.newTaprootScope(
-				ctx, scope.PkScript, purpose,
+			ss, err = c.newTaprootScopeWithSigner(
+				ctx, scope.PkScript, scope.SignerScript,
+				purpose,
 			)
 		}
 		if err != nil {

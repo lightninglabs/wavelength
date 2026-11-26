@@ -89,6 +89,20 @@ type DurableUnaryRequestBuilder interface {
 		afterCursor []byte, limit uint32) (proto.Message, error)
 }
 
+// ScopedVTXOQueryBuilder is an optional extension of
+// DurableUnaryRequestBuilder for queries where one or more queried output
+// pkScripts (such as Taproot Asset composed scripts) resolve their local
+// ownership-proof signing key through a separate uncomposed receive script.
+type ScopedVTXOQueryBuilder interface {
+	// BuildListVTXOsByScopedScriptsRequest builds the ListVTXOsByScripts
+	// unary request for pkScripts while resolving local proof signing keys
+	// through signerScripts (where an empty entry falls back to the
+	// corresponding pkScript).
+	BuildListVTXOsByScopedScriptsRequest(ctx context.Context, pkScripts,
+		signerScripts [][]byte, afterCursor []byte,
+		limit uint32) (proto.Message, error)
+}
+
 // DurableUnaryQuery is implemented by transport-native durable query messages
 // that persist raw query parameters and need a DurableUnaryRequestBuilder to
 // construct the proof-gated proto body at send time. Implementations are

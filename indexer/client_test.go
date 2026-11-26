@@ -596,3 +596,89 @@ func TestPolicyScopeCommitsTemplate(t *testing.T) {
 	}, "list_vtxo_events")
 	require.Error(t, err)
 }
+
+// scriptAwareSigner records which lookup script was requested and only signs
+// when that lookup script matches expectedScript.
+type scriptAwareSigner struct {
+	expectedScript []byte
+	key            *btcec.PrivateKey
+	seenPubScripts [][]byte
+	seenSigScripts [][]byte
+}
+
+func (s *scriptAwareSigner) ProofPubKey(pkScript []byte) (*btcec.PublicKey,
+	error) {
+
+	s.seenPubScripts = append(s.seenPubScripts, bytes.Clone(pkScript))
+	if !bytes.Equal(pkScript, s.expectedScript) {
+		return nil, context.DeadlineExceeded
+	}
+
+	return s.key.PubKey(), nil
+}
+
+func (s *scriptAwareSigner) SignSchnorr(pkScript []byte, hash [32]byte) ([]byte,
+	error) {
+
+	s.seenSigScripts = append(s.seenSigScripts, bytes.Clone(pkScript))
+	if !bytes.Equal(pkScript, s.expectedScript) {
+		return nil, context.DeadlineExceeded
+	}
+
+	sig, err := schnorr.Sign(s.key, hash[:])
+	if err != nil {
+		return nil, err
+	}
+
+	return sig.Serialize(), nil
+}
+
+// TestBuildListVTXOsByScriptsTaprootRequestSignerScript verifies that a
+// TaprootScriptScope with SignerScript looks up and signs with the local
+// SignerScript while keeping the queried PkScript on the wire scope.
+func TestBuildListVTXOsByScriptsTaprootRequestSignerScript(t *testing.T) {
+	t.Parallel()
+
+	key, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	uncomposed := make([]byte, 34)
+	uncomposed[0] = 0x51
+	uncomposed[1] = 0x20
+	uncomposed[2] = 0xaa
+
+	composed := make([]byte, 34)
+	composed[0] = 0x51
+	composed[1] = 0x20
+	composed[2] = 0xbb
+
+	signer := &scriptAwareSigner{
+		expectedScript: uncomposed,
+		key:            key,
+	}
+	client := New(
+		&recordingRPCClient{}, signer, "test-server", "client:test",
+		fn.None[btclog.Logger](),
+	)
+
+	req, err := client.BuildListVTXOsByScriptsTaprootRequest(
+		t.Context(),
+		[]TaprootScriptScope{{
+			PkScript:     composed,
+			SignerScript: uncomposed,
+		}},
+		nil, 10, nil,
+	)
+	require.NoError(t, err)
+	require.Len(t, req.Scripts, 1)
+	require.Equal(t, composed, req.Scripts[0].PkScript)
+	require.Equal(t, [][]byte{uncomposed}, signer.seenPubScripts)
+	require.Equal(t, [][]byte{uncomposed}, signer.seenSigScripts)
+
+	proof := req.Scripts[0].GetTaprootSchnorr()
+	require.NotNil(t, proof)
+	sig, err := schnorr.ParseSignature(proof.Sig64)
+	require.NoError(t, err)
+	digest := chainhash.TaggedHash(proofTag(), proof.Message)
+	require.True(t, sig.Verify(digest[:], key.PubKey()))
+}

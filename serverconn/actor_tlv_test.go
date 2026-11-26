@@ -268,6 +268,73 @@ func TestSendListVTXOsByScriptsRequest_TLVRoundTrip(t *testing.T) {
 	require.NotEmpty(t, decoded.IdempotencyKey)
 }
 
+// TestSendListVTXOsByScriptsRequestSignerScriptsTLVRoundTrip verifies that
+// optional local SignerScripts round-trip through TLV encoding and that
+// mismatched lengths are rejected.
+func TestSendListVTXOsByScriptsRequestSignerScriptsTLVRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := &SendListVTXOsByScriptsRequest{
+		PkScripts: [][]byte{
+			{
+				0x51,
+				0x20,
+				0x01,
+			},
+			{
+				0x51,
+				0x20,
+				0x02,
+			},
+		},
+		SignerScripts: [][]byte{
+			{},
+			{
+				0x51,
+				0x20,
+				0x99,
+			},
+		},
+		Limit:         64,
+		CorrelationID: "corr-asset-vtxo-query",
+	}
+
+	var decoded SendListVTXOsByScriptsRequest
+	encoded := encodeTLVMessage(t, original)
+	require.NoError(t, decoded.Decode(bytes.NewReader(encoded)))
+	require.Equal(t, original.PkScripts, decoded.PkScripts)
+	require.Equal(t, original.SignerScripts, decoded.SignerScripts)
+
+	mismatch := &SendListVTXOsByScriptsRequest{
+		PkScripts: [][]byte{
+			{
+				0x51,
+				0x20,
+				0x01,
+			},
+		},
+		SignerScripts: [][]byte{
+			{
+				0x51,
+				0x20,
+				0x99,
+			},
+			{
+				0x51,
+				0x20,
+				0x88,
+			},
+		},
+		Limit:         64,
+		CorrelationID: "corr-mismatch",
+	}
+	var buf bytes.Buffer
+	require.ErrorContains(
+		t, mismatch.Encode(&buf),
+		"does not match pk scripts count",
+	)
+}
+
 // TestSendListVTXOsByScriptsRequest_EncodeRejectsOversizedCursor verifies the
 // durable query encoder refuses attacker-sized opaque cursors.
 func TestSendListVTXOsByScriptsRequest_EncodeRejectsOversizedCursor(
