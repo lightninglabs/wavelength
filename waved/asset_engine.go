@@ -362,13 +362,28 @@ func (c *assetChain) BestBlock(ctx context.Context) (uint32, chainhash.Hash,
 	return uint32(height), hash, nil
 }
 
-// BlockHeader returns the header of the best-chain block at height.
+// BlockHeader returns the header of the best-chain block at height, which
+// must not be above the best block.
 func (c *assetChain) BlockHeader(ctx context.Context, height uint32) (
 	*wire.BlockHeader, error) {
 
 	backend, err := c.backend()
 	if err != nil {
 		return nil, err
+	}
+
+	// A backend can serve the header of a block its tip has not reached:
+	// the lwwallet backend polls its tip and reads headers from Esplora
+	// directly. The engine takes a block above the tip for one that left
+	// the chain, so it gets no header the tip does not cover and waits
+	// for the tip instead.
+	tip, _, err := c.BestBlock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if height > tip {
+		return nil, fmt.Errorf("block at height %d is above the chain "+
+			"tip at height %d", height, tip)
 	}
 
 	if headers, ok := backend.(chainsource.BlockHeaderSource); ok {

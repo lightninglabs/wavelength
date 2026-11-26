@@ -91,6 +91,13 @@ type headerlessChainBackend struct {
 	chainsource.ChainBackend
 }
 
+// BestBlock returns a tip above the heights the tests ask for.
+func (b *headerlessChainBackend) BestBlock(context.Context) (int32,
+	chainhash.Hash, error) {
+
+	return 200, chainhash.Hash{2}, nil
+}
+
 // newAssetChainTestServer returns a server whose wallet is ready on the
 // given chain backend.
 func newAssetChainTestServer(backend chainsource.ChainBackend) *Server {
@@ -166,6 +173,16 @@ func TestAssetChainHeadersAndBroadcast(t *testing.T) {
 	header, err := chain.BlockHeader(ctx, 100)
 	require.NoError(t, err)
 	require.EqualValues(t, 7, header.Nonce)
+
+	// The backend serves a header at any height, but the engine gets
+	// none above the tip.
+	header, err = chain.BlockHeader(ctx, 120)
+	require.NoError(t, err)
+	require.EqualValues(t, 7, header.Nonce)
+	_, err = chain.BlockHeader(ctx, 121)
+	require.ErrorContains(t, err, "above the chain tip at height 120")
+	_, err = chain.BlockHash(ctx, 121)
+	require.ErrorContains(t, err, "above the chain tip at height 120")
 
 	tx := wire.NewMsgTx(2)
 	require.NoError(t, chain.PublishTransaction(ctx, tx, "label"))

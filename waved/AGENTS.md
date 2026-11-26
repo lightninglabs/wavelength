@@ -140,7 +140,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   and its `Signer`: an lnd wallet derives and signs through lnd's wallet
   kit and signer, and a wallet holding the seed signs with its key ring.
   An lnd chain backend serves no headers, so headers then come from lnd's
-  chain kit. It follows a transfer's confirmation through
+  chain kit. The chain port serves no header above the backend's best
+  block: the lwwallet backend polls its tip and reads headers from Esplora
+  directly, and the engine takes a block above the tip for one that left
+  the chain. It follows a transfer's confirmation through
   the chain source actor, which orders the events of every backend and
   reports the confirmation final once it is buried; `assetConfWatch` hands
   those events to the engine one at a time, and ends them on a confirmation
