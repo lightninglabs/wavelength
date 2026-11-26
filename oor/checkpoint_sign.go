@@ -11,10 +11,8 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
-	"github.com/lightninglabs/wavelength/lib/tx"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // ErrCustomCheckpointInputSigning means the prepared checkpoint input passed
@@ -59,6 +57,13 @@ func SignCheckpointPSBTs(signer input.Signer, inputs []TransferInput,
 	}
 
 	for i := range inputs {
+		// The operator signs both legs of its own funded float input;
+		// the local wallet holds no key for it. Both legs were already
+		// verified above in validateOperatorCheckpointSignatures.
+		if inputs[i].OperatorFunded {
+			continue
+		}
+
 		err = signCheckpointPSBT(signer, &inputs[i], checkpoints[i])
 		if err != nil {
 			return fmt.Errorf("sign checkpoint %d: %w", i, err)
@@ -86,6 +91,11 @@ func validateOperatorCheckpointSignatures(inputs []TransferInput,
 		err := in.Validate()
 		if err != nil {
 			return err
+		}
+
+		if _, dup := inputByOutpoint[in.VTXO.Outpoint]; dup {
+			return fmt.Errorf("duplicate transfer input "+
+				"outpoint %s", in.VTXO.Outpoint)
 		}
 
 		inputByOutpoint[in.VTXO.Outpoint] = in
@@ -149,54 +159,14 @@ func validateSingleOperatorCheckpointSignature(in *TransferInput,
 		prevOut.PkScript, prevOut.Value,
 	)
 
-	// For custom spend paths, use the SpendInfo directly instead of
-	// deriving the collaborative leaf from the VTXO TapScript.
-	if in.IsCustomSpend() {
-		witnessScript := in.CustomSpend.SpendInfo.WitnessScript
-		controlBlock := in.CustomSpend.SpendInfo.ControlBlock
-
-		err := requireTapLeafScript(
-			&checkpoint.Inputs[0], witnessScript, controlBlock,
-		)
-		if err != nil {
-			return err
-		}
-
-		sigRec, err := findTaprootScriptSpendSig(
-			&checkpoint.Inputs[0], vtxo.OperatorKey, witnessScript,
-		)
-		if err != nil {
-			return err
-		}
-
-		return verifyTaprootScriptSpendSig(
-			checkpoint.UnsignedTx, 0, prevFetcher, witnessScript,
-			sigRec,
-		)
-	}
-
-	sigHashes := txscript.NewTxSigHashes(
-		checkpoint.UnsignedTx, prevFetcher,
-	)
-
-	signDesc, spendInfo, err := tx.NewVTXOCollabSignDescriptor(
-		&tx.VTXOSpendContext{
-			Outpoint:  vtxo.Outpoint,
-			Output:    prevOut,
-			TapScript: vtxo.TapScript,
-		},
-		keychain.KeyDescriptor{PubKey: vtxo.OperatorKey},
-		0,
-		sigHashes,
-		prevFetcher,
-	)
+	spendPath, err := in.EffectiveSpendPath()
 	if err != nil {
 		return err
 	}
 
 	err = requireTapLeafScript(
-		&checkpoint.Inputs[0], spendInfo.WitnessScript,
-		spendInfo.ControlBlock,
+		&checkpoint.Inputs[0], spendPath.WitnessScript,
+		spendPath.ControlBlock,
 	)
 	if err != nil {
 		return err
@@ -204,16 +174,66 @@ func validateSingleOperatorCheckpointSignature(in *TransferInput,
 
 	sigRec, err := findTaprootScriptSpendSig(
 		&checkpoint.Inputs[0], vtxo.OperatorKey,
-		spendInfo.WitnessScript,
+		spendPath.WitnessScript,
+	)
+	if err != nil {
+		return err
+	}
+	if sigRec.SigHash != txscript.SigHashDefault {
+		return fmt.Errorf("operator checkpoint signature must use "+
+			"SIGHASH_DEFAULT, got %d", sigRec.SigHash)
+	}
+
+	err = verifyTaprootScriptSpendSig(
+		checkpoint.UnsignedTx, 0, prevFetcher, spendPath.WitnessScript,
+		sigRec,
 	)
 	if err != nil {
 		return err
 	}
 
-	return verifyTaprootScriptSpendSig(
-		checkpoint.UnsignedTx, signDesc.InputIndex, prevFetcher,
-		spendInfo.WitnessScript, sigRec,
-	)
+	// For an operator-funded carrier float input, verify the float-owner
+	// leg as a liveness and completeness check before client signing: the
+	// local wallet holds no key for the float and skips signing this
+	// checkpoint. Because the operator controls both keys of its leased
+	// float VTXO, this check verifies package completeness rather than
+	// custody against a malicious operator.
+	if in.OperatorFunded {
+		template, err := arkscript.DecodePolicyTemplate(
+			in.VTXOPolicyTemplate,
+		)
+		if err != nil {
+			return fmt.Errorf("decode float policy: %w", err)
+		}
+		params, err := arkscript.DecodeStandardVTXOParams(template)
+		if err != nil {
+			return fmt.Errorf("decode float params: %w", err)
+		}
+
+		floatSig, err := findTaprootScriptSpendSig(
+			&checkpoint.Inputs[0], params.OwnerKey,
+			spendPath.WitnessScript,
+		)
+		if err != nil {
+			return fmt.Errorf("float owner signature: %w", err)
+		}
+		if floatSig.SigHash != txscript.SigHashDefault {
+			return fmt.Errorf("float owner checkpoint signature "+
+				"must use SIGHASH_DEFAULT, got %d",
+				floatSig.SigHash)
+		}
+
+		err = verifyTaprootScriptSpendSig(
+			checkpoint.UnsignedTx, 0, prevFetcher,
+			spendPath.WitnessScript, floatSig,
+		)
+		if err != nil {
+			return fmt.Errorf("verify float owner signature: %w",
+				err)
+		}
+	}
+
+	return nil
 }
 
 // requireTapLeafScript asserts the PSBT input includes the expected tapleaf
@@ -408,6 +428,12 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 			"input, got tx=%d psbt=%d",
 			len(checkpoint.UnsignedTx.TxIn), len(checkpoint.Inputs))
 	}
+	if checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint != in.VTXO.Outpoint {
+		return fmt.Errorf("checkpoint input outpoint %s does not "+
+			"match transfer input %s",
+			checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint,
+			in.VTXO.Outpoint)
+	}
 
 	prevOut := &wire.TxOut{
 		Value:    int64(in.VTXO.Amount),
@@ -418,24 +444,17 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 		prevOut.PkScript, prevOut.Value,
 	)
 
-	sigHashes := txscript.NewTxSigHashes(
-		checkpoint.UnsignedTx, prevFetcher,
-	)
-
-	signDesc, spendInfo, err := tx.NewVTXOCollabSignDescriptor(
-		&tx.VTXOSpendContext{
-			Outpoint:  in.VTXO.Outpoint,
-			Output:    prevOut,
-			TapScript: in.VTXO.TapScript,
-		},
-		in.VTXO.ClientKey,
-		0,
-		sigHashes,
-		prevFetcher,
-	)
+	spendPath, err := in.EffectiveSpendPath()
 	if err != nil {
 		return err
 	}
+
+	sigHashes := txscript.NewTxSigHashes(
+		checkpoint.UnsignedTx, prevFetcher,
+	)
+	signDesc := spendPath.SpendInfo.BuildSignDescriptor(
+		in.VTXO.ClientKey, prevOut, sigHashes, prevFetcher, 0,
+	)
 
 	sig, err := signer.SignOutputRaw(checkpoint.UnsignedTx, signDesc)
 	if err != nil {
@@ -447,14 +466,16 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 		return fmt.Errorf("signer returned empty signature")
 	}
 
-	err = psbtutil.AddTapLeafScript(&checkpoint.Inputs[0], spendInfo)
+	err = psbtutil.AddTapLeafScript(
+		&checkpoint.Inputs[0], spendPath.SpendInfo,
+	)
 	if err != nil {
 		return err
 	}
 
 	err = psbtutil.AddTaprootScriptSpendSig(
 		&checkpoint.Inputs[0], in.VTXO.ClientKey.PubKey,
-		spendInfo.WitnessScript, sigBytes, signDesc.HashType,
+		spendPath.WitnessScript, sigBytes, signDesc.HashType,
 	)
 	if err != nil {
 		return err
@@ -462,7 +483,7 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 
 	sigRec, err := findTaprootScriptSpendSig(
 		&checkpoint.Inputs[0], in.VTXO.ClientKey.PubKey,
-		spendInfo.WitnessScript,
+		spendPath.WitnessScript,
 	)
 	if err != nil {
 		return err
@@ -470,7 +491,7 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 
 	err = verifyTaprootScriptSpendSig(
 		checkpoint.UnsignedTx, signDesc.InputIndex, prevFetcher,
-		spendInfo.WitnessScript, sigRec,
+		spendPath.WitnessScript, sigRec,
 	)
 	if err != nil {
 		return err
@@ -491,6 +512,12 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 		return fmt.Errorf("checkpoint psbt must have exactly one "+
 			"input, got tx=%d psbt=%d",
 			len(checkpoint.UnsignedTx.TxIn), len(checkpoint.Inputs))
+	}
+	if checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint != in.VTXO.Outpoint {
+		return fmt.Errorf("checkpoint input outpoint %s does not "+
+			"match transfer input %s",
+			checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint,
+			in.VTXO.Outpoint)
 	}
 
 	localSig, err := SignCustomCheckpointInput(signer, in, checkpoint)

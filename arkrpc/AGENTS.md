@@ -25,6 +25,13 @@ Proto source: `arkrpc/ark.proto`, `arkrpc/indexer.proto`.
 - `AncestryPath.commitment_sweep_key` / `commitment_sweep_delay` — Additive
   evidence that lets clients reconstruct the tree sweep leaf and authenticate
   an absolute expiry against a locally confirmed commitment transaction.
+- `GetInfoResponse.oor_carrier_pubkey` / `LeaseOORCarrier` — Advertises the
+  33-byte compressed public key owning the operator's OOR carrier float (empty
+  when disabled) and leases a float VTXO (value `V >= required_sat` with
+  `V == required_sat` or `V - required_sat >= min_vtxo_amount_sat`) to fund
+  new asset-leaf carriers. Because the operator controls both keys of the
+  leased float VTXO, operator-funded asset OOR outputs remain operator-trusted
+  until refreshed in a round.
 
 ## Relationships
 

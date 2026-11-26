@@ -37,8 +37,8 @@ func genOutpoint(t *rapid.T) wire.OutPoint {
 	}
 }
 
-// genSigningDescriptor generates a random SigningDescriptor.
-func genSigningDescriptor(t *rapid.T) SigningDescriptor {
+// genPlainSigningDescriptor generates a random non-asset SigningDescriptor.
+func genPlainSigningDescriptor(t *rapid.T) SigningDescriptor {
 	return SigningDescriptor{
 		Outpoint: genOutpoint(t),
 		VTXOPolicyTemplate: rapid.SliceOf(
@@ -51,6 +51,34 @@ func genSigningDescriptor(t *rapid.T) SigningDescriptor {
 			rapid.Byte(),
 		).Draw(t, "owner_policy"),
 	}
+}
+
+// genSigningDescriptor generates a random SigningDescriptor, optionally
+// carrying Taproot Asset fields.
+func genSigningDescriptor(t *rapid.T) SigningDescriptor {
+	desc := genPlainSigningDescriptor(t)
+	if rapid.Bool().Draw(t, "has_asset") {
+		root := genNonZeroHash(t)
+		desc.TaprootAssetRoot = &root
+		desc.TaprootAssetRef = rapid.StringN(1, 64, 64).Draw(
+			t, "asset_ref",
+		)
+		desc.TaprootAssetAmount = rapid.Uint64Min(1).Draw(
+			t, "asset_amount",
+		)
+	}
+
+	return desc
+}
+
+// genNonZeroHash generates a random non-zero 32-byte chainhash.Hash.
+func genNonZeroHash(t *rapid.T) chainhash.Hash {
+	h := genHash(t)
+	if h == (chainhash.Hash{}) {
+		h[0] = 1
+	}
+
+	return h
 }
 
 // genPSBT generates a minimal valid PSBT with random input/output.
@@ -112,6 +140,11 @@ func TestSigningDescriptorRoundTrip(t *testing.T) {
 		)
 		require.Equal(t, desc.SpendPath, got.SpendPath)
 		require.Equal(t, desc.OwnerLeafPolicy, got.OwnerLeafPolicy)
+		require.Equal(t, desc.TaprootAssetRoot, got.TaprootAssetRoot)
+		require.Equal(t, desc.TaprootAssetRef, got.TaprootAssetRef)
+		require.Equal(
+			t, desc.TaprootAssetAmount, got.TaprootAssetAmount,
+		)
 	})
 }
 
@@ -137,7 +170,7 @@ func TestSubmitPackageRequestRoundTripProperty(t *testing.T) {
 		)
 		descs := make([]SigningDescriptor, numDescs)
 		for i := range descs {
-			descs[i] = genSigningDescriptor(rt)
+			descs[i] = genPlainSigningDescriptor(rt)
 		}
 
 		numRecipients := rapid.IntRange(0, 3).Draw(

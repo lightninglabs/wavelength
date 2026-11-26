@@ -36,6 +36,10 @@ type StartTransferEvent struct {
 	// Policy defines the checkpoint output tap tree policy.
 	Policy arkscript.CheckpointPolicy
 
+	// PreparedSubmit is an optional pre-committed OOR package whose
+	// Taproot Asset commitments were already built outside the FSM.
+	PreparedSubmit *PreparedSubmitPackage
+
 	// IdempotencyKey identifies this caller intent across crashes and
 	// retries. Empty preserves the historical deterministic-session
 	// behavior.

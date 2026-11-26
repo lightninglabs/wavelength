@@ -6,9 +6,11 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -85,6 +87,26 @@ type TransferInputSnapshot struct {
 	// resume custom OOR spends after restart.
 	ExternalSignatures    []ExternalTaprootScriptSignature
 	ExternalArkSignatures []ExternalTaprootScriptSignature
+
+	// TaprootAssetRoot is the optional Taproot Asset commitment root
+	// anchored in the spent input VTXO.
+	TaprootAssetRoot *chainhash.Hash
+
+	// TaprootAssetRef is the opaque SDK-level identity of the asset
+	// carried by the spent input VTXO.
+	TaprootAssetRef string
+
+	// TaprootAssetAmount is the number of asset units carried by the spent
+	// input VTXO.
+	TaprootAssetAmount uint64
+
+	// OperatorFunded marks an operator carrier-float input that the local
+	// wallet cannot sign.
+	OperatorFunded bool
+
+	// TaprootAssetCarrierOrigin records whether an asset input's carrier
+	// was funded by a round or a prior OOR transfer.
+	TaprootAssetCarrierOrigin oortx.CarrierOrigin
 }
 
 // ToSnapshot converts the transfer input into a portable snapshot.
@@ -105,17 +127,28 @@ func (i *TransferInput) ToSnapshot() (*TransferInputSnapshot, error) {
 	}
 
 	snap := &TransferInputSnapshot{
-		Outpoint:           i.VTXO.Outpoint,
-		ReserveEpoch:       i.ReserveEpoch,
-		AmountSat:          int64(i.VTXO.Amount),
-		ClientKeyFamily:    int32(i.VTXO.ClientKey.KeyLocator.Family),
-		ClientKeyIndex:     i.VTXO.ClientKey.KeyLocator.Index,
-		OperatorPubKey:     operatorKey.SerializeCompressed(),
-		ExitDelay:          exitDelay,
-		OwnerLeafScript:    i.OwnerLeafScript,
-		OwnerLeafPolicy:    i.OwnerLeafPolicy,
-		VTXOPolicyTemplate: i.VTXOPolicyTemplate,
-		PkScript:           i.VTXO.PkScript,
+		Outpoint:     i.VTXO.Outpoint,
+		ReserveEpoch: i.ReserveEpoch,
+		AmountSat:    int64(i.VTXO.Amount),
+		ClientKeyFamily: int32(
+			i.VTXO.ClientKey.KeyLocator.Family,
+		),
+		ClientKeyIndex:            i.VTXO.ClientKey.KeyLocator.Index,
+		OperatorPubKey:            operatorKey.SerializeCompressed(),
+		ExitDelay:                 exitDelay,
+		OwnerLeafScript:           i.OwnerLeafScript,
+		OwnerLeafPolicy:           i.OwnerLeafPolicy,
+		VTXOPolicyTemplate:        i.VTXOPolicyTemplate,
+		PkScript:                  i.VTXO.PkScript,
+		TaprootAssetRef:           i.VTXO.TaprootAssetRef,
+		TaprootAssetAmount:        i.VTXO.TaprootAssetAmount,
+		OperatorFunded:            i.OperatorFunded,
+		TaprootAssetCarrierOrigin: i.TaprootAssetCarrierOrigin,
+	}
+
+	if i.VTXO.TaprootAssetRoot != nil {
+		root := *i.VTXO.TaprootAssetRoot
+		snap.TaprootAssetRoot = &root
 	}
 
 	if i.VTXO.ClientKey.PubKey != nil {
@@ -156,8 +189,17 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 		return TransferInput{}, fmt.Errorf("amount must be positive")
 	}
 
-	if len(snap.ClientPubKey) == 0 || len(snap.OperatorPubKey) == 0 {
+	if len(snap.OperatorPubKey) == 0 {
 		return TransferInput{}, fmt.Errorf("pubkeys must be provided")
+	}
+
+	if !snap.OperatorFunded && len(snap.ClientPubKey) == 0 {
+		return TransferInput{}, fmt.Errorf("pubkeys must be provided")
+	}
+
+	if snap.OperatorFunded && len(snap.PkScript) == 0 {
+		return TransferInput{}, fmt.Errorf("operator-funded input " +
+			"snapshot requires pkScript")
 	}
 
 	if snap.ExitDelay == 0 {
@@ -170,46 +212,58 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 			"policy must be provided")
 	}
 
-	clientPub, err := btcec.ParsePubKey(snap.ClientPubKey)
-	if err != nil {
-		return TransferInput{}, fmt.Errorf("parse client pubkey: %w",
-			err)
-	}
-
 	operatorPub, err := btcec.ParsePubKey(snap.OperatorPubKey)
 	if err != nil {
 		return TransferInput{}, fmt.Errorf("parse operator pubkey: %w",
 			err)
 	}
 
-	tapScript, err := arkscript.VTXOTapScript(
-		clientPub, operatorPub, snap.ExitDelay,
-	)
-	if err != nil {
-		return TransferInput{}, fmt.Errorf("rebuild vtxo tapscript: %w",
-			err)
-	}
-
-	tapKey, err := arkscript.VTXOTapKey(
-		clientPub, operatorPub, snap.ExitDelay,
-	)
-	if err != nil {
-		return TransferInput{}, fmt.Errorf("rebuild vtxo tapkey: %w",
-			err)
-	}
-
-	pkScript, err := txscript.PayToTaprootScript(tapKey)
-	if err != nil {
-		return TransferInput{}, fmt.Errorf("build vtxo pkscript: %w",
-			err)
-	}
-
 	desc := &vtxo.Descriptor{
-		Outpoint:       snap.Outpoint,
-		Amount:         btcutil.Amount(snap.AmountSat),
-		PolicyTemplate: bytes.Clone(snap.VTXOPolicyTemplate),
-		PkScript:       pkScript,
-		ClientKey: keychain.KeyDescriptor{
+		Outpoint:           snap.Outpoint,
+		Amount:             btcutil.Amount(snap.AmountSat),
+		PolicyTemplate:     bytes.Clone(snap.VTXOPolicyTemplate),
+		PkScript:           bytes.Clone(snap.PkScript),
+		OperatorKey:        operatorPub,
+		RelativeExpiry:     snap.ExitDelay,
+		Status:             vtxo.VTXOStatusLive,
+		TaprootAssetRef:    snap.TaprootAssetRef,
+		TaprootAssetAmount: snap.TaprootAssetAmount,
+	}
+	if snap.TaprootAssetRoot != nil {
+		root := *snap.TaprootAssetRoot
+		desc.TaprootAssetRoot = &root
+	}
+
+	if !snap.OperatorFunded {
+		clientPub, err := btcec.ParsePubKey(snap.ClientPubKey)
+		if err != nil {
+			return TransferInput{}, fmt.Errorf("parse client "+
+				"pubkey: %w", err)
+		}
+
+		tapScript, err := arkscript.VTXOTapScript(
+			clientPub, operatorPub, snap.ExitDelay,
+		)
+		if err != nil {
+			return TransferInput{}, fmt.Errorf("rebuild vtxo "+
+				"tapscript: %w", err)
+		}
+
+		tapKey, err := arkscript.VTXOTapKey(
+			clientPub, operatorPub, snap.ExitDelay,
+		)
+		if err != nil {
+			return TransferInput{}, fmt.Errorf("rebuild vtxo "+
+				"tapkey: %w", err)
+		}
+
+		pkScript, err := txscript.PayToTaprootScript(tapKey)
+		if err != nil {
+			return TransferInput{}, fmt.Errorf("build vtxo "+
+				"pkscript: %w", err)
+		}
+
+		desc.ClientKey = keychain.KeyDescriptor{
 			KeyLocator: keychain.KeyLocator{
 				Family: keychain.KeyFamily(
 					snap.ClientKeyFamily,
@@ -217,19 +271,21 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 				Index: snap.ClientKeyIndex,
 			},
 			PubKey: clientPub,
-		},
-		OperatorKey:    operatorPub,
-		TapScript:      tapScript,
-		RelativeExpiry: snap.ExitDelay,
-		Status:         vtxo.VTXOStatusLive,
+		}
+		desc.TapScript = tapScript
+		if len(desc.PkScript) == 0 {
+			desc.PkScript = pkScript
+		}
 	}
 
 	result := TransferInput{
-		VTXO:               desc,
-		ReserveEpoch:       snap.ReserveEpoch,
-		OwnerLeafScript:    snap.OwnerLeafScript,
-		OwnerLeafPolicy:    snap.OwnerLeafPolicy,
-		VTXOPolicyTemplate: snap.VTXOPolicyTemplate,
+		VTXO:                      desc,
+		ReserveEpoch:              snap.ReserveEpoch,
+		OwnerLeafScript:           snap.OwnerLeafScript,
+		OwnerLeafPolicy:           snap.OwnerLeafPolicy,
+		VTXOPolicyTemplate:        snap.VTXOPolicyTemplate,
+		OperatorFunded:            snap.OperatorFunded,
+		TaprootAssetCarrierOrigin: snap.TaprootAssetCarrierOrigin,
 	}
 
 	if len(snap.SpendWitnessScript) > 0 {
@@ -250,10 +306,8 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 		snap.ExternalArkSignatures,
 	)
 
-	// For custom spend paths, use the stored PkScript instead of
-	// deriving from keys.
-	if len(snap.PkScript) > 0 {
-		desc.PkScript = snap.PkScript
+	if err := result.Validate(); err != nil {
+		return TransferInput{}, err
 	}
 
 	return result, nil

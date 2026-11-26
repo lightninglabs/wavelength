@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -292,4 +293,41 @@ func TestWalletStreamError(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, codes.Unavailable, status.Code(err))
 	require.ErrorContains(t, err, "away")
+}
+
+// TestArkClientLeaseOORCarrierPost verifies LeaseOORCarrier posts protoJSON to
+// the expected grpc-gateway route defined in ark.yaml.
+func TestArkClientLeaseOORCarrierPost(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			require.Equal(
+				t, "/v1/ark/lease-oor-carrier", r.URL.Path,
+			)
+
+			body, err := io.ReadAll(r.Body)
+			require.NoError(t, err)
+			var req arkrpc.LeaseOORCarrierRequest
+			require.NoError(t, protojson.Unmarshal(body, &req))
+			require.Equal(t, int64(2_000), req.GetRequiredSat())
+
+			w.Header().Set("Content-Type", "application/json")
+			_, err = w.Write([]byte(
+				`{"outpoint":"aa:0","valueSat":"10000",` +
+					`"expiresAtUnix":"1700000300"}`,
+			))
+			require.NoError(t, err)
+		},
+	))
+	defer server.Close()
+
+	client := NewArkServiceClient(server.URL)
+	resp, err := client.LeaseOORCarrier(
+		t.Context(), &arkrpc.LeaseOORCarrierRequest{
+			RequiredSat: 2_000,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "aa:0", resp.GetOutpoint())
+	require.Equal(t, int64(10_000), resp.GetValueSat())
+	require.Equal(t, int64(1_700_000_300), resp.GetExpiresAtUnix())
 }

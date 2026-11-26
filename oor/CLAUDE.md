@@ -33,6 +33,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   recovered daemon holds VTXOs its ledger never saw arrive. Inside the
   actor the session behaviour stages its own `VTXOReceivedMsg`, so the
   sink fires only on the `notifyIncoming` path.
+- `OORCarrierLease` — Validated reservation of one operator carrier-float VTXO
+  (`ToTransferInput` converts it into an `OperatorFunded` `TransferInput`
+  enforcing float/operator key separation).
+- `PreparedSubmitPackage` — Pre-committed asset OOR graph handed into the FSM;
+  `AttachTapLeafScripts` derives composed control blocks for asset checkpoints
+  via `BuildComposedTaprootTapLeafScript` and validates every binding against
+  the checkpoint `pkScript`.
 - `ReceiveLimits` / `DefaultReceiveLimits` — defense-in-depth bounds on
   incoming receive (`MaxCheckpoints`, `MaxVTXOMatches`, `MaxMailboxItems`,
   `MaxMailboxScriptBytes`, `MaxConcurrentIncomingSessions`).
@@ -114,11 +121,40 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   descriptor's relative expiry comes from its matching policy template,
   not from operator configuration. Custom policies consider only canonical
   block-mode CSV sequences; CLTV non-final sentinels are not block delays.
-- Snapshots are versioned per direction (`OutgoingSnapshot.Version = 6`,
-  `IncomingSnapshot.Version = 1`); restore rejects a zero version. Outgoing
-  v5 adds the `FirstRejectUnixNanos` record (bounded transient submit-reject
-  retry window); a pre-v5 snapshot decodes it to 0 (a fresh window). Outgoing
-  v6 adds the `FailedPrePONR` record.
+- Snapshots are versioned per direction (`OutgoingSnapshot.Version = 7`,
+  `IncomingSnapshot.Version = 1`); restore rejects a zero or unknown future
+  version and `encodeOutgoingSnapshot` enforces `maxOORMessageSize` (16 MiB)
+  at encode time so unreadable snapshots are never persisted. Outgoing v5 adds
+  the `FirstRejectUnixNanos` record (bounded transient submit-reject retry
+  window); a pre-v5 snapshot decodes it to 0 (a fresh window). Outgoing v6
+  adds the `FailedPrePONR` record. Outgoing v7 adds optional
+  `RecipientOutputs`, `TaprootAssetTransfer`, and per-input Taproot Asset /
+  `OperatorFunded` / `TaprootAssetCarrierOrigin` records; restoring an active
+  session with asset or operator-funded inputs requires a matching
+  `TaprootAssetTransfer` container.
+- Plain Bitcoin OOR (`StartTransferEvent.PreparedSubmit == nil`) fails closed
+  on asset-bearing inputs, `OperatorFunded` inputs, and asset recipients.
+  `PreparedSubmitPackage` is cloned on entry to `Idle.ProcessEvent` and
+  validated against the session checkpoint policy, duplicate outpoints,
+  checkpoint values, and fee-less value conservation before any signing begins.
+- `OperatorFunded` carrier-float inputs carry no local `ClientKey`, validate
+  their policy owner key against the operator's advertised
+  `oor_carrier_pubkey`, and are skipped by local signing (`SignArkPSBT`,
+  `SignCheckpointPSBTs`). Before client signing,
+  `validateSingleOperatorCheckpointSignature` verifies both the operator and
+  float-owner signatures (pinned to `SIGHASH_DEFAULT`) as a liveness and
+  completeness check; because the operator controls both keys of its leased
+  float VTXO, operator-funded asset OOR outputs remain operator-trusted until
+  refreshed in a round. Float inputs are excluded from spend completion
+  (`WalletInputOutpoints`), pre-PONR releases (`prePONRInputOutpoints` /
+  `prePONRReserveEpochs`), ledger accounting (`queueVTXOSent`), outgoing
+  session summaries (`FillOutgoingSummary`), and consumed-input package
+  bindings (`persistOutgoingPackage`, which preserves original input indices).
+- Standard (non-custom-spend) asset-bearing `TransferInput` spends derive
+  composed control blocks through `arkscript.ComposeWithSiblingRoot` in
+  `EffectiveSpendPath`, used uniformly by checkpoint signing and
+  operator-signature verification. Custom-spend paths supply their own
+  explicit `SpendPath`.
 - `Failed.PrePONR` is true only when an outgoing session failed from Idle,
   `AwaitingArkSignatures`, or `AwaitingSubmitAccepted`, before the operator
   co-signed a spend. A failure from `AwaitingCheckpointSignatures`,

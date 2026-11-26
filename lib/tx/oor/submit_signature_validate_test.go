@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -368,4 +369,195 @@ func encodeFinalWitness(wit wire.TxWitness) ([]byte, error) {
 	}
 
 	return b.Bytes(), nil
+}
+
+// TestBuildComposedTaprootTapLeafScript verifies that a composed checkpoint
+// control block built via ComposeWithSiblingRoot satisfies full tapscript VM
+// execution with real 2-of-2 Schnorr signatures across both even and odd
+// composed output key parities, and rejects wrong or zero sibling roots.
+func TestBuildComposedTaprootTapLeafScript(t *testing.T) {
+	t.Parallel()
+
+	ownerKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	collabLeaf, err := arkscript.MultiSigCollabTapLeaf(
+		ownerKey.PubKey(), operatorKey.PubKey(),
+	)
+	require.NoError(t, err)
+
+	checkpointRes, err := BuildCheckpointPSBT(policy, CheckpointInput{
+		SpentVTXO: SpentVTXORef{
+			Outpoint: wire.OutPoint{
+				Hash:  [32]byte{0x42},
+				Index: 0,
+			},
+			Output: &wire.TxOut{
+				Value:    5_000,
+				PkScript: randomP2TRScript(t),
+			},
+		},
+		OwnerLeafScript: collabLeaf.Script,
+	})
+	require.NoError(t, err)
+
+	tapscript, err := arkscript.CheckpointTapScript(
+		policy, collabLeaf.Script,
+	)
+	require.NoError(t, err)
+
+	policyLeaves := make([]arkscript.PolicyLeaf, len(tapscript.Leaves))
+	for i, l := range tapscript.Leaves {
+		policyLeaves[i] = arkscript.PolicyLeaf{Leaf: l}
+	}
+	compiled, err := arkscript.BuildTree(
+		policyLeaves, &arkscript.ARKNUMSKey,
+	)
+	require.NoError(t, err)
+
+	// Exercise sibling roots until both even and odd composed output key
+	// parities have been verified under the real Bitcoin script engine.
+	var sawEven, sawOdd bool
+	for seed := byte(1); (!sawEven || !sawOdd) && seed < 128; seed++ {
+		siblingRoot := chainhash.Hash{seed, 0xaa, 0xbb}
+		composed, err := arkscript.ComposeWithSiblingRoot(
+			compiled, siblingRoot,
+		)
+		require.NoError(t, err)
+
+		if composed.OutputKey().SerializeCompressed()[0] == 0x02 {
+			sawEven = true
+		} else {
+			sawOdd = true
+		}
+
+		composedPkScript, err := txscript.PayToTaprootScript(
+			composed.OutputKey(),
+		)
+		require.NoError(t, err)
+
+		cpTx := checkpointRes.PSBT.UnsignedTx.Copy()
+		cpTx.TxOut[0].PkScript = composedPkScript
+		cpPSBT, err := psbt.NewFromUnsignedTx(cpTx)
+		require.NoError(t, err)
+		cpPSBT.Inputs[0].WitnessUtxo =
+			checkpointRes.PSBT.Inputs[0].WitnessUtxo
+		cpPSBT.Outputs[0].TaprootTapTree = checkpointRes.TapTreeEncoded
+
+		arkPSBT, err := BuildArkPSBT([]CheckpointOutput{{
+			Txid:           cpTx.TxHash(),
+			Output:         cpTx.TxOut[0],
+			TapTreeEncoded: checkpointRes.TapTreeEncoded,
+		}}, []RecipientOutput{{
+			PkScript: randomP2TRScript(t),
+			Value:    btcutil.Amount(5_000),
+		}})
+		require.NoError(t, err)
+
+		leaf, err := BuildComposedTaprootTapLeafScript(
+			checkpointRes.TapTreeEncoded, collabLeaf.Script,
+			siblingRoot,
+		)
+		require.NoError(t, err)
+		arkPSBT.Inputs[0].TaprootLeafScript =
+			[]*psbt.TaprootTapLeafScript{leaf}
+
+		prevFetcher := txscript.NewCannedPrevOutputFetcher(
+			cpTx.TxOut[0].PkScript, cpTx.TxOut[0].Value,
+		)
+		sigHashes := txscript.NewTxSigHashes(
+			arkPSBT.UnsignedTx, prevFetcher,
+		)
+		tapLeaf := txscript.NewBaseTapLeaf(collabLeaf.Script)
+		sigHash, err := txscript.CalcTapscriptSignaturehash(
+			sigHashes, txscript.SigHashDefault, arkPSBT.UnsignedTx,
+			0, prevFetcher, tapLeaf,
+		)
+		require.NoError(t, err)
+
+		ownerSig, err := schnorr.Sign(ownerKey, sigHash)
+		require.NoError(t, err)
+		opSig, err := schnorr.Sign(operatorKey, sigHash)
+		require.NoError(t, err)
+
+		leafHash := tapLeaf.TapHash()
+		arkPSBT.Inputs[0].TaprootScriptSpendSig =
+			[]*psbt.TaprootScriptSpendSig{
+				{
+					XOnlyPubKey: schnorr.SerializePubKey(
+						ownerKey.PubKey(),
+					),
+					LeafHash:  leafHash[:],
+					Signature: ownerSig.Serialize(),
+					SigHash:   txscript.SigHashDefault,
+				},
+				{
+					XOnlyPubKey: schnorr.SerializePubKey(
+						operatorKey.PubKey(),
+					),
+					LeafHash:  leafHash[:],
+					Signature: opSig.Serialize(),
+					SigHash:   txscript.SigHashDefault,
+				},
+			}
+
+		_, err = ValidateSubmitPackageSigned(
+			arkPSBT, []*psbt.Packet{cpPSBT},
+		)
+		require.NoError(t, err)
+
+		// Uncomposed control block must fail against the composed
+		// checkpoint output.
+		uncomposedLeaf, err := BuildTaprootTapLeafScript(
+			checkpointRes.TapTreeEncoded, collabLeaf.Script,
+		)
+		require.NoError(t, err)
+		arkPSBT.Inputs[0].TaprootLeafScript =
+			[]*psbt.TaprootTapLeafScript{uncomposedLeaf}
+		_, err = ValidateSubmitPackageSigned(
+			arkPSBT, []*psbt.Packet{cpPSBT},
+		)
+		require.Error(t, err)
+
+		// Wrong sibling root must also fail VM verification.
+		wrongRoot := siblingRoot
+		wrongRoot[0] ^= 0xff
+		wrongLeaf, err := BuildComposedTaprootTapLeafScript(
+			checkpointRes.TapTreeEncoded, collabLeaf.Script,
+			wrongRoot,
+		)
+		require.NoError(t, err)
+		arkPSBT.Inputs[0].TaprootLeafScript =
+			[]*psbt.TaprootTapLeafScript{wrongLeaf}
+		_, err = ValidateSubmitPackageSigned(
+			arkPSBT, []*psbt.Packet{cpPSBT},
+		)
+		require.Error(t, err)
+	}
+	require.True(t, sawEven, "expected even composed output key parity")
+	require.True(t, sawOdd, "expected odd composed output key parity")
+
+	_, err = BuildComposedTaprootTapLeafScript(
+		checkpointRes.TapTreeEncoded, collabLeaf.Script,
+		chainhash.Hash{},
+	)
+	require.ErrorContains(t, err, "sibling root must not be zero")
+
+	_, err = BuildComposedTaprootTapLeafScript(
+		checkpointRes.TapTreeEncoded, nil, chainhash.Hash{0x01},
+	)
+	require.ErrorContains(t, err, "leaf script must be provided")
+
+	_, err = BuildComposedTaprootTapLeafScript(
+		checkpointRes.TapTreeEncoded, []byte{txscript.OP_FALSE},
+		chainhash.Hash{0x01},
+	)
+	require.ErrorContains(t, err, "leaf not found")
 }

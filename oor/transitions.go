@@ -129,22 +129,11 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *StartTransferEvent:
-		// Bind each standard checkpoint output's owner leaf to the
-		// session operator key before building. A VTXO created under a
-		// pre-rotation operator key would otherwise produce a
-		// checkpoint output the rotated operator cannot co-sign and the
-		// server rejects at submit. See normalizeCheckpointOwnerLeaves.
-		err := normalizeCheckpointOwnerLeaves(
-			evt.Policy, evt.VTXOInputs,
-		)
-		if err != nil {
-			return nil, err
-		}
-
 		canonicalRecipients := oortx.CanonicalRecipientOutputs(
 			evt.RecipientOutputs,
 		)
 		dispatchRequestData := evt.DispatchRequestData
+		var err error
 		if evt.IdempotencyKey != "" && len(dispatchRequestData) == 0 {
 			dispatchRequestData, err = newOutgoingReplayData(
 				canonicalRecipients,
@@ -154,16 +143,69 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 			}
 		}
 
-		// Build a deterministic submit package:
-		// - checkpoint txs convert VTXOs into checkpoints
-		// - an Ark tx spends checkpoints and pays recipients
-		//
-		// The Ark txid is the stable v0 session identifier.
-		ark, checkpoints, err := buildSubmitPackage(
-			evt.Policy, evt.VTXOInputs, canonicalRecipients,
+		var (
+			ark           *psbt.Packet
+			checkpoints   []*psbt.Packet
+			assetTransfer *oortx.TaprootAssetTransfer
 		)
-		if err != nil {
-			return nil, err
+		if evt.PreparedSubmit != nil {
+			prepared, err := evt.PreparedSubmit.clone()
+			if err != nil {
+				return nil, err
+			}
+			if len(prepared.CheckpointAssetRoots) > 0 {
+				err = prepared.AttachTapLeafScripts(
+					evt.VTXOInputs,
+				)
+				if err != nil {
+					return nil, err
+				}
+			}
+			err = prepared.Validate(
+				evt.Policy, evt.VTXOInputs, canonicalRecipients,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			ark = prepared.ArkPSBT
+			checkpoints = prepared.CheckpointPSBTs
+			assetTransfer = prepared.TaprootAssetTransfer
+		} else {
+			// Plain Bitcoin OOR must fail closed on asset-bearing
+			// or operator-funded inputs and asset recipients so an
+			// asset anchor can never be spent into an uncomposed
+			// plain checkpoint.
+			if err := rejectPlainOORAssetPayloads(
+				evt.VTXOInputs, canonicalRecipients,
+			); err != nil {
+				return nil, err
+			}
+
+			// Bind each standard checkpoint output's owner leaf to
+			// the session operator key before building. A VTXO
+			// created under a pre-rotation operator key would
+			// otherwise produce a checkpoint output the rotated
+			// operator cannot co-sign and the server rejects at
+			// submit. See normalizeCheckpointOwnerLeaves.
+			err = normalizeCheckpointOwnerLeaves(
+				evt.Policy, evt.VTXOInputs,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			// Build a deterministic submit package:
+			// - checkpoint txs convert VTXOs into checkpoints
+			// - an Ark tx spends checkpoints and pays recipients
+			//
+			// The Ark txid is the stable v0 session identifier.
+			ark, checkpoints, err = buildSubmitPackage(
+				evt.Policy, evt.VTXOInputs, canonicalRecipients,
+			)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		if ark == nil || ark.UnsignedTx == nil {
@@ -209,11 +251,12 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 
 		return &StateTransition{
 			NextState: &AwaitingArkSignatures{
-				ArkPSBT:          ark,
-				CheckpointPSBTs:  checkpoints,
-				TransferInputs:   evt.VTXOInputs,
-				RecipientOutputs: canonicalRecipients,
-				IdempotencyKey:   evt.IdempotencyKey,
+				ArkPSBT:              ark,
+				CheckpointPSBTs:      checkpoints,
+				TransferInputs:       evt.VTXOInputs,
+				RecipientOutputs:     canonicalRecipients,
+				TaprootAssetTransfer: assetTransfer,
+				IdempotencyKey:       evt.IdempotencyKey,
 				DispatchRequestData: append(
 					[]byte(nil), dispatchRequestData...,
 				),
@@ -278,11 +321,12 @@ func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
 		// submit would pin the session in AwaitingSubmitAccepted until
 		// restart.
 		next := &AwaitingSubmitAccepted{
-			ArkPSBT:          evt.ArkPSBT,
-			CheckpointPSBTs:  s.CheckpointPSBTs,
-			TransferInputs:   s.TransferInputs,
-			RecipientOutputs: s.RecipientOutputs,
-			IdempotencyKey:   s.IdempotencyKey,
+			ArkPSBT:              evt.ArkPSBT,
+			CheckpointPSBTs:      s.CheckpointPSBTs,
+			TransferInputs:       s.TransferInputs,
+			RecipientOutputs:     s.RecipientOutputs,
+			TaprootAssetTransfer: s.TaprootAssetTransfer,
+			IdempotencyKey:       s.IdempotencyKey,
 			DispatchRequestData: append(
 				[]byte(nil), s.DispatchRequestData...,
 			),
@@ -382,6 +426,7 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 				ArkPSBT:                 evt.ArkPSBT,
 				CoSignedCheckpointPSBTs: checkpoints,
 				TransferInputs:          s.TransferInputs,
+				TaprootAssetTransfer:    s.TaprootAssetTransfer,
 				IdempotencyKey:          s.IdempotencyKey,
 			},
 			NewEvents: fn.Some(EmittedEvent{
@@ -445,6 +490,7 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 			ArkPSBT:              s.ArkPSBT,
 			FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
 			TransferInputs:       s.TransferInputs,
+			TaprootAssetTransfer: s.TaprootAssetTransfer,
 			IdempotencyKey:       s.IdempotencyKey,
 		}
 
@@ -482,14 +528,15 @@ func (s *AwaitingFinalizeAccepted) ProcessEvent(ctx context.Context,
 
 		return &StateTransition{
 			NextState: &AwaitingLocalVTXOUpdate{
-				SessionID:      s.SessionID,
-				TransferInputs: s.TransferInputs,
-				IdempotencyKey: s.IdempotencyKey,
+				SessionID:            s.SessionID,
+				TransferInputs:       s.TransferInputs,
+				TaprootAssetTransfer: s.TaprootAssetTransfer,
+				IdempotencyKey:       s.IdempotencyKey,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
 					&MarkInputsSpentRequest{
-						Outpoints: InputOutpoints(
+						Outpoints: WalletInputOutpoints(
 							s.TransferInputs,
 						),
 					},
@@ -585,7 +632,7 @@ func prePONRInputOutpoints(state State) []wire.OutPoint {
 
 	outpoints := make([]wire.OutPoint, 0, len(inputs))
 	for _, input := range inputs {
-		if input.VTXO == nil {
+		if input.VTXO == nil || input.OperatorFunded {
 			continue
 		}
 
@@ -615,7 +662,9 @@ func prePONRReserveEpochs(state State) map[wire.OutPoint]uint64 {
 
 	epochs := make(map[wire.OutPoint]uint64, len(inputs))
 	for _, input := range inputs {
-		if input.VTXO == nil || input.ReserveEpoch == 0 {
+		if input.VTXO == nil || input.OperatorFunded ||
+			input.ReserveEpoch == 0 {
+
 			continue
 		}
 
@@ -780,6 +829,36 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 	return BuildSubmitPackage(policy, inputs, outputs)
 }
 
+// rejectPlainOORAssetPayloads ensures the plain Bitcoin OOR build path fails
+// closed whenever any input carries a Taproot Asset or is operator-funded, or
+// any recipient carries asset metadata. Asset transfers must enter through a
+// validated PreparedSubmitPackage.
+func rejectPlainOORAssetPayloads(inputs []TransferInput,
+	recipients []oortx.RecipientOutput) error {
+
+	for i := range inputs {
+		if inputs[i].OperatorFunded {
+			return fmt.Errorf("input %d is operator-funded and "+
+				"requires a prepared submit package", i)
+		}
+		if inputs[i].VTXO != nil &&
+			inputs[i].VTXO.TaprootAssetRoot != nil {
+			return fmt.Errorf("input %d carries a taproot asset "+
+				"and requires a prepared submit package", i)
+		}
+	}
+
+	for i := range recipients {
+		if recipients[i].Asset != nil {
+			return fmt.Errorf("recipient %d carries a taproot "+
+				"asset and requires a prepared submit package",
+				i)
+		}
+	}
+
+	return nil
+}
+
 // normalizeCheckpointOwnerLeaves rebuilds each standard input's checkpoint
 // OUTPUT owner collaborative leaf so it commits to the session operator key
 // rather than the spent input VTXO's operator key.
@@ -808,7 +887,7 @@ func normalizeCheckpointOwnerLeaves(policy arkscript.CheckpointPolicy,
 	for i := range inputs {
 		input := &inputs[i]
 
-		if input.IsCustomSpend() {
+		if input.IsCustomSpend() || input.OperatorFunded {
 			continue
 		}
 

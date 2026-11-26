@@ -5,8 +5,10 @@ import (
 	"math"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/tlvutil"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -38,6 +40,16 @@ const (
 	// failed before the point of no return (snapshot version 6+). A
 	// pre-v6 snapshot omits it, so it decodes to false.
 	snapshotFailedPrePONRRecordType tlv.Type = 27
+
+	// snapshotRecipientOutputsRecordType stores canonical submit recipient
+	// outputs (including Taproot Asset metadata) for restart-safe retries
+	// (snapshot version 7+).
+	snapshotRecipientOutputsRecordType tlv.Type = 29
+
+	// snapshotTaprootAssetTransferRecordType stores the encoded sealed
+	// TaprootAssetTransfer container for asset-bearing transfers (snapshot
+	// version 7+).
+	snapshotTaprootAssetTransferRecordType tlv.Type = 31
 )
 
 // encodeOutgoingSnapshot serializes outgoing transfer state, including retry
@@ -109,7 +121,54 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		),
 	}
 
-	return tlvutil.EncodeRecordsToBytes(records...)
+	if len(snapshot.RecipientOutputs) > 0 {
+		recipientPayloads := make(
+			[]recipientPayload, 0, len(snapshot.RecipientOutputs),
+		)
+		for i := range snapshot.RecipientOutputs {
+			rec := snapshot.RecipientOutputs[i]
+			recipientPayloads = append(
+				recipientPayloads, recipientPayload{
+					PkScript: rec.PkScript,
+					ValueSat: int64(rec.Value),
+					VTXOPolicyTemplate: rec.
+						VTXOPolicyTemplate,
+					Asset: rec.Asset.Clone(),
+				},
+			)
+		}
+		recipientsRaw, err := encodeRecipientPayloads(recipientPayloads)
+		if err != nil {
+			return nil, err
+		}
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				snapshotRecipientOutputsRecordType,
+				&recipientsRaw,
+			),
+		)
+	}
+
+	if len(snapshot.TaprootAssetTransfer) > 0 {
+		assetTransfer := snapshot.TaprootAssetTransfer
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				snapshotTaprootAssetTransferRecordType,
+				&assetTransfer,
+			),
+		)
+	}
+
+	encoded, err := tlvutil.EncodeRecordsToBytes(records...)
+	if err != nil {
+		return nil, err
+	}
+	if len(encoded) > maxOORMessageSize {
+		return nil, fmt.Errorf("encoded outgoing snapshot %d bytes "+
+			"exceeds max %d", len(encoded), maxOORMessageSize)
+	}
+
+	return encoded, nil
 }
 
 func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
@@ -134,6 +193,8 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		firstRejectNanos    uint64
 		dispatchRequestData []byte
 		failedPrePONR       uint8
+		recipientsRaw       []byte
+		assetTransferRaw    []byte
 	)
 
 	records := []tlv.Record{
@@ -167,6 +228,13 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFailedPrePONRRecordType, &failedPrePONR,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotRecipientOutputsRecordType, &recipientsRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotTaprootAssetTransferRecordType,
+			&assetTransferRaw,
 		),
 	}
 
@@ -207,6 +275,40 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 	if len(dispatchRequestData) == 0 {
 		dispatchRequestData = nil
 	}
+	if len(assetTransferRaw) == 0 {
+		assetTransferRaw = nil
+	}
+
+	var recipientOutputs []oortx.RecipientOutput
+	if len(recipientsRaw) > 0 {
+		decodedRecipients, err := decodeRecipientPayloadsWithLimits(
+			recipientsRaw, limits,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if len(decodedRecipients) > 0 {
+			recipientOutputs = make(
+				[]oortx.RecipientOutput, 0,
+				len(decodedRecipients),
+			)
+			for i := range decodedRecipients {
+				rec := decodedRecipients[i]
+				recipientOutputs = append(
+					recipientOutputs,
+					oortx.RecipientOutput{
+						PkScript: rec.PkScript,
+						Value: btcutil.Amount(
+							rec.ValueSat,
+						),
+						VTXOPolicyTemplate: rec.
+							VTXOPolicyTemplate,
+						Asset: rec.Asset.Clone(),
+					},
+				)
+			}
+		}
+	}
 
 	decodedVersion, err := decodeUint64ToUint8(version, "snapshot version")
 	if err != nil {
@@ -234,6 +336,8 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		ArkPSBT:                arkPSBT,
 		CheckpointPSBTs:        checkpointPSBTs,
 		TransferInputSnapshots: inputSnapshots,
+		RecipientOutputs:       recipientOutputs,
+		TaprootAssetTransfer:   assetTransferRaw,
 		RetryAfter:             decodedRetryAfter,
 		FailReason:             string(failReasonRaw),
 		IdempotencyKey:         string(idempotencyKeyRaw),

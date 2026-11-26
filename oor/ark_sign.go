@@ -149,6 +149,14 @@ func signArkPSBTInput(signer input.Signer, arkPSBT *psbt.Packet, inputIndex int,
 		return fmt.Errorf("ark input %d: %w", inputIndex, err)
 	}
 
+	// The operator provides both required leaf signatures for its own
+	// funded float input during cosign; the local wallet holds no key for
+	// it. Checking the tapleaf above still guards against missing input
+	// metadata.
+	if in.OperatorFunded {
+		return nil
+	}
+
 	witnessUtxo := pInput.WitnessUtxo
 	if witnessUtxo == nil {
 		return fmt.Errorf("ark input %d: missing witness utxo",

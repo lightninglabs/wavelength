@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
@@ -68,6 +70,22 @@ type TransferInput struct {
 	// ExternalArkSignatures authorize the final allocation, not the
 	// checkpoint. They must remain distinct even if both leaves match.
 	ExternalArkSignatures []ExternalTaprootScriptSignature
+
+	// OperatorFunded marks an input the local wallet cannot sign: an
+	// operator carrier-float VTXO leased for the transfer. The operator
+	// signs both legs of its checkpoint and Ark spends, so every local
+	// signing site skips the input while still verifying the operator's
+	// signatures. The input carries no ClientKey; its policy template and
+	// owner leaf come from the lease.
+	OperatorFunded bool
+
+	// TaprootAssetCarrierOrigin records whether an asset input's carrier
+	// was funded by a round (CarrierOriginRound, returns to the sender as
+	// plain Bitcoin change) or by an operator carrier float during a prior
+	// OOR transfer (CarrierOriginOOR, reclaimed into operator float
+	// change). Must be CarrierOriginUnspecified for non-asset inputs and
+	// explicitly set to Round or OOR for every asset-bearing input.
+	TaprootAssetCarrierOrigin oortx.CarrierOrigin
 }
 
 // ExternalTaprootScriptSignature carries one externally produced tapscript
@@ -97,9 +115,28 @@ func InputOutpoints(inputs []TransferInput) []wire.OutPoint {
 	return outpoints
 }
 
+// WalletInputOutpoints returns the outpoints of the inputs the local wallet
+// funds and signs. Operator-funded float inputs are excluded because they are
+// not wallet VTXOs: reservation stores and spend accounting reject or
+// misattribute outpoints that have no local VTXO row.
+func WalletInputOutpoints(inputs []TransferInput) []wire.OutPoint {
+	outpoints := make([]wire.OutPoint, 0, len(inputs))
+	for i := range inputs {
+		if inputs[i].OperatorFunded {
+			continue
+		}
+
+		outpoints = append(outpoints, inputs[i].VTXO.Outpoint)
+	}
+
+	return outpoints
+}
+
 // Validate performs basic structural validation. For custom spend
 // paths, the TapScript and ClientKey requirements are relaxed since
-// the spend path carries its own signing context.
+// the spend path carries its own signing context. For operator-funded
+// float inputs, no local key material is carried and the lease must supply
+// the policy template, owner leaf policy, and operator key explicitly.
 func (i *TransferInput) Validate() error {
 	switch {
 	case i == nil:
@@ -114,11 +151,23 @@ func (i *TransferInput) Validate() error {
 	case len(i.VTXO.PkScript) == 0:
 		return fmt.Errorf("vtxo pkScript must be provided")
 
-	case !i.IsCustomSpend() && i.VTXO.TapScript == nil:
+	case !i.IsCustomSpend() && !i.OperatorFunded &&
+		i.VTXO.TapScript == nil:
 		return fmt.Errorf("vtxo tapscript must be provided")
 
-	case !i.IsCustomSpend() && i.VTXO.ClientKey.PubKey == nil:
+	case !i.IsCustomSpend() && !i.OperatorFunded &&
+		i.VTXO.ClientKey.PubKey == nil:
 		return fmt.Errorf("vtxo client key must be provided")
+	}
+
+	if i.OperatorFunded {
+		if err := i.validateOperatorFunded(); err != nil {
+			return err
+		}
+	}
+
+	if err := i.validateTaprootAssetMetadata(); err != nil {
+		return err
 	}
 
 	defaultLeaf, defaultPolicy, err := defaultOwnerLeaf(
@@ -130,6 +179,20 @@ func (i *TransferInput) Validate() error {
 
 	if len(i.VTXOPolicyTemplate) == 0 {
 		i.VTXOPolicyTemplate, err = i.defaultVTXOPolicyTemplate()
+		if err != nil {
+			return err
+		}
+	}
+
+	if i.VTXO.TaprootAssetRoot != nil {
+		if len(i.VTXOPolicyTemplate) == 0 {
+			return fmt.Errorf("asset-bearing vtxo requires a " +
+				"policy template")
+		}
+		err := validateTaprootAssetPkScript(
+			i.VTXOPolicyTemplate, *i.VTXO.TaprootAssetRoot,
+			i.VTXO.PkScript,
+		)
 		if err != nil {
 			return err
 		}
@@ -238,10 +301,154 @@ func (i *TransferInput) EffectiveSpendPath() (*arkscript.SpendPath, error) {
 	if err != nil {
 		return nil, fmt.Errorf("derive collab spend info: %w", err)
 	}
+	if i.VTXO.TaprootAssetRoot != nil {
+		leafIndex := policy.ScriptIndex(info.WitnessScript)
+		if leafIndex < 0 {
+			return nil, fmt.Errorf("derive collab spend leaf index")
+		}
+
+		composed, err := arkscript.ComposeWithSiblingRoot(
+			policy.CompiledPolicy, *i.VTXO.TaprootAssetRoot,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("compose vtxo asset root: %w",
+				err)
+		}
+		info, err = composed.SpendInfo(leafIndex)
+		if err != nil {
+			return nil, fmt.Errorf("derive composed collab spend "+
+				"info: %w", err)
+		}
+	}
 
 	return &arkscript.SpendPath{
 		SpendInfo: info,
 	}, nil
+}
+
+// validateOperatorFunded enforces the structural and key-separation contract
+// of a leased operator carrier-float input.
+func (i *TransferInput) validateOperatorFunded() error {
+	switch {
+	case i.IsCustomSpend():
+		return fmt.Errorf("operator-funded input cannot use a custom " +
+			"spend path")
+
+	case i.VTXO.ClientKey.PubKey != nil:
+		return fmt.Errorf("operator-funded input cannot carry a " +
+			"client key")
+
+	case len(i.VTXOPolicyTemplate) == 0:
+		return fmt.Errorf("operator-funded input requires a policy " +
+			"template")
+
+	case len(i.OwnerLeafPolicy) == 0:
+		return fmt.Errorf("operator-funded input requires an owner " +
+			"leaf policy")
+
+	case i.VTXO.OperatorKey == nil:
+		return fmt.Errorf("operator-funded input requires an " +
+			"operator key")
+
+	case i.VTXO.TaprootAssetRoot != nil || i.VTXO.TaprootAssetRef != "" ||
+		i.VTXO.TaprootAssetAmount != 0 ||
+		i.TaprootAssetCarrierOrigin != oortx.CarrierOriginUnspecified:
+		return fmt.Errorf("operator-funded input cannot carry a " +
+			"taproot asset")
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(i.VTXOPolicyTemplate)
+	if err != nil {
+		return fmt.Errorf("decode operator-funded policy: %w", err)
+	}
+	if !template.MatchesPkScript(i.VTXO.PkScript) {
+		return fmt.Errorf("operator-funded policy does not match " +
+			"vtxo pkScript")
+	}
+
+	params, err := arkscript.DecodeStandardVTXOParams(template)
+	if err != nil {
+		return fmt.Errorf("decode operator-funded standard params: %w",
+			err)
+	}
+	if !bytes.Equal(
+		schnorr.SerializePubKey(params.OperatorKey),
+		schnorr.SerializePubKey(i.VTXO.OperatorKey),
+	) {
+		return fmt.Errorf("operator-funded policy operator key " +
+			"mismatch")
+	}
+
+	return oortx.ValidateCarrierFloatKeys(
+		params.OwnerKey, params.OperatorKey,
+	)
+}
+
+// validateTaprootAssetMetadata checks all-or-none consistency and bounds of
+// any Taproot Asset metadata carried on the input VTXO.
+func (i *TransferInput) validateTaprootAssetMetadata() error {
+	hasRoot := i.VTXO.TaprootAssetRoot != nil
+	hasRef := i.VTXO.TaprootAssetRef != ""
+	hasAmt := i.VTXO.TaprootAssetAmount != 0
+
+	if !hasRoot && !hasRef && !hasAmt {
+		if i.TaprootAssetCarrierOrigin !=
+			oortx.CarrierOriginUnspecified {
+			return fmt.Errorf("carrier origin requires an " +
+				"asset-bearing vtxo")
+		}
+
+		return nil
+	}
+
+	if !hasRoot {
+		return fmt.Errorf("vtxo asset metadata requires a commitment " +
+			"root")
+	}
+
+	switch i.TaprootAssetCarrierOrigin {
+	case oortx.CarrierOriginRound, oortx.CarrierOriginOOR:
+	default:
+		return fmt.Errorf("asset-bearing vtxo requires an explicit " +
+			"carrier origin (round or oor)")
+	}
+
+	asset := &oortx.RecipientAsset{
+		Root:   *i.VTXO.TaprootAssetRoot,
+		Ref:    i.VTXO.TaprootAssetRef,
+		Amount: i.VTXO.TaprootAssetAmount,
+	}
+
+	return asset.Validate()
+}
+
+// validateTaprootAssetPkScript proves that the semantic Ark policy and asset
+// commitment root derive the actual VTXO output script.
+func validateTaprootAssetPkScript(policyTemplate []byte,
+	assetRoot chainhash.Hash, pkScript []byte) error {
+
+	template, err := arkscript.DecodePolicyTemplate(policyTemplate)
+	if err != nil {
+		return fmt.Errorf("decode asset-bearing vtxo policy: %w", err)
+	}
+	compiled, err := template.Compile()
+	if err != nil {
+		return fmt.Errorf("compile asset-bearing vtxo policy: %w", err)
+	}
+	composed, err := arkscript.ComposeWithSiblingRoot(compiled, assetRoot)
+	if err != nil {
+		return fmt.Errorf("compose asset-bearing vtxo policy: %w", err)
+	}
+	wantPkScript, err := txscript.PayToTaprootScript(composed.OutputKey())
+	if err != nil {
+		return fmt.Errorf("derive asset-bearing vtxo pkscript: %w", err)
+	}
+	if !bytes.Equal(wantPkScript, pkScript) {
+		return fmt.Errorf("taproot asset root and vtxo pkscript " +
+			"mismatch")
+	}
+
+	return nil
 }
 
 // IsCustomSpend returns true when this input uses a non-standard spend
@@ -334,7 +541,30 @@ func (i *TransferInput) defaultVTXOPolicyTemplate() ([]byte, error) {
 			err)
 	}
 
-	if !template.MatchesPkScript(i.VTXO.PkScript) {
+	if i.VTXO.TaprootAssetRoot == nil {
+		if !template.MatchesPkScript(i.VTXO.PkScript) {
+			return nil, nil
+		}
+
+		return policy, nil
+	}
+
+	compiled, err := template.Compile()
+	if err != nil {
+		return nil, fmt.Errorf("compile standard vtxo policy: %w", err)
+	}
+	composed, err := arkscript.ComposeWithSiblingRoot(
+		compiled, *i.VTXO.TaprootAssetRoot,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("compose standard vtxo asset root: %w",
+			err)
+	}
+	pkScript, err := txscript.PayToTaprootScript(composed.OutputKey())
+	if err != nil {
+		return nil, fmt.Errorf("derive composed vtxo pkscript: %w", err)
+	}
+	if !bytes.Equal(pkScript, i.VTXO.PkScript) {
 		return nil, nil
 	}
 

@@ -1682,7 +1682,7 @@ func FillOutgoingSummary(summary *SessionSummary,
 
 	for i := range snapshot.TransferInputSnapshots {
 		input := snapshot.TransferInputSnapshots[i]
-		if input == nil {
+		if input == nil || input.OperatorFunded {
 			continue
 		}
 

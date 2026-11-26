@@ -14,8 +14,17 @@ convert between the proto wire types and domain types (`psbt.Packet`,
 - `FinalizePackageRequest` / `FinalizePackageResponse` — wire request/response
   for submitting finalized checkpoint PSBTs.
 - `SigningDescriptor` — domain-side signing metadata (outpoint, VTXO policy
-  template, spend path, owner-leaf policy) for one checkpoint input; encoded
-  to/from `OORSigningDescriptor` on the wire.
+  template, spend path, owner-leaf policy, plus optional Taproot Asset root,
+  ref, and amount) for one checkpoint input; encoded to/from
+  `OORSigningDescriptor` on the wire.
+- `NewSubmitPackageRequestWithAssets` / `ParseSubmitPackageRequestWithAssets`
+  — encode and decode `SubmitPackageRequest` with optional Taproot Asset
+  metadata on descriptors and recipients plus the sealed
+  `oortx.TaprootAssetTransfer` container, enforcing 1:1 consistency between
+  asset-bearing descriptors, checkpoint slots, and asset-bearing recipients.
+  `ParseSubmitPackageRequest` fails closed if any Taproot Asset container or
+  asset field is present so legacy non-asset callers never silently drop asset
+  metadata.
 - `FlowVersion` — permanent per-session OOR choreography version
   (`FlowVersionV1` is the only value understood today); validated with
   `ValidateFlowVersion`.
