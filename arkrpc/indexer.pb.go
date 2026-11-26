@@ -935,6 +935,20 @@ type OORRecipientEvent struct {
 	// recipient output. Older servers may omit it, in which case clients fall
 	// back to standard VTXO materialization.
 	VtxoPolicyTemplate []byte `protobuf:"bytes,9,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
+	// taproot_asset_root is the optional 32-byte Taproot Asset commitment root
+	// composed into this recipient output's Taproot script tree. Empty for
+	// plain Bitcoin outputs.
+	TaprootAssetRoot []byte `protobuf:"bytes,10,opt,name=taproot_asset_root,json=taprootAssetRoot,proto3" json:"taproot_asset_root,omitempty"`
+	// taproot_asset_transfer is the optional versioned Wavelength container
+	// carrying the sealed checkpoint and Ark asset packages for this OOR
+	// session. Empty for plain Bitcoin sessions.
+	TaprootAssetTransfer []byte `protobuf:"bytes,11,opt,name=taproot_asset_transfer,json=taprootAssetTransfer,proto3" json:"taproot_asset_transfer,omitempty"`
+	// taproot_asset_ref is the canonical asset reference (asset ID or group
+	// key) carried by this recipient output. Empty for plain Bitcoin outputs.
+	TaprootAssetRef string `protobuf:"bytes,12,opt,name=taproot_asset_ref,json=taprootAssetRef,proto3" json:"taproot_asset_ref,omitempty"`
+	// taproot_asset_amount is the number of asset units carried by this
+	// recipient output. Zero for plain Bitcoin outputs.
+	TaprootAssetAmount uint64 `protobuf:"varint,13,opt,name=taproot_asset_amount,json=taprootAssetAmount,proto3" json:"taproot_asset_amount,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -1032,6 +1046,34 @@ func (x *OORRecipientEvent) GetVtxoPolicyTemplate() []byte {
 	return nil
 }
 
+func (x *OORRecipientEvent) GetTaprootAssetRoot() []byte {
+	if x != nil {
+		return x.TaprootAssetRoot
+	}
+	return nil
+}
+
+func (x *OORRecipientEvent) GetTaprootAssetTransfer() []byte {
+	if x != nil {
+		return x.TaprootAssetTransfer
+	}
+	return nil
+}
+
+func (x *OORRecipientEvent) GetTaprootAssetRef() string {
+	if x != nil {
+		return x.TaprootAssetRef
+	}
+	return ""
+}
+
+func (x *OORRecipientEvent) GetTaprootAssetAmount() uint64 {
+	if x != nil {
+		return x.TaprootAssetAmount
+	}
+	return 0
+}
+
 // OORSessionPackage carries finalized package artifacts for one OOR session.
 type OORSessionPackage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1041,8 +1083,12 @@ type OORSessionPackage struct {
 	ArkPsbt []byte `protobuf:"bytes,2,opt,name=ark_psbt,json=arkPsbt,proto3" json:"ark_psbt,omitempty"`
 	// checkpoint_psbts are the finalized checkpoint PSBTs for this package.
 	CheckpointPsbts [][]byte `protobuf:"bytes,3,rep,name=checkpoint_psbts,json=checkpointPsbts,proto3" json:"checkpoint_psbts,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// taproot_asset_transfer is the optional versioned Wavelength container
+	// carrying the sealed checkpoint and Ark asset packages for this session.
+	// Empty for plain Bitcoin sessions.
+	TaprootAssetTransfer []byte `protobuf:"bytes,4,opt,name=taproot_asset_transfer,json=taprootAssetTransfer,proto3" json:"taproot_asset_transfer,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *OORSessionPackage) Reset() {
@@ -1092,6 +1138,13 @@ func (x *OORSessionPackage) GetArkPsbt() []byte {
 func (x *OORSessionPackage) GetCheckpointPsbts() [][]byte {
 	if x != nil {
 		return x.CheckpointPsbts
+	}
+	return nil
+}
+
+func (x *OORSessionPackage) GetTaprootAssetTransfer() []byte {
+	if x != nil {
+		return x.TaprootAssetTransfer
 	}
 	return nil
 }
@@ -1755,8 +1808,18 @@ type VTXO struct {
 	// Packages are finalized and ordered ancestor-first, with the creating
 	// session last. Round-direct VTXOs leave this empty.
 	AncestryPackages []*OORSessionPackage `protobuf:"bytes,21,rep,name=ancestry_packages,json=ancestryPackages,proto3" json:"ancestry_packages,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// taproot_asset_root is the optional 32-byte Taproot Asset commitment root
+	// composed into this VTXO's Taproot script tree. Empty for plain Bitcoin
+	// VTXOs.
+	TaprootAssetRoot []byte `protobuf:"bytes,22,opt,name=taproot_asset_root,json=taprootAssetRoot,proto3" json:"taproot_asset_root,omitempty"`
+	// taproot_asset_ref is the canonical asset reference (asset ID or group
+	// key) carried by this VTXO. Empty for plain Bitcoin VTXOs.
+	TaprootAssetRef string `protobuf:"bytes,23,opt,name=taproot_asset_ref,json=taprootAssetRef,proto3" json:"taproot_asset_ref,omitempty"`
+	// taproot_asset_amount is the number of asset units carried by this VTXO.
+	// Zero for plain Bitcoin VTXOs.
+	TaprootAssetAmount uint64 `protobuf:"varint,24,opt,name=taproot_asset_amount,json=taprootAssetAmount,proto3" json:"taproot_asset_amount,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *VTXO) Reset() {
@@ -1920,6 +1983,27 @@ func (x *VTXO) GetAncestryPackages() []*OORSessionPackage {
 		return x.AncestryPackages
 	}
 	return nil
+}
+
+func (x *VTXO) GetTaprootAssetRoot() []byte {
+	if x != nil {
+		return x.TaprootAssetRoot
+	}
+	return nil
+}
+
+func (x *VTXO) GetTaprootAssetRef() string {
+	if x != nil {
+		return x.TaprootAssetRef
+	}
+	return ""
+}
+
+func (x *VTXO) GetTaprootAssetAmount() uint64 {
+	if x != nil {
+		return x.TaprootAssetAmount
+	}
+	return 0
 }
 
 type ListVTXOsByScriptsRequest struct {
@@ -2132,8 +2216,12 @@ type GetOORSessionByTxidResponse struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	ArkPsbt         []byte                 `protobuf:"bytes,1,opt,name=ark_psbt,json=arkPsbt,proto3" json:"ark_psbt,omitempty"`
 	CheckpointPsbts [][]byte               `protobuf:"bytes,2,rep,name=checkpoint_psbts,json=checkpointPsbts,proto3" json:"checkpoint_psbts,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// taproot_asset_transfer is the optional versioned Wavelength container
+	// carrying the sealed checkpoint and Ark asset packages for this session.
+	// Empty for plain Bitcoin sessions.
+	TaprootAssetTransfer []byte `protobuf:"bytes,3,opt,name=taproot_asset_transfer,json=taprootAssetTransfer,proto3" json:"taproot_asset_transfer,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *GetOORSessionByTxidResponse) Reset() {
@@ -2176,6 +2264,13 @@ func (x *GetOORSessionByTxidResponse) GetArkPsbt() []byte {
 func (x *GetOORSessionByTxidResponse) GetCheckpointPsbts() [][]byte {
 	if x != nil {
 		return x.CheckpointPsbts
+	}
+	return nil
+}
+
+func (x *GetOORSessionByTxidResponse) GetTaprootAssetTransfer() []byte {
+	if x != nil {
+		return x.TaprootAssetTransfer
 	}
 	return nil
 }
@@ -2659,8 +2754,18 @@ type IncomingVTXOEvent struct {
 	// commitment transaction. This is distinct from the leaf txid
 	// carried in the outpoint field.
 	CommitmentTxid []byte `protobuf:"bytes,11,opt,name=commitment_txid,json=commitmentTxid,proto3" json:"commitment_txid,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// taproot_asset_root is the optional 32-byte Taproot Asset commitment root
+	// composed into this VTXO's Taproot script tree. Empty for plain Bitcoin
+	// VTXOs.
+	TaprootAssetRoot []byte `protobuf:"bytes,12,opt,name=taproot_asset_root,json=taprootAssetRoot,proto3" json:"taproot_asset_root,omitempty"`
+	// taproot_asset_ref is the canonical asset reference (asset ID or group
+	// key) carried by this VTXO. Empty for plain Bitcoin VTXOs.
+	TaprootAssetRef string `protobuf:"bytes,13,opt,name=taproot_asset_ref,json=taprootAssetRef,proto3" json:"taproot_asset_ref,omitempty"`
+	// taproot_asset_amount is the number of asset units carried by this VTXO.
+	// Zero for plain Bitcoin VTXOs.
+	TaprootAssetAmount uint64 `protobuf:"varint,14,opt,name=taproot_asset_amount,json=taprootAssetAmount,proto3" json:"taproot_asset_amount,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *IncomingVTXOEvent) Reset() {
@@ -2770,6 +2875,27 @@ func (x *IncomingVTXOEvent) GetCommitmentTxid() []byte {
 	return nil
 }
 
+func (x *IncomingVTXOEvent) GetTaprootAssetRoot() []byte {
+	if x != nil {
+		return x.TaprootAssetRoot
+	}
+	return nil
+}
+
+func (x *IncomingVTXOEvent) GetTaprootAssetRef() string {
+	if x != nil {
+		return x.TaprootAssetRef
+	}
+	return ""
+}
+
+func (x *IncomingVTXOEvent) GetTaprootAssetAmount() uint64 {
+	if x != nil {
+		return x.TaprootAssetAmount
+	}
+	return 0
+}
+
 var File_indexer_proto protoreflect.FileDescriptor
 
 const file_indexer_proto_rawDesc = "" +
@@ -2815,7 +2941,7 @@ const file_indexer_proto_rawDesc = "" +
 	"&ListOORRecipientEventsByScriptResponse\x121\n" +
 	"\x06events\x18\x01 \x03(\v2\x19.arkrpc.OORRecipientEventR\x06events\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\x04R\n" +
-	"nextCursor\"\xf6\x02\n" +
+	"nextCursor\"\xb8\x04\n" +
 	"\x11OORRecipientEvent\x12.\n" +
 	"\x13recipient_pk_script\x18\x01 \x01(\fR\x11recipientPkScript\x12\x19\n" +
 	"\bevent_id\x18\x02 \x01(\x04R\aeventId\x12\x1d\n" +
@@ -2826,12 +2952,18 @@ const file_indexer_proto_rawDesc = "" +
 	"\bark_psbt\x18\x06 \x01(\fR\aarkPsbt\x12)\n" +
 	"\x10checkpoint_psbts\x18\a \x03(\fR\x0fcheckpointPsbts\x12F\n" +
 	"\x11ancestor_packages\x18\b \x03(\v2\x19.arkrpc.OORSessionPackageR\x10ancestorPackages\x120\n" +
-	"\x14vtxo_policy_template\x18\t \x01(\fR\x12vtxoPolicyTemplate\"x\n" +
+	"\x14vtxo_policy_template\x18\t \x01(\fR\x12vtxoPolicyTemplate\x12,\n" +
+	"\x12taproot_asset_root\x18\n" +
+	" \x01(\fR\x10taprootAssetRoot\x124\n" +
+	"\x16taproot_asset_transfer\x18\v \x01(\fR\x14taprootAssetTransfer\x12*\n" +
+	"\x11taproot_asset_ref\x18\f \x01(\tR\x0ftaprootAssetRef\x120\n" +
+	"\x14taproot_asset_amount\x18\r \x01(\x04R\x12taprootAssetAmount\"\xae\x01\n" +
 	"\x11OORSessionPackage\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\fR\tsessionId\x12\x19\n" +
 	"\bark_psbt\x18\x02 \x01(\fR\aarkPsbt\x12)\n" +
-	"\x10checkpoint_psbts\x18\x03 \x03(\fR\x0fcheckpointPsbts\"\xc8\x01\n" +
+	"\x10checkpoint_psbts\x18\x03 \x03(\fR\x0fcheckpointPsbts\x124\n" +
+	"\x16taproot_asset_transfer\x18\x04 \x01(\fR\x14taprootAssetTransfer\"\xc8\x01\n" +
 	"\x10IncomingOOREvent\x12.\n" +
 	"\x13recipient_pk_script\x18\x01 \x01(\fR\x11recipientPkScript\x12,\n" +
 	"\x12recipient_event_id\x18\x02 \x01(\x04R\x10recipientEventId\x12\x1d\n" +
@@ -2875,7 +3007,7 @@ const file_indexer_proto_rawDesc = "" +
 	"\x0ftaproot_schnorr\x18\n" +
 	" \x01(\v2\x1b.arkrpc.TaprootSchnorrProofH\x00R\x0etaprootSchnorr\x12-\n" +
 	"\x06bip322\x18\v \x01(\v2\x13.arkrpc.BIP322ProofH\x00R\x06bip322B\a\n" +
-	"\x05proof\"\xaa\x06\n" +
+	"\x05proof\"\xb6\a\n" +
 	"\x04VTXO\x12,\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x10.arkrpc.OutPointR\boutpoint\x12\x1b\n" +
 	"\tvalue_sat\x18\x02 \x01(\x04R\bvalueSat\x12\x1b\n" +
@@ -2898,7 +3030,10 @@ const file_indexer_proto_rawDesc = "" +
 	"\x0eancestry_paths\x18\x12 \x03(\v2\x14.arkrpc.AncestryPathR\rancestryPaths\x12'\n" +
 	"\x0foperator_pubkey\x18\x13 \x01(\fR\x0eoperatorPubkey\x121\n" +
 	"\x14construction_version\x18\x14 \x01(\rR\x13constructionVersion\x12F\n" +
-	"\x11ancestry_packages\x18\x15 \x03(\v2\x19.arkrpc.OORSessionPackageR\x10ancestryPackages\"\xdc\x01\n" +
+	"\x11ancestry_packages\x18\x15 \x03(\v2\x19.arkrpc.OORSessionPackageR\x10ancestryPackages\x12,\n" +
+	"\x12taproot_asset_root\x18\x16 \x01(\fR\x10taprootAssetRoot\x12*\n" +
+	"\x11taproot_asset_ref\x18\x17 \x01(\tR\x0ftaprootAssetRef\x120\n" +
+	"\x14taproot_asset_amount\x18\x18 \x01(\x04R\x12taprootAssetAmount\"\xdc\x01\n" +
 	"\x19ListVTXOsByScriptsRequest\x12-\n" +
 	"\ascripts\x18\x01 \x03(\v2\x13.arkrpc.ScriptScopeR\ascripts\x127\n" +
 	"\rstatus_filter\x18\x02 \x03(\x0e2\x12.arkrpc.VTXOStatusR\fstatusFilter\x12\x16\n" +
@@ -2912,10 +3047,11 @@ const file_indexer_proto_rawDesc = "" +
 	"\x0ewait_supported\x18\x03 \x01(\bR\rwaitSupported\"l\n" +
 	"\x1aGetOORSessionByTxidRequest\x12+\n" +
 	"\x06script\x18\x01 \x01(\v2\x13.arkrpc.ScriptScopeR\x06script\x12!\n" +
-	"\fsession_txid\x18\x02 \x01(\fR\vsessionTxid\"c\n" +
+	"\fsession_txid\x18\x02 \x01(\fR\vsessionTxid\"\x99\x01\n" +
 	"\x1bGetOORSessionByTxidResponse\x12\x19\n" +
 	"\bark_psbt\x18\x01 \x01(\fR\aarkPsbt\x12)\n" +
-	"\x10checkpoint_psbts\x18\x02 \x03(\fR\x0fcheckpointPsbts\"~\n" +
+	"\x10checkpoint_psbts\x18\x02 \x03(\fR\x0fcheckpointPsbts\x124\n" +
+	"\x16taproot_asset_transfer\x18\x03 \x01(\fR\x14taprootAssetTransfer\"~\n" +
 	"\bTreeNode\x12\x12\n" +
 	"\x04txid\x18\x01 \x01(\fR\x04txid\x12&\n" +
 	"\x05input\x18\x02 \x01(\v2\x10.arkrpc.OutPointR\x05input\x12\x1f\n" +
@@ -2948,7 +3084,7 @@ const file_indexer_proto_rawDesc = "" +
 	"\x1fListVTXOEventsByScriptsResponse\x12)\n" +
 	"\x06events\x18\x01 \x03(\v2\x11.arkrpc.VTXOEventR\x06events\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\x04R\n" +
-	"nextCursor\"\xb6\x03\n" +
+	"nextCursor\"\xc2\x04\n" +
 	"\x11IncomingVTXOEvent\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\x04R\aeventId\x12)\n" +
 	"\x04type\x18\x02 \x01(\x0e2\x15.arkrpc.VTXOEventTypeR\x04type\x12,\n" +
@@ -2961,7 +3097,10 @@ const file_indexer_proto_rawDesc = "" +
 	"\x0frelative_expiry\x18\t \x01(\rR\x0erelativeExpiry\x12*\n" +
 	"\x06origin\x18\n" +
 	" \x01(\x0e2\x12.arkrpc.VTXOOriginR\x06origin\x12'\n" +
-	"\x0fcommitment_txid\x18\v \x01(\fR\x0ecommitmentTxid*\x84\x02\n" +
+	"\x0fcommitment_txid\x18\v \x01(\fR\x0ecommitmentTxid\x12,\n" +
+	"\x12taproot_asset_root\x18\f \x01(\fR\x10taprootAssetRoot\x12*\n" +
+	"\x11taproot_asset_ref\x18\r \x01(\tR\x0ftaprootAssetRef\x120\n" +
+	"\x14taproot_asset_amount\x18\x0e \x01(\x04R\x12taprootAssetAmount*\x84\x02\n" +
 	"\n" +
 	"VTXOStatus\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n" +
