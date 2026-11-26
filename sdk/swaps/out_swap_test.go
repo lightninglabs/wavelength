@@ -2905,6 +2905,7 @@ func (d *testDaemonConn) PrepareOORWithCustomInputs(_ context.Context,
 	}
 
 	return &PreparedOOR{
+		ArkPSBT: []byte("ark"),
 		CustomInputs: []PreparedOORCustomInput{{
 			Outpoint:       inputs[0].Outpoint,
 			CheckpointPSBT: []byte("checkpoint"),

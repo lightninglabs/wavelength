@@ -1237,6 +1237,12 @@ message CustomOORInput {
     // validates the policy/spend-path binding and adds its own signature before
     // assembling the final witness.
     repeated TaprootScriptSignature external_signatures = 6;
+
+    // Preserve the exact funded multisig leaf on the checkpoint output.
+    bool preserve_source_owners = 7;
+
+    // Independent co-owner signatures on the final Ark payout.
+    repeated TaprootScriptSignature payout_signatures = 8;
 }
 
 // TaprootScriptSignature carries one externally produced tapscript signature
@@ -1331,11 +1337,17 @@ message SignOORCustomInputRequest {
 
     // checkpoint_psbt is the prepared checkpoint PSBT to sign.
     bytes checkpoint_psbt = 2;
+
+    // Mutually exclusive with the legacy checkpoint-only signing fields.
+    CooperativeOORPackage cooperative_package = 3;
 }
 
 message SignOORCustomInputResponse {
     // signature is the daemon identity key's tapscript signature.
     TaprootScriptSignature signature = 1;
+
+    // Final Ark-input signature, present only for cooperative_package.
+    TaprootScriptSignature payout_signature = 2;
 }
 
 message SignVTXOForfeitRequest {
@@ -3378,4 +3390,13 @@ message DeriveSwapPreimageRequest {
 message DeriveSwapPreimageResponse {
     // The derived 32-byte preimage. Treat this response as secret.
     bytes preimage = 1;
+}
+
+// CooperativeOORPackage pairs the authorized intent with the exact unsigned
+// packets. The wallet reconstructs both before releasing either signature.
+message CooperativeOORPackage {
+    CustomOORInput custom_input = 1;
+    Output recipient = 2;
+    bytes checkpoint_psbt = 3;
+    bytes ark_psbt = 4;
 }

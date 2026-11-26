@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -53,16 +54,24 @@ type testInSwapServerConn struct {
 	createMaxCreditSat  uint64
 	refundAuthorization *InSwapRefundAuthorization
 	refundAuthorizeErr  error
-	refundAuthorizeReq  *testRefundAuthorizeReq
+	refundAuthorizeReq  *swaprpc.AuthorizeInSwapRefundRequest
 }
 
-type testRefundAuthorizeReq struct {
-	paymentHash     lntypes.Hash
-	vhtlcOutpoint   string
-	vhtlcAmountSat  int64
-	vhtlcPolicy     []byte
-	refundSpendPath []byte
-	checkpointPSBT  []byte
+// testRefundAuthorization distinguishes the two tapscript signing targets.
+func testRefundAuthorization(key *btcec.PublicKey) *InSwapRefundAuthorization {
+	return &InSwapRefundAuthorization{
+		Signature: TaprootScriptSignature{
+			PubKey:        key.SerializeCompressed(),
+			WitnessScript: []byte("witness"),
+			Signature:     []byte("server-sig"),
+		},
+		PayoutSignature: &TaprootScriptSignature{
+			PubKey:        key.SerializeCompressed(),
+			WitnessScript: []byte("payout-leaf"),
+			Signature:     []byte("payout-sig"),
+		},
+		FailureReason: "payment failed",
+	}
 }
 
 type failAtExecDBTX struct {
@@ -159,21 +168,27 @@ func (c *testInSwapServerConn) QuoteInSwap(_ context.Context, invoice string,
 	return c.quote, nil
 }
 
-// AuthorizeInSwapRefund records and returns the preconfigured refund
-// authorization.
-func (c *testInSwapServerConn) AuthorizeInSwapRefund(_ context.Context,
-	paymentHash lntypes.Hash, vhtlcOutpoint string, vhtlcAmountSat int64,
-	vhtlcPolicyTemplate, refundSpendPath, checkpointPSBT []byte) (
+// AuthorizeInSwapRefund rejects unexpected use of the checkpoint-only path.
+func (c *testInSwapServerConn) AuthorizeInSwapRefund(context.Context,
+	lntypes.Hash, string, int64, []byte, []byte, []byte) (
 	*InSwapRefundAuthorization, error) {
 
-	c.refundAuthorizeReq = &testRefundAuthorizeReq{
-		paymentHash:     paymentHash,
-		vhtlcOutpoint:   vhtlcOutpoint,
-		vhtlcAmountSat:  vhtlcAmountSat,
-		vhtlcPolicy:     append([]byte(nil), vhtlcPolicyTemplate...),
-		refundSpendPath: append([]byte(nil), refundSpendPath...),
-		checkpointPSBT:  append([]byte(nil), checkpointPSBT...),
-	}
+	return nil, errors.New("unexpected checkpoint-only refund request")
+}
+
+// SupportsRefundPayout identifies this fixture as an explicitly capable peer.
+func (*testInSwapServerConn) SupportsRefundPayout(context.Context) (bool,
+	error) {
+
+	return true, nil
+}
+
+// AuthorizeInSwapRefundPackage records the complete transcript for assertions.
+func (c *testInSwapServerConn) AuthorizeInSwapRefundPackage(_ context.Context,
+	req *swaprpc.AuthorizeInSwapRefundRequest) (*InSwapRefundAuthorization,
+	error) {
+
+	c.refundAuthorizeReq = req
 	if c.refundAuthorizeErr != nil {
 		return nil, c.refundAuthorizeErr
 	}
@@ -1320,19 +1335,13 @@ func TestPaySessionCooperativeRefundsBeforeTimeout(t *testing.T) {
 			},
 			Expiry: time.Now().Add(time.Minute),
 		},
-		refundAuthorization: &InSwapRefundAuthorization{
-			Signature: TaprootScriptSignature{
-				PubKey: serverPriv.
-					PubKey().
-					SerializeCompressed(),
-				WitnessScript: []byte("witness"),
-				Signature:     []byte("server-sig"),
-			},
-			FailureReason: "payment failed",
-		},
+		refundAuthorization: testRefundAuthorization(
+			serverPriv.PubKey(),
+		),
 	}
 
 	daemonConn := &testDaemonConn{
+		identityPriv:  clientPriv,
 		identityKey:   clientPriv.PubKey(),
 		operatorKey:   operatorPriv.PubKey(),
 		blockHeight:   50,
@@ -1368,17 +1377,43 @@ func TestPaySessionCooperativeRefundsBeforeTimeout(t *testing.T) {
 	require.Equal(t, 1, daemonConn.sendCustomCalls)
 	require.NotNil(t, serverConn.refundAuthorizeReq)
 	require.Equal(
-		t, "funding:0", serverConn.refundAuthorizeReq.vhtlcOutpoint,
+		t, "funding:0",
+		serverConn.refundAuthorizeReq.GetVhtlcOutpoint(),
 	)
 	require.EqualValues(
 		t, testInSwapAmountSat,
-		serverConn.refundAuthorizeReq.vhtlcAmountSat,
+		serverConn.refundAuthorizeReq.GetVhtlcAmountSat(),
 	)
 	require.Equal(
 		t, []byte("checkpoint"),
-		serverConn.refundAuthorizeReq.checkpointPSBT,
+		serverConn.refundAuthorizeReq.GetCheckpointPsbt(),
 	)
+	require.Equal(
+		t, []byte("ark"), serverConn.refundAuthorizeReq.GetArkPsbt(),
+	)
+	req := serverConn.refundAuthorizeReq
+	proof := req.GetOwnerProof()
+	require.NotNil(t, proof)
+	require.Equal(
+		t, daemonConn.receiveInfo.PubKeyXOnly, req.GetRefundPubkey(),
+	)
+	authorization, err := schnorr.ParseSignature(proof.GetSignature())
+	require.NoError(t, err)
+	message := swapRecoveryAuthMessage(
+		swapRecoveryAuthRefundPayout, proof.GetClientIdentityPubkey(),
+		proof.GetTimestampUnix(), proof.GetNonce(),
+		req.GetPaymentHash(), req.GetCheckpointPsbt(), req.GetArkPsbt(),
+		req.GetRefundPubkey(),
+	)
+	digest := chainhash.TaggedHash([]byte(swapRecoveryAuthTag), message)
+	require.True(t, authorization.Verify(digest[:], clientPriv.PubKey()))
 	require.Len(t, daemonConn.lastClaimInput, 1)
+	require.True(t, daemonConn.lastClaimInput[0].PreserveSourceOwners)
+	require.Len(t, daemonConn.lastClaimInput[0].PayoutSignatures, 1)
+	require.Equal(
+		t, []byte("payout-sig"),
+		daemonConn.lastClaimInput[0].PayoutSignatures[0].Signature,
+	)
 	require.Len(t, daemonConn.lastClaimInput[0].ExternalSignatures, 1)
 	require.Equal(
 		t, []byte("server-sig"),
@@ -1430,16 +1465,9 @@ func TestPaySessionCooperativeRefundUsesLocalFundingMetadata(t *testing.T) {
 			},
 			Expiry: time.Now().Add(time.Minute),
 		},
-		refundAuthorization: &InSwapRefundAuthorization{
-			Signature: TaprootScriptSignature{
-				PubKey: serverPriv.
-					PubKey().
-					SerializeCompressed(),
-				WitnessScript: []byte("witness"),
-				Signature:     []byte("server-sig"),
-			},
-			FailureReason: "payment failed",
-		},
+		refundAuthorization: testRefundAuthorization(
+			serverPriv.PubKey(),
+		),
 	}
 
 	daemonConn := &testDaemonConn{
@@ -1489,11 +1517,12 @@ func TestPaySessionCooperativeRefundUsesLocalFundingMetadata(t *testing.T) {
 	require.Equal(t, 1, daemonConn.sendCustomCalls)
 	require.NotNil(t, serverConn.refundAuthorizeReq)
 	require.Equal(
-		t, "funding:0", serverConn.refundAuthorizeReq.vhtlcOutpoint,
+		t, "funding:0",
+		serverConn.refundAuthorizeReq.GetVhtlcOutpoint(),
 	)
 	require.EqualValues(
 		t, testInSwapAmountSat,
-		serverConn.refundAuthorizeReq.vhtlcAmountSat,
+		serverConn.refundAuthorizeReq.GetVhtlcAmountSat(),
 	)
 	require.Equal(t, "funding:0", session.vhtlcOutpoint)
 	require.EqualValues(t, testInSwapAmountSat, session.vhtlcAmount)
@@ -1537,16 +1566,9 @@ func TestPaySessionCooperativeRefundWaitsForOutputBeforeTerminal(t *testing.T) {
 			},
 			Expiry: time.Now().Add(time.Minute),
 		},
-		refundAuthorization: &InSwapRefundAuthorization{
-			Signature: TaprootScriptSignature{
-				PubKey: serverPriv.
-					PubKey().
-					SerializeCompressed(),
-				WitnessScript: []byte("witness"),
-				Signature:     []byte("server-sig"),
-			},
-			FailureReason: "payment failed",
-		},
+		refundAuthorization: testRefundAuthorization(
+			serverPriv.PubKey(),
+		),
 	}
 
 	daemonConn := &testDaemonConn{
@@ -1749,16 +1771,9 @@ func TestPaySessionCooperativeRefundKeepsAcceptedSessionOnPersistFailure(
 			},
 			Expiry: time.Now().Add(time.Minute),
 		},
-		refundAuthorization: &InSwapRefundAuthorization{
-			Signature: TaprootScriptSignature{
-				PubKey: serverPriv.
-					PubKey().
-					SerializeCompressed(),
-				WitnessScript: []byte("witness"),
-				Signature:     []byte("server-sig"),
-			},
-			FailureReason: "payment failed",
-		},
+		refundAuthorization: testRefundAuthorization(
+			serverPriv.PubKey(),
+		),
 	}
 
 	daemonConn := &testDaemonConn{
@@ -1868,16 +1883,9 @@ func TestPaySessionResumeAfterAcceptedRefundFindsOutput(t *testing.T) {
 			},
 			Expiry: time.Now().Add(time.Minute),
 		},
-		refundAuthorization: &InSwapRefundAuthorization{
-			Signature: TaprootScriptSignature{
-				PubKey: serverPriv.
-					PubKey().
-					SerializeCompressed(),
-				WitnessScript: []byte("witness"),
-				Signature:     []byte("server-sig"),
-			},
-			FailureReason: "payment failed",
-		},
+		refundAuthorization: testRefundAuthorization(
+			serverPriv.PubKey(),
+		),
 	}
 
 	daemonConn := &testDaemonConn{
@@ -2021,16 +2029,9 @@ func TestPaySessionResumeAfterAcceptedRefundUsesSpentVHTLCFallback(
 			},
 			Expiry: time.Now().Add(time.Minute),
 		},
-		refundAuthorization: &InSwapRefundAuthorization{
-			Signature: TaprootScriptSignature{
-				PubKey: serverPriv.
-					PubKey().
-					SerializeCompressed(),
-				WitnessScript: []byte("witness"),
-				Signature:     []byte("server-sig"),
-			},
-			FailureReason: "payment failed",
-		},
+		refundAuthorization: testRefundAuthorization(
+			serverPriv.PubKey(),
+		),
 	}
 
 	daemonConn := &testDaemonConn{

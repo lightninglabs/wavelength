@@ -338,7 +338,9 @@ func classifyCustomOORInputs(inputs []*waverpc.CustomOORInput) ([]wire.OutPoint,
 			len(input.GetSpendPath()) > 0 ||
 			input.GetAmountSat() != 0 ||
 			len(input.GetPkScript()) > 0 ||
-			len(input.GetExternalSignatures()) > 0
+			len(input.GetExternalSignatures()) > 0 ||
+			input.GetPreserveSourceOwners() ||
+			len(input.GetPayoutSignatures()) > 0
 		if explicit {
 			hasCustom = true
 		} else {
@@ -3239,6 +3241,12 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 	if err != nil {
 		return nil, err
 	}
+	cooperative, err := checkCooperativeIntent(
+		req.CustomInputs, requestRecipients, true,
+	)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	if req.GetExistingOnly() && req.GetIdempotencyKey() == "" {
 		return nil, status.Errorf(codes.InvalidArgument,
@@ -3485,6 +3493,17 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 	}
 	changeOutputDuration = time.Since(phaseStart)
 
+	if cooperative {
+		err := verifyCooperativeSubmit(
+			policy, selectedInputs, recipients,
+		)
+		if err != nil {
+			return nil, status.Error(
+				codes.InvalidArgument, err.Error(),
+			)
+		}
+	}
+
 	var dispatchRequestData []byte
 	if req.GetIdempotencyKey() != "" {
 		dispatchRequestData, err = oor.NewOutgoingReplayData(
@@ -3718,6 +3737,12 @@ func (r *RPCServer) PrepareOOR(ctx context.Context,
 		return nil, status.Errorf(codes.InvalidArgument, "custom "+
 			"inputs are required")
 	}
+	_, err := checkCooperativeIntent(
+		req.CustomInputs, []*waverpc.Output{req.Recipient}, false,
+	)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	if r.server.vtxoStore == nil {
 		return nil, status.Errorf(codes.Internal, "VTXO store not "+
@@ -3863,6 +3888,23 @@ func (r *RPCServer) SignOORCustomInput(ctx context.Context,
 		return nil, err
 	}
 
+	if pkg := req.GetCooperativePackage(); pkg != nil {
+		if req.CustomInput != nil || len(req.CheckpointPsbt) != 0 {
+			return nil, status.Error(
+				codes.InvalidArgument, "cannot mix package "+
+					"and checkpoint-only signing",
+			)
+		}
+
+		return r.signCooperativePackage(ctx, pkg)
+	}
+	if req.GetCustomInput().GetPreserveSourceOwners() {
+		return nil, status.Error(
+			codes.InvalidArgument,
+			"cooperative signing requires both unsigned packets",
+		)
+	}
+
 	if req.GetCustomInput() == nil {
 		return nil, status.Errorf(codes.InvalidArgument, "custom "+
 			"input is required")
@@ -3921,12 +3963,7 @@ func (r *RPCServer) SignOORCustomInput(ctx context.Context,
 	}
 
 	return &waverpc.SignOORCustomInputResponse{
-		Signature: &waverpc.TaprootScriptSignature{
-			Pubkey:        sig.PubKey.SerializeCompressed(),
-			WitnessScript: sig.WitnessScript,
-			Signature:     sig.Signature,
-			Sighash:       uint32(sig.SigHash),
-		},
+		Signature: rpcScriptSignature(sig),
 	}, nil
 }
 

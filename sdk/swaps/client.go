@@ -920,9 +920,22 @@ type InSwapRefundAuthorization struct {
 	// refund checkpoint input.
 	Signature TaprootScriptSignature
 
+	// PayoutSignature signs the final Ark payout, not the source VTXO.
+	PayoutSignature *TaprootScriptSignature
+
 	// FailureReason describes why the swap server considers the Lightning
 	// payment terminal and therefore safe to refund immediately.
 	FailureReason string
+}
+
+// refundPayoutAuthorizer is an explicitly selected peer capability. The
+// existence of a new RPC client method does not indicate peer support.
+type refundPayoutAuthorizer interface {
+	SupportsRefundPayout(context.Context) (bool, error)
+
+	AuthorizeInSwapRefundPackage(context.Context,
+		*swaprpc.AuthorizeInSwapRefundRequest) (
+		*InSwapRefundAuthorization, error)
 }
 
 // SwapClient is the high-level client API for Lightning<->Ark

@@ -21,6 +21,9 @@ type testSwapServiceClient struct {
 	swaprpc.SwapServiceClient
 
 	authorizeErr     error
+	authorizeReply   *swaprpc.AuthorizeInSwapRefundResponse
+	recoveryInfo     *swaprpc.GetSwapRecoveryInfoResponse
+	recoveryInfoErr  error
 	ackErr           error
 	signForfeitResp  *swaprpc.SignInSwapForfeitResponse
 	signForfeitErr   error
@@ -35,7 +38,72 @@ func (c *testSwapServiceClient) AuthorizeInSwapRefund(context.Context,
 	*swaprpc.AuthorizeInSwapRefundRequest, ...grpc.CallOption) (
 	*swaprpc.AuthorizeInSwapRefundResponse, error) {
 
-	return nil, c.authorizeErr
+	return c.authorizeReply, c.authorizeErr
+}
+
+// GetSwapRecoveryInfo returns the peer capability advertisement.
+func (c *testSwapServiceClient) GetSwapRecoveryInfo(context.Context,
+	*swaprpc.GetSwapRecoveryInfoRequest, ...grpc.CallOption) (
+	*swaprpc.GetSwapRecoveryInfoResponse, error) {
+
+	return c.recoveryInfo, c.recoveryInfoErr
+}
+
+// TestRefundPayoutCapabilityRequiresPeerAdvertisement keeps old and
+// unavailable peers from being selected for the two-signature request.
+func TestRefundPayoutCapabilityRequiresPeerAdvertisement(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		advertise bool
+		peerErr   error
+		rest      bool
+		want      bool
+		wantErr   bool
+	}{
+		{
+			name:      "advertised",
+			advertise: true,
+			want:      true,
+		},
+		{
+			name: "not advertised",
+		},
+		{name: "old grpc peer", peerErr: status.Error(
+			codes.Unimplemented, "no discovery",
+		)},
+		{name: "old rest peer", rest: true, peerErr: status.Error(
+			codes.NotFound, "no route",
+		)},
+		{name: "discovery unavailable", peerErr: status.Error(
+			codes.Unavailable, "offline",
+		), wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			info := &swaprpc.GetSwapRecoveryInfoResponse{
+				SupportsRefundPayout: test.advertise,
+			}
+			client := &testSwapServiceClient{
+				recoveryInfo:    info,
+				recoveryInfoErr: test.peerErr,
+			}
+			conn := newSwapServerConn(client)
+			conn.isREST = test.rest
+			supported, err := conn.SupportsRefundPayout(
+				t.Context(),
+			)
+			if test.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, test.want, supported)
+		})
+	}
 }
 
 func (c *testSwapServiceClient) AcknowledgeOutSwapHtlc(_ context.Context,
@@ -287,6 +355,50 @@ func TestAuthorizeInSwapRefundPreservesStatusCode(t *testing.T) {
 	)
 	require.Error(t, err)
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+}
+
+// TestRefundPackageSeparatesSignatures pins the wire distinction between the
+// receiver's checkpoint signature and its optional final-payout signature.
+func TestRefundPackageSeparatesSignatures(t *testing.T) {
+	t.Parallel()
+	reply := &swaprpc.AuthorizeInSwapRefundResponse{
+		Signature: &swaprpc.TaprootScriptSignature{
+			Signature: []byte{
+				1,
+			},
+		},
+	}
+	conn := GRPCSwapServerConn{client: &testSwapServiceClient{
+		authorizeReply: reply,
+	}}
+	req := &swaprpc.AuthorizeInSwapRefundRequest{
+		ArkPsbt: []byte{
+			3,
+		}, CheckpointPsbt: []byte{
+			4,
+		},
+		RefundPubkey: []byte{
+			5,
+		}, OwnerProof: &swaprpc.SwapOwnerProof{},
+	}
+	_, err := conn.AuthorizeInSwapRefundPackage(t.Context(), req)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	legacy, err := conn.AuthorizeInSwapRefund(
+		t.Context(), lntypes.Hash{}, "source:0", 1, nil, nil,
+		req.CheckpointPsbt,
+	)
+	require.NoError(t, err)
+	require.Nil(t, legacy.PayoutSignature)
+	reply.PayoutSignature = &swaprpc.TaprootScriptSignature{
+		Signature: []byte{
+			2,
+		},
+	}
+	both, err := conn.AuthorizeInSwapRefundPackage(t.Context(), req)
+	require.NoError(t, err)
+	require.Equal(t, []byte{1}, both.Signature.Signature)
+	require.NotNil(t, both.PayoutSignature)
+	require.Equal(t, []byte{2}, both.PayoutSignature.Signature)
 }
 
 // TestAcknowledgeOutSwapHTLCPreservesStatusCode verifies the receive session

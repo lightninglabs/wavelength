@@ -19,6 +19,7 @@ const (
 	swapRecoveryAuthList           = "list-recoverable-swaps"
 	swapRecoveryAuthCreateIn       = "create-in-swap"
 	swapRecoveryAuthRequestChannel = "request-channel-id"
+	swapRecoveryAuthRefundPayout   = "authorize-in-swap-refund-payout"
 
 	swapRecoveryNonceLen = 16
 )
