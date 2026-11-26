@@ -420,8 +420,6 @@ func (c *EsploraClient) GetRawBlockHeader(ctx context.Context,
 // misses for the same hash are coalesced via rawBlockSF — full
 // mainnet blocks approach 4 MiB so collapsing a thundering herd is
 // load-bearing for the rate-limit budget of the Esplora endpoint.
-//
-//nolint:dupl
 func (c *EsploraClient) GetRawBlock(ctx context.Context,
 	blockHash chainhash.Hash) (*wire.MsgBlock, error) {
 
@@ -568,8 +566,6 @@ func (c *EsploraClient) GetTxStatus(ctx context.Context, txid chainhash.Hash) (
 // Results are memoized in txCache because a confirmed transaction's
 // contents are content-addressed by its txid. Concurrent misses for
 // the same txid are coalesced via txSF.
-//
-//nolint:dupl
 func (c *EsploraClient) GetRawTx(ctx context.Context, txid chainhash.Hash) (
 	*wire.MsgTx, error) {
 
@@ -578,7 +574,7 @@ func (c *EsploraClient) GetRawTx(ctx context.Context, txid chainhash.Hash) (
 		return cached.tx, nil
 	}
 
-	v, err, _ := c.txSF.Do(txid.String(),
+	resultCh := c.txSF.DoChan(txid.String(),
 		func() (interface{}, error) {
 			if cached, cErr := c.txCache.Get(
 				txid,
@@ -620,13 +616,20 @@ func (c *EsploraClient) GetRawTx(ctx context.Context, txid chainhash.Hash) (
 
 			return &tx, nil
 		})
-	if err != nil {
-		return nil, err
+	var result singleflight.Result
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if result.Err != nil {
+		return nil, result.Err
 	}
 
-	tx, ok := v.(*wire.MsgTx)
+	tx, ok := result.Val.(*wire.MsgTx)
 	if !ok {
-		return nil, fmt.Errorf("raw tx singleflight returned %T", v)
+		return nil, fmt.Errorf("raw tx singleflight returned %T",
+			result.Val)
 	}
 
 	return tx, nil
