@@ -1671,8 +1671,12 @@ type GetSwapRecoveryInfoResponse struct {
 	// supports_invoice_routing_key allows receive requests to delegate a
 	// dedicated Lightning routing key.
 	SupportsInvoiceRoutingKey bool `protobuf:"varint,3,opt,name=supports_invoice_routing_key,json=supportsInvoiceRoutingKey,proto3" json:"supports_invoice_routing_key,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// supports_refund_payout authorizes use of the two-signature
+	// cooperative refund package. Absent or false keeps the legacy
+	// checkpoint-only request.
+	SupportsRefundPayout bool `protobuf:"varint,4,opt,name=supports_refund_payout,json=supportsRefundPayout,proto3" json:"supports_refund_payout,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *GetSwapRecoveryInfoResponse) Reset() {
@@ -1722,6 +1726,13 @@ func (x *GetSwapRecoveryInfoResponse) GetNetworkGenesisHash() []byte {
 func (x *GetSwapRecoveryInfoResponse) GetSupportsInvoiceRoutingKey() bool {
 	if x != nil {
 		return x.SupportsInvoiceRoutingKey
+	}
+	return false
+}
+
+func (x *GetSwapRecoveryInfoResponse) GetSupportsRefundPayout() bool {
+	if x != nil {
+		return x.SupportsRefundPayout
 	}
 	return false
 }
@@ -3868,11 +3879,12 @@ const file_swap_proto_rawDesc = "" +
 	"\x1cListRecoverableSwapsResponse\x12.\n" +
 	"\x05swaps\x18\x01 \x03(\v2\x18.swaprpc.RecoverableSwapR\x05swaps\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\fR\rnextPageToken\"\x1c\n" +
-	"\x1aGetSwapRecoveryInfoRequest\"\xc6\x01\n" +
+	"\x1aGetSwapRecoveryInfoRequest\"\xfc\x01\n" +
 	"\x1bGetSwapRecoveryInfoResponse\x124\n" +
 	"\x16server_identity_pubkey\x18\x01 \x01(\fR\x14serverIdentityPubkey\x120\n" +
 	"\x14network_genesis_hash\x18\x02 \x01(\fR\x12networkGenesisHash\x12?\n" +
-	"\x1csupports_invoice_routing_key\x18\x03 \x01(\bR\x19supportsInvoiceRoutingKey\"\xfd\x06\n" +
+	"\x1csupports_invoice_routing_key\x18\x03 \x01(\bR\x19supportsInvoiceRoutingKey\x124\n" +
+	"\x16supports_refund_payout\x18\x04 \x01(\bR\x14supportsRefundPayout\"\xfd\x06\n" +
 	"\x0fRecoverableSwap\x12?\n" +
 	"\tdirection\x18\x01 \x01(\x0e2!.swaprpc.RecoverableSwapDirectionR\tdirection\x12!\n" +
 	"\fpayment_hash\x18\x02 \x01(\fR\vpaymentHash\x12\x1d\n" +
