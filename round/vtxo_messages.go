@@ -127,6 +127,11 @@ func (e *ForfeitConfirmedEvent) MessageType() string {
 // (SpendReleasedEvent).
 type SpendReserveEvent struct {
 	actor.BaseMessage
+
+	// AllowAssetTransition opts into reserving an asset-bearing VTXO for
+	// an asset-aware OOR transition. Plain Bitcoin spend paths leave this
+	// false so LiveState fails closed with ErrAssetVTXORequiresTransition.
+	AllowAssetTransition bool
 }
 
 // VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.

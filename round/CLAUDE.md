@@ -106,7 +106,9 @@ state transitions and validation rules live under [Invariants](#invariants).
   `SpendReleasedEvent`, `SpendCompletedEvent`, `ForfeitReleasedEvent`,
   `ForfeitSignedEvent`, `VTXOFailedEvent`, `ResumeVTXOEvent`,
   `PendingForfeitEvent`, `VTXOTerminatedMsg`.
-  `ForfeitReleasedEvent.RoundID` identifies the round releasing the VTXO.
+  `ForfeitReleasedEvent.RoundID` identifies the round releasing the VTXO;
+  `SpendReserveEvent.AllowAssetTransition` opts into reserving an asset VTXO
+  for an asset-aware OOR spend while keeping plain Bitcoin spends fail-closed.
 
 ### Misc
 

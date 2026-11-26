@@ -716,6 +716,9 @@ func (m *Manager) Receive(ctx context.Context,
 	case *SelectAndReserveSpendRequest:
 		return m.handleSelectAndReserveSpend(ctx, req)
 
+	case *SelectAndReserveAssetSpendRequest:
+		return m.handleSelectAndReserveAssetSpend(ctx, req)
+
 	case *ReleaseSpendRequest:
 		return m.handleReleaseSpend(ctx, req)
 

@@ -119,6 +119,39 @@ func TestAssetCriticalExpiryBypassesBitcoinFeeAssessment(t *testing.T) {
 	require.Same(t, event, a.preflightCriticalExit(h.ctx, event))
 }
 
+// TestAssetVTXOAllowsExplicitAssetSpendReserve verifies that an asset-aware
+// OOR spend reservation transitions a live asset VTXO into SpendingState, and
+// that the resulting SpendingState can complete or release normally.
+func TestAssetVTXOAllowsExplicitAssetSpendReserve(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	desc := h.newTestDescriptor()
+	root := chainhash.Hash{1}
+	desc.TaprootAssetRoot = &root
+	h.withState(&LiveState{VTXO: desc})
+
+	_, err := h.sendEvent(&SpendReserveEvent{AllowAssetTransition: true})
+	require.NoError(t, err)
+	assertState[*SpendingState](h)
+	require.Len(t, h.outboxMessages, 1)
+	statusUpdate, ok := h.outboxMessages[0].(*VTXOStatusUpdate)
+	require.True(t, ok)
+	require.Equal(t, VTXOStatusSpending, statusUpdate.NewStatus)
+
+	_, err = h.sendEvent(&SpendReleasedEvent{})
+	require.NoError(t, err)
+	assertState[*LiveState](h)
+
+	_, err = h.sendEvent(&SpendReserveEvent{AllowAssetTransition: true})
+	require.NoError(t, err)
+	assertState[*SpendingState](h)
+
+	_, err = h.sendEvent(&SpendCompletedEvent{})
+	require.NoError(t, err)
+	assertState[*SpentState](h)
+}
+
 // TestPendingAssetVTXORejectsForfeit protects recovered pending descriptors
 // even when their reservation predates the current process.
 func TestPendingAssetVTXORejectsForfeit(t *testing.T) {

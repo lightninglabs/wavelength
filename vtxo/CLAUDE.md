@@ -24,7 +24,7 @@ when the local wallet owns the receive script.
   verbatim once persisted). Use `EffectivePkScript`/`EffectivePolicyTemplate`
   to derive the current script/policy rather than reading `PkScript`
   directly, since custom policies decode through `PolicyTemplate`.
-- `Manager` — Actor managing per-VTXO FSM instances, lifecycle, and admission gating. Configured via `ManagerConfig`.
+- `Manager` — Actor managing per-VTXO FSM instances, lifecycle, and admission gating. Configured via `ManagerConfig`. Supports `SelectAndReserveAssetSpendRequest` (via `SelectAssetVTXOCandidates`, strictly isolating live asset VTXOs matching one canonical `AssetRef` with sealed packages, largest-first up to `MaxInputs`) alongside Bitcoin spend/forfeit selection.
 - `ManagerConfig` — Configuration holding Store, Wallet, ChainSource,
   ActorSystem, ChainParams, ExpiryConfig, RoundActor ref, ChainResolver ref,
   `TimeoutActor`, optional `Log`, optional `LedgerSink fn.Option[ledger.Sink]`,
@@ -200,9 +200,11 @@ when the local wallet owns the receive script.
 
 - **New incoming expiry is authenticated before persistence.** The thin
   indexer event is only a wake-up hint. `AuthenticateBatchExpiry` reconstructs
-  the sweep leaf, recomputes the tree-root output script, byte-matches that
-  output in a locally confirmed commitment transaction, and derives the
-  earliest `confirmation height + sweep delay` across ancestry fragments.
+  the sweep leaf, recomputes the tree-root output script (combining
+  `SweepTapscriptRoot` with `BatchAssetRoot` via `arkscript.TapBranchHash` when
+  present on an asset tree), byte-matches that output in a locally confirmed
+  commitment transaction, and derives the earliest
+  `confirmation height + sweep delay` across ancestry fragments.
   `AuthenticateBatchEvidence` derives creation height from the earliest
   confirmation in the same lookups, replacing the indexer hint before
   persistence. Legacy persisted rows retain the expiry/creation consistency

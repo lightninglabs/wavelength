@@ -81,6 +81,64 @@ type SelectAndReserveSpendResponse struct {
 // VTXOManagerResp implements the VTXOManagerResp marker interface.
 func (r *SelectAndReserveSpendResponse) VTXOManagerResp() {}
 
+// SelectAndReserveAssetSpendRequest asks the VTXO manager to select live
+// Taproot Asset VTXOs of one asset reference covering a target unit amount
+// (bounded by MaxInputs) and reserve them for an out-of-round asset transfer.
+type SelectAndReserveAssetSpendRequest struct {
+	actor.BaseMessage
+
+	// AssetRef is the canonical SDK asset reference to select.
+	AssetRef string
+
+	// TargetAmount is the minimum asset units the selected VTXOs must
+	// cover.
+	TargetAmount uint64
+
+	// MaxInputs bounds how many asset VTXOs may be merged in one transfer.
+	MaxInputs int
+}
+
+// VTXOManagerMsg implements VTXOManagerMsg marker interface.
+func (m *SelectAndReserveAssetSpendRequest) VTXOManagerMsg() {}
+
+// MessageType returns the message type for logging.
+func (m *SelectAndReserveAssetSpendRequest) MessageType() string {
+	return "SelectAndReserveAssetSpendRequest"
+}
+
+// SelectedAssetVTXO describes one asset-bearing VTXO selected and reserved for
+// an out-of-round asset transfer.
+type SelectedAssetVTXO struct {
+	// Outpoint is the selected VTXO's outpoint.
+	Outpoint wire.OutPoint
+
+	// ReserveEpoch is the manager's monotonic reservation epoch for this
+	// VTXO, echoed back so release refuses superseded reservations.
+	ReserveEpoch uint64
+
+	// Amount is the Bitcoin carrier value of this VTXO in satoshis.
+	Amount btcutil.Amount
+
+	// AssetAmount is the Taproot Asset unit balance carried by this VTXO.
+	AssetAmount uint64
+
+	// PkScript is the composed taproot output script for this VTXO.
+	PkScript []byte
+}
+
+// SelectAndReserveAssetSpendResponse returns the asset VTXOs selected and
+// reserved for an out-of-round asset transfer.
+type SelectAndReserveAssetSpendResponse struct {
+	// SelectedVTXOs is the set of asset VTXOs reserved for this spend.
+	SelectedVTXOs []SelectedAssetVTXO
+
+	// TotalAssetSelected is the sum of asset units across SelectedVTXOs.
+	TotalAssetSelected uint64
+}
+
+// VTXOManagerResp implements the VTXOManagerResp marker interface.
+func (r *SelectAndReserveAssetSpendResponse) VTXOManagerResp() {}
+
 // ReleaseSpendRequest releases VTXOs previously reserved for an OOR spend
 // back to LiveState. Used when the OOR operation fails or is cancelled.
 type ReleaseSpendRequest struct {
