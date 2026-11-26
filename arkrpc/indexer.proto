@@ -187,6 +187,24 @@ message OORRecipientEvent {
     // recipient output. Older servers may omit it, in which case clients fall
     // back to standard VTXO materialization.
     bytes vtxo_policy_template = 9;
+
+    // taproot_asset_root is the optional 32-byte Taproot Asset commitment root
+    // composed into this recipient output's Taproot script tree. Empty for
+    // plain Bitcoin outputs.
+    bytes taproot_asset_root = 10;
+
+    // taproot_asset_transfer is the optional versioned Wavelength container
+    // carrying the sealed checkpoint and Ark asset packages for this OOR
+    // session. Empty for plain Bitcoin sessions.
+    bytes taproot_asset_transfer = 11;
+
+    // taproot_asset_ref is the canonical asset reference (asset ID or group
+    // key) carried by this recipient output. Empty for plain Bitcoin outputs.
+    string taproot_asset_ref = 12;
+
+    // taproot_asset_amount is the number of asset units carried by this
+    // recipient output. Zero for plain Bitcoin outputs.
+    uint64 taproot_asset_amount = 13;
 }
 
 // OORSessionPackage carries finalized package artifacts for one OOR session.
@@ -199,6 +217,11 @@ message OORSessionPackage {
 
     // checkpoint_psbts are the finalized checkpoint PSBTs for this package.
     repeated bytes checkpoint_psbts = 3;
+
+    // taproot_asset_transfer is the optional versioned Wavelength container
+    // carrying the sealed checkpoint and Ark asset packages for this session.
+    // Empty for plain Bitcoin sessions.
+    bytes taproot_asset_transfer = 4;
 }
 
 // IncomingOOREvent is a lightweight notification delivered as a mailbox EVENT
@@ -471,6 +494,19 @@ message VTXO {
     // Packages are finalized and ordered ancestor-first, with the creating
     // session last. Round-direct VTXOs leave this empty.
     repeated OORSessionPackage ancestry_packages = 21;
+
+    // taproot_asset_root is the optional 32-byte Taproot Asset commitment root
+    // composed into this VTXO's Taproot script tree. Empty for plain Bitcoin
+    // VTXOs.
+    bytes taproot_asset_root = 22;
+
+    // taproot_asset_ref is the canonical asset reference (asset ID or group
+    // key) carried by this VTXO. Empty for plain Bitcoin VTXOs.
+    string taproot_asset_ref = 23;
+
+    // taproot_asset_amount is the number of asset units carried by this VTXO.
+    // Zero for plain Bitcoin VTXOs.
+    uint64 taproot_asset_amount = 24;
 }
 
 message ListVTXOsByScriptsRequest {
@@ -519,6 +555,11 @@ message GetOORSessionByTxidRequest {
 message GetOORSessionByTxidResponse {
     bytes ark_psbt = 1;
     repeated bytes checkpoint_psbts = 2;
+
+    // taproot_asset_transfer is the optional versioned Wavelength container
+    // carrying the sealed checkpoint and Ark asset packages for this session.
+    // Empty for plain Bitcoin sessions.
+    bytes taproot_asset_transfer = 3;
 }
 
 // TreeNode is a node in a virtual transaction tree.
@@ -657,4 +698,17 @@ message IncomingVTXOEvent {
     // commitment transaction. This is distinct from the leaf txid
     // carried in the outpoint field.
     bytes commitment_txid = 11;
+
+    // taproot_asset_root is the optional 32-byte Taproot Asset commitment root
+    // composed into this VTXO's Taproot script tree. Empty for plain Bitcoin
+    // VTXOs.
+    bytes taproot_asset_root = 12;
+
+    // taproot_asset_ref is the canonical asset reference (asset ID or group
+    // key) carried by this VTXO. Empty for plain Bitcoin VTXOs.
+    string taproot_asset_ref = 13;
+
+    // taproot_asset_amount is the number of asset units carried by this VTXO.
+    // Zero for plain Bitcoin VTXOs.
+    uint64 taproot_asset_amount = 14;
 }
