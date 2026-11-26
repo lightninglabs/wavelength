@@ -105,7 +105,7 @@ func (s *feeBumpStateIdle) ProcessEvent(ctx context.Context, event feeBumpEvent,
 		return s.idleTransition(), nil
 
 	// Nothing is in flight, so a late confirmation needs no action.
-	case *feeBumpFanoutConfirmedEvent:
+	case *feeBumpFanoutResolved:
 		return &feeBumpStateTransition{
 			NextState: s,
 		}, nil
@@ -244,13 +244,29 @@ func (s *feeBumpStateIdle) processDemands(ctx context.Context,
 		watchScript:         watchScript,
 		assignments:         assignments,
 		lastBroadcastHeight: height,
+		heightHint:          height,
 	}
 
-	err = env.broadcastFanout(ctx, pending)
-	if fanoutRejected(err) {
-		env.releasePredictedFanoutOutputs(assignments)
+	if env.journal != nil {
+		pending.journalEntry, err = encodeFeeSplit(pending)
+		if err != nil {
+			env.releasePredictedFanoutOutputs(assignments)
 
-		return s.stayIdle(env, err)
+			return s.stayIdle(env, err)
+		}
+	}
+	err = env.submitFeeSplit(ctx, pending)
+	if (env.journal == nil || pending.saved) && fanoutRejected(err) {
+		if clearErr := env.clearFeeSplit(
+			ctx, pending,
+		); clearErr != nil {
+
+			err = clearErr
+		} else {
+			env.releasePredictedFanoutOutputs(assignments)
+
+			return s.stayIdle(env, err)
+		}
 	}
 	env.lastErr = err
 
@@ -328,8 +344,8 @@ func (s *feeBumpStateFanoutPending) ProcessEvent(ctx context.Context,
 	case *feeBumpDemandsObserved:
 		return s.processDemands(ctx, event, env)
 
-	case *feeBumpFanoutConfirmedEvent:
-		return s.processConfirmed(ctx, event, env)
+	case *feeBumpFanoutResolved:
+		return s.processResolved(ctx, event, env)
 
 	case *feeBumpParentEvicted:
 		return s.processParentEvicted(ctx, event, env)
@@ -350,6 +366,11 @@ func (s *feeBumpStateFanoutPending) processDemands(ctx context.Context,
 	*feeBumpStateTransition, error) {
 
 	pending := s.pending
+	if pending.confirmedSpender != nil {
+		return s.processResolved(ctx, &feeBumpFanoutResolved{
+			txid: pending.txid, spender: *pending.confirmedSpender,
+		}, env)
+	}
 	height := event.height
 	retryInterval := event.retryInterval
 	if retryInterval <= 0 {
@@ -364,10 +385,20 @@ func (s *feeBumpStateFanoutPending) processDemands(ctx context.Context,
 		}, nil
 	}
 
-	err := env.broadcastFanout(ctx, pending)
-	if fanoutRejected(err) {
+	err := env.submitFeeSplit(ctx, pending)
+	if (env.journal == nil || pending.saved) && fanoutRejected(err) {
 		env.log.WarnS(ctx, "Pending fee-input fanout rejected; "+
 			"rebuilding", err, "txid", pending.txid)
+
+		if clearErr := env.clearFeeSplit(
+			ctx, pending,
+		); clearErr != nil {
+
+			env.lastErr = clearErr
+
+			//nolint:nilerr // The actor retries lastErr.
+			return env.refreshRebroadcast(ctx, pending, height), nil
+		}
 
 		return env.clearAndRebuild(ctx, pending, event), nil
 	}
@@ -375,6 +406,17 @@ func (s *feeBumpStateFanoutPending) processDemands(ctx context.Context,
 	env.lastErr = err
 
 	return env.refreshRebroadcast(ctx, pending, height), nil
+}
+
+// submitFeeSplit saves the exact bytes before any call to the chain backend.
+func (env *feeBumpEnvironment) submitFeeSplit(ctx context.Context,
+	pending *pendingFeeInputFanout) error {
+
+	if err := env.saveFeeSplit(ctx, pending); err != nil {
+		return fmt.Errorf("journal fee split: %w", err)
+	}
+
+	return env.broadcastFanout(ctx, pending)
 }
 
 // broadcastFanout submits the retained bytes. A malformed response or an
@@ -418,12 +460,10 @@ func fanoutRejected(err error) bool {
 		ClassifyBroadcastFailure(err) != BroadcastFailureUnknown
 }
 
-// processConfirmed promotes a confirmed fanout's predicted outputs into used
-// fee inputs on each assigned parent and returns to idle. A confirmation for
-// some other txid is a self-loop. On a match the actor is asked to tear down
-// the watch and retry the parents that were stuck waiting on supply.
-func (s *feeBumpStateFanoutPending) processConfirmed(ctx context.Context,
-	event *feeBumpFanoutConfirmedEvent, env *feeBumpEnvironment) (
+// processResolved clears the exact journal record before promoting confirmed
+// split outputs or releasing reservations for a confirmed competing spender.
+func (s *feeBumpStateFanoutPending) processResolved(ctx context.Context,
+	event *feeBumpFanoutResolved, env *feeBumpEnvironment) (
 	*feeBumpStateTransition, error) {
 
 	pending := s.pending
@@ -433,8 +473,26 @@ func (s *feeBumpStateFanoutPending) processConfirmed(ctx context.Context,
 		}, nil
 	}
 
-	env.broadcaster.fanoutInputs = nil
-	env.promoteConfirmedFanout(ctx, pending)
+	if err := env.clearFeeSplit(ctx, pending); err != nil {
+		env.lastErr = err
+		next := *pending
+		next.confirmedSpender = &event.spender
+
+		//nolint:nilerr // Retry clearing the journal.
+		return &feeBumpStateTransition{
+			NextState: &feeBumpStateFanoutPending{
+				pending: &next,
+			},
+		}, nil
+	}
+	// Only our own confirmed transaction created the predicted outputs.
+	// A confirmed competitor makes the split impossible on this chain.
+	if event.spender == pending.txid {
+		env.broadcaster.fanoutInputs = nil
+		env.promoteConfirmedFanout(ctx, pending)
+	} else {
+		env.releasePendingFanout(ctx, pending)
+	}
 
 	// Returning to idle: tell the actor to tear down the confirmation watch
 	// and retry every parent that was stuck waiting on the now-available
@@ -483,7 +541,7 @@ func (s *feeBumpStateFanoutPending) processParentEvicted(ctx context.Context,
 		next.assignments[parent] = outpoints
 	}
 
-	if len(next.assignments) > 0 {
+	if len(next.assignments) > 0 || env.journal != nil {
 		return &feeBumpStateTransition{
 			NextState: &feeBumpStateFanoutPending{
 				pending: &next,

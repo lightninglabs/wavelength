@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -6323,6 +6324,26 @@ func leaseFundedInputs(ctx context.Context, leaser walletcore.OutputLeaser,
 	return nil
 }
 
+// feeSplitInputScript looks up the funding script in wallet history even
+// after a competing spend has removed the input from ListUnspent.
+func feeSplitInputScript(
+	backend wallet.BoardingBackend,
+) func(context.Context, wire.OutPoint) ([]byte, error) {
+
+	return func(ctx context.Context, op wire.OutPoint) ([]byte, error) {
+		info, err := backend.GetTransaction(ctx, op.Hash)
+		if err != nil {
+			return nil, err
+		}
+		if info == nil || info.Tx == nil ||
+			uint64(op.Index) >= uint64(len(info.Tx.TxOut)) {
+			return nil, fmt.Errorf("missing fee split input %s", op)
+		}
+
+		return info.Tx.TxOut[op.Index].PkScript, nil
+	}
+}
+
 // initUnrollSubsystem registers shared tx confirmation, the unroll registry,
 // and recovery services before mailbox ingress. Durable replay and the VTXO
 // expiry handoff wait until ingress can answer authenticated material lookups.
@@ -6346,6 +6367,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 
 	// Build the wallet adapter shared by txconfirm and unroll
 	// sweep signing.
+	var splitBackend wallet.BoardingBackend
 	var unrollWallet interface {
 		txconfirm.Wallet
 		unroll.SweepWallet
@@ -6369,6 +6391,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 			scripts:         s.ownedWalletScripts(),
 		}
 		unrollWallet = w
+		splitBackend = boardingBackend
 
 	case WalletTypeLwwallet:
 		lww := s.lwWallet.UnsafeFromSome()
@@ -6377,6 +6400,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 			scripts: s.ownedWalletScripts(),
 		}
 		unrollWallet = w
+		splitBackend = lww.BoardingBackend()
 
 	case WalletTypeBtcwallet:
 		btcw := s.btcwWallet.UnsafeFromSome()
@@ -6385,22 +6409,42 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 			scripts: s.ownedWalletScripts(),
 		}
 		unrollWallet = w
+		splitBackend = btcw.BoardingBackend()
 	}
 
 	// 1. Create and register the shared tx confirmation actor.
+	split, err := dbStore.Queries().LoadWalletFeeSplit(ctx)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("load wallet fee split: %w", err)
+	}
 	txConfirm := txconfirm.NewTxBroadcasterActor(txconfirm.Config{
+		FeeSplitJournal:       dbStore.Queries(),
+		FeeSplitInputScript:   feeSplitInputScript(splitBackend),
 		ChainSource:           chainSourceRef,
 		Wallet:                unrollWallet,
 		Log:                   fn.Some(s.subLogger("TXCF")),
 		MaxFeeRateSatPerVByte: s.unrollMaxFeeRate(),
 		FeeBumpIntervalBlocks: s.unrollBumpAfterBlocks(),
 	})
+	if len(split) > 0 {
+		if err := txConfirm.RestoreFeeSplit(split); err != nil {
+			return fmt.Errorf("restore wallet fee split: %w", err)
+		}
+	}
 	txConfirmKey := txconfirm.NewServiceKey()
 	txConfirmRef := actor.RegisterWithSystem(
 		s.actorSystem, txconfirm.ServiceKeyName, txConfirmKey,
 		txConfirm,
 	)
 	txConfirm.SetSelfRef(txConfirmRef)
+	if len(split) > 0 {
+		if _, err := txConfirmRef.
+			Ask(ctx, &txconfirm.ResumeFeeSplit{}).
+			Await(ctx).
+			Unpack(); err != nil {
+			return fmt.Errorf("resume wallet fee split: %w", err)
+		}
+	}
 
 	// The unroll children use this ref to submit proof/sweep txs. In tests
 	// it may be wrapped to reject broadcasts pre-mempool so the

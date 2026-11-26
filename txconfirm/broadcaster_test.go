@@ -3719,8 +3719,8 @@ func (c *testFeeBump) OnFanoutConfirmed(ctx context.Context,
 
 	c.t.Helper()
 
-	_, err := c.fsm.AskEvent(ctx, &feeBumpFanoutConfirmedEvent{
-		txid: txid,
+	_, err := c.fsm.AskEvent(ctx, &feeBumpFanoutResolved{
+		txid: txid, spender: txid,
 	}).Await(ctx).Unpack()
 	require.NoError(c.t, err)
 }
@@ -3742,7 +3742,7 @@ func (c *testFeeBump) PruneParent(ctx context.Context, parent chainhash.Hash) {
 func newTestFeeBumpController(t *testing.T, b *CPFPBroadcaster) *testFeeBump {
 	t.Helper()
 
-	fsm, env := newFeeBumpStateMachine(b, btclog.Disabled)
+	fsm, env := newFeeBumpStateMachine(b, btclog.Disabled, nil)
 	fsm.Start(t.Context())
 	t.Cleanup(fsm.Stop)
 

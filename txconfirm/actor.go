@@ -81,6 +81,14 @@ var ErrEnsureParamsMismatch = errors.New("ensure params mismatch existing " +
 
 // Config configures the generic shared tx confirmation actor.
 type Config struct {
+	// FeeSplitJournal persists signed wallet splits before publication.
+	FeeSplitJournal FeeSplitJournal
+
+	// FeeSplitInputScript looks up the original wallet output, including
+	// after it was spent. The chain notifier needs its script to find a
+	// competing spend that confirmed while the broadcaster was offline.
+	FeeSplitInputScript func(context.Context, wire.OutPoint) ([]byte, error)
+
 	// ChainSource provides the blockchain interface for best-height
 	// queries,
 	// confirmation watches, block subscriptions, fee estimation, and
@@ -181,6 +189,13 @@ type TxBroadcasterActor struct {
 	// read back the per-turn operational error a transition stashed (rather
 	// than returned, which would tear the long-lived FSM down).
 	feeBumpEnv *feeBumpEnvironment
+
+	// fanoutWatchActive is true after chainsource acknowledged the watch.
+	fanoutWatchActive bool
+
+	// splitSpendWatches stores requested registrations for the current
+	// candidate. The script is part of the key used to unsubscribe.
+	splitSpendWatches map[wire.OutPoint][]byte
 
 	// tracked maps txid to its shared confirmation state.
 	tracked map[chainhash.Hash]*trackedTx
@@ -411,7 +426,8 @@ func NewTxBroadcasterActor(cfg Config) *TxBroadcasterActor {
 	})
 
 	log := cfg.Log.UnwrapOr(btclog.Disabled)
-	feeBumpFSM, feeBumpEnv := newFeeBumpStateMachine(broadcaster, log)
+	feeBumpFSM, feeBumpEnv := newFeeBumpStateMachine(broadcaster, log, nil)
+	feeBumpEnv.journal = cfg.FeeSplitJournal
 
 	return &TxBroadcasterActor{
 		cfg:                    cfg,
@@ -435,6 +451,13 @@ func (a *TxBroadcasterActor) Receive(ctx context.Context,
 	msg Msg) fn.Result[Resp] {
 
 	switch req := msg.(type) {
+	case *ResumeFeeSplit:
+		if err := a.resumeFeeSplit(ctx); err != nil {
+			return fn.Err[Resp](err)
+		}
+
+		return fn.Ok[Resp](&EnsureConfirmedResp{})
+
 	case *EnsureConfirmedReq:
 		resp, err := a.handleEnsure(ctx, req)
 		if err != nil {
@@ -458,6 +481,39 @@ func (a *TxBroadcasterActor) Receive(ctx context.Context,
 		}
 
 		return fn.Ok[Resp](resp)
+
+	case *splitWatchResult:
+		pending := a.feeBumpPending()
+		if req.err != nil && pending != nil &&
+			req.candidate == pending.txid {
+
+			delete(a.splitSpendWatches, req.input)
+			a.log.WarnS(ctx, "Register split input spend", req.err,
+				"outpoint", req.input)
+		}
+
+		return fn.Ok[Resp](&EnsureConfirmedResp{})
+
+	case *splitSpendObserved:
+		pending := a.feeBumpPending()
+		if pending != nil && pending.txid == req.candidate &&
+			req.height > 0 {
+
+			if req.spender == pending.txid {
+				a.handleFanoutConfirmed(
+					ctx, &confirmationObservedMsg{
+						txid: pending.txid,
+					},
+				)
+			} else {
+				a.driveFeeBump(ctx, &feeBumpFanoutResolved{
+					txid:    pending.txid,
+					spender: req.spender,
+				})
+			}
+		}
+
+		return fn.Ok[Resp](&EnsureConfirmedResp{})
 
 	case *confirmationObservedMsg:
 		a.handleConfirmationObserved(ctx, req)
@@ -1435,6 +1491,23 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 	if !a.hasBestHeight || msg.height > a.bestHeight {
 		a.bestHeight = msg.height
 		a.hasBestHeight = true
+	}
+
+	// A recorded split remains wallet work even if every original
+	// subscriber stopped or the daemon restarted before any job resumed.
+	if pending := a.feeBumpPending(); pending != nil &&
+		a.cfg.FeeSplitJournal != nil {
+
+		if err := a.watchFeeSplit(ctx, pending); err != nil {
+			a.log.WarnS(ctx, "Unable to restore fee split watch",
+				err,
+			)
+		}
+		a.driveFeeBump(ctx, &feeBumpDemandsObserved{
+			height: msg.height, retryInterval: a.
+				cfg.
+				FeeBumpIntervalBlocks,
+		})
 	}
 
 	for _, entry := range a.tracked {

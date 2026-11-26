@@ -132,6 +132,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   they must not rebuild merely because a confirmed rebroadcast was ambiguous.
   A lost first split receipt retains the signed bytes, watches their local
   txid and excludes the original split inputs from other fee children.
+  The daemon journals the signed split, assignments and height hint before
+  first submit. Startup restores its input exclusions and confirmation watch.
+  A committed save with a lost receipt is retried with the same bytes.
+  A confirmed split whose journal clear fails retries on a later block.
   Pending fanouts also retain their reservations on transport or unclassified
   rebroadcast failures. The operational error stays visible, and retries
   remain block-paced; only an explicit rejection uses the rebuild path.

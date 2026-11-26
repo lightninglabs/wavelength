@@ -112,8 +112,8 @@ func (a *TxBroadcasterActor) driveFeeBump(ctx context.Context,
 		// the actor learns when its outputs mature into usable fee
 		// inputs.
 		case *feeBumpWatchFanout:
-			if err := a.registerFanoutConfWatch(
-				ctx, out.txid, out.watchScript,
+			if err := a.watchFeeSplit(
+				ctx, a.feeBumpPending(),
 			); err != nil {
 
 				a.log.WarnS(ctx, "Unable to watch fee-input "+
@@ -122,6 +122,8 @@ func (a *TxBroadcasterActor) driveFeeBump(ctx context.Context,
 
 		// The fanout confirmed or was abandoned: tear down its watch.
 		case *feeBumpUnwatchFanout:
+			a.stopSplitSpendWatches(ctx, out.txid)
+			a.fanoutWatchActive = false
 			if err := a.unregisterFanoutConfWatch(
 				ctx, out.txid, out.watchScript,
 			); err != nil {
@@ -208,8 +210,17 @@ func (a *TxBroadcasterActor) activeFeeInputDemands(ctx context.Context) (
 			continue
 		}
 
-		fee, err := EstimatePackageFee(
+		// Split outputs and the CPFP change are wallet-managed scripts.
+		// Price that script family exactly as the next child builder
+		// does. The generic P2WPKH estimate can undersize every split
+		// output in a P2TR wallet.
+		change, err := a.broadcaster.parentChangePkScript(ctx, txid)
+		if err != nil {
+			return nil, 0, err
+		}
+		fee, err := computePackageFee(
 			entry.data.Tx, btcutil.Amount(feeRate),
+			estimateChildVSize(change, change),
 		)
 		if err != nil {
 			return nil, 0, err
@@ -230,7 +241,7 @@ func (a *TxBroadcasterActor) activeFeeInputDemands(ctx context.Context) (
 // into handleFanoutConfirmed. The watch is keyed by both txid and pkScript so
 // it round-trips symmetrically with unregisterFanoutConfWatch.
 func (a *TxBroadcasterActor) registerFanoutConfWatch(ctx context.Context,
-	txid chainhash.Hash, watchScript []byte) error {
+	txid chainhash.Hash, watchScript []byte, heightHint uint32) error {
 
 	if len(watchScript) == 0 {
 		return nil
@@ -251,6 +262,7 @@ func (a *TxBroadcasterActor) registerFanoutConfWatch(ctx context.Context,
 	_, err := a.cfg.ChainSource.Ask(
 		ctx, &chainsource.RegisterConfRequest{
 			CallerID:    a.fanoutConfCallerID(txid),
+			HeightHint:  heightHint,
 			Txid:        &txid,
 			PkScript:    watchScript,
 			TargetConfs: 1,
@@ -303,8 +315,15 @@ func (a *TxBroadcasterActor) handleFanoutConfirmed(ctx context.Context,
 		return false
 	}
 
-	a.driveFeeBump(ctx, &feeBumpFanoutConfirmedEvent{
-		txid: msg.txid,
+	// Restored assignments can outlive a job which finished while the
+	// daemon was offline. Only live parents keep the confirmed output.
+	for parent := range pending.assignments {
+		if _, live := a.tracked[parent]; !live {
+			delete(a.broadcaster.parentStates, parent)
+		}
+	}
+	a.driveFeeBump(ctx, &feeBumpFanoutResolved{
+		txid: msg.txid, spender: msg.txid,
 	})
 
 	return true
