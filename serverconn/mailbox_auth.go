@@ -50,8 +50,8 @@ const MailboxTLSBindTagStr = "mailbox-tls-bind"
 //   - Send passes the compound operator:client recipient, which
 //     embeds the operator's pubkey-derived ID, so a Send signature is
 //     useless at any other operator.
-//   - Pull and AckUpTo pass the client's own plain mailbox ID
-//     (ingress.go, via ConnectorConfig.LocalMailboxID), which carries
+//   - Pull and AckUpTo pass the configured reply mailbox ID
+//     (ingress.go, via ConnectorConfig.replyMailboxID), which carries
 //     no operator component. That digest is identical at every
 //     operator, so one Pull/Ack signature authorizes that client's
 //     mailbox at every operator its identity key is known to. Identity
