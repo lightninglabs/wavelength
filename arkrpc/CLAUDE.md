@@ -18,10 +18,15 @@ Proto source: `arkrpc/ark.proto`, `arkrpc/indexer.proto`.
 - `IncomingOOREvent` — Lightweight notification (wake-up hint). Carries only
   session_id, pk_script, event_id. Triggers the three-phase receive flow.
 - `OORRecipientEvent` — Phase 1 query response from
-  `ListOORRecipientEventsByScript`. Carries the full Ark PSBT and checkpoint
-  PSBTs that `IncomingOOREvent` intentionally omits.
-- `VTXO` — Phase 2 query response from `ListVTXOsByScripts`. Carries
-  authoritative lineage metadata including the structured `TreePath`.
+  `ListOORRecipientEventsByScript`. Carries the full Ark PSBT, checkpoint
+  PSBTs, and optional Taproot Asset fields (`taproot_asset_root`,
+  `taproot_asset_transfer`, `taproot_asset_ref`, `taproot_asset_amount`) that
+  `IncomingOOREvent` intentionally omits. `OORSessionPackage` and
+  `GetOORSessionByTxidResponse` also carry `taproot_asset_transfer` for
+  ancestor and refetch lookups.
+- `VTXO` / `IncomingVTXOEvent` — Authoritative inventory and push-event
+  metadata, including the structured `TreePath` and optional Taproot Asset
+  metadata (`taproot_asset_root`, `taproot_asset_ref`, `taproot_asset_amount`).
 - `AncestryPath.commitment_sweep_key` / `commitment_sweep_delay` — Additive
   evidence that lets clients reconstruct the tree sweep leaf and authenticate
   an absolute expiry against a locally confirmed commitment transaction.
