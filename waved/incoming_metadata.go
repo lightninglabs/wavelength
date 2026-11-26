@@ -106,6 +106,16 @@ func resolveIncomingMetadataWithRetry(ctx context.Context, idx *indexer.Client,
 		slog.String("pk_script", fmt.Sprintf("%x", recipient.PkScript)),
 	)
 
+	var signerScript []byte
+	if recipient.Asset != nil {
+		var err error
+		signerScript, err = recipient.RoutingPkScript()
+		if err != nil {
+			return oor.IncomingVTXOMetadata{}, fmt.Errorf("derive "+
+				"asset routing script: %w", err)
+		}
+	}
+
 	var cursor []byte
 	var scanned uint64
 	for {
@@ -122,6 +132,9 @@ func resolveIncomingMetadataWithRetry(ctx context.Context, idx *indexer.Client,
 					PkScript: append(
 						[]byte(nil),
 						recipient.PkScript...,
+					),
+					SignerScript: append(
+						[]byte(nil), signerScript...,
 					),
 				}},
 				cursor, pageSize, nil, opts,

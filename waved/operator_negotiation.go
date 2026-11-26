@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/lib/batchschedule"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/lib/types"
 	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
 	"github.com/lightninglabs/wavelength/serverconn"
@@ -77,6 +78,17 @@ func operatorTermsFromResponse(resp *arkrpc.GetInfoResponse) (
 		}
 	}
 
+	var oorCarrierPubKey *btcec.PublicKey
+	if len(resp.OorCarrierPubkey) > 0 {
+		oorCarrierPubKey, err = oortx.ParseCarrierPubKey(
+			resp.OorCarrierPubkey,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("parse oor carrier pubkey: %w",
+				err)
+		}
+	}
+
 	// The forfeit penalty key, sweep key and sweep delay are no longer
 	// global operator terms; they are delivered per round in the batch
 	// info, so GetInfo no longer carries them.
@@ -97,6 +109,7 @@ func operatorTermsFromResponse(resp *arkrpc.GetInfoResponse) (
 		MaxOORLineageVBytes:     resp.MaxOorLineageVbytes,
 		MaxUserBalance:          btcutil.Amount(resp.MaxUserBalance),
 		AssetRefs:               assetRefs,
+		OORCarrierPubKey:        oorCarrierPubKey,
 	}, nil
 }
 

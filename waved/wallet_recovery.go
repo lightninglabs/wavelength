@@ -757,6 +757,7 @@ func (r *RPCServer) recoveryOORHandler(
 		OperatorKey:                terms.PubKey,
 		ExitDelay:                  terms.VTXOExitDelay,
 		AuthenticateIncomingExpiry: r.server.expiryAuthenticator,
+		VerifyIncomingAssetPackage: r.server.verifyIncomingAssetOOR,
 
 		// Recovery materializes receives without going through the
 		// session actor, so the ledger emission the session behaviour
@@ -870,9 +871,12 @@ func (r *RPCServer) materializeRecoveredOOREvent(ctx context.Context,
 		return fmt.Errorf("decode incoming event: %w", err)
 	}
 
-	recipients, err := oor.ExtractArkRecipients(incoming.ArkPSBT)
-	if err != nil {
-		return fmt.Errorf("extract recipients: %w", err)
+	recipients := oor.CloneArkRecipients(incoming.Recipients)
+	if len(recipients) == 0 {
+		recipients, err = oor.ExtractArkRecipients(incoming.ArkPSBT)
+		if err != nil {
+			return fmt.Errorf("extract recipients: %w", err)
+		}
 	}
 
 	metadataMatches := make(
@@ -939,6 +943,7 @@ func (r *RPCServer) materializeRecoveredOOREvent(ctx context.Context,
 			Recipients:           recipients,
 			MetadataMatches:      metadataMatches,
 			AncestorPackages:     incoming.AncestorPackages,
+			TaprootAssetTransfer: incoming.TaprootAssetTransfer,
 		},
 	)
 	if err != nil {

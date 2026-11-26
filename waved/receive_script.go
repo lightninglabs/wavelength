@@ -125,7 +125,13 @@ func ResolveOwnedReceiveScriptKey(ctx context.Context,
 			"script must be provided")
 	}
 
-	rec, err := store.LookupOwnedReceiveScript(ctx, recipient.PkScript)
+	lookupScript, err := recipient.RoutingPkScript()
+	if err != nil {
+		return keychain.KeyDescriptor{}, fmt.Errorf("resolve routing "+
+			"receive script: %w", err)
+	}
+
+	rec, err := store.LookupOwnedReceiveScript(ctx, lookupScript)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return keychain.KeyDescriptor{},

@@ -133,6 +133,11 @@ type RPCServer struct {
 	// without booting the receive-script persistence stack.
 	oorChangeRecipientOverride func(context.Context, btcutil.Amount) (
 		oortx.RecipientOutput, error)
+
+	// oorCarrierLeaseOverride lets focused RPC tests supply an operator
+	// carrier float lease without booting a mailbox transport.
+	oorCarrierLeaseOverride func(context.Context, btcutil.Amount,
+		string) (*oor.OORCarrierLease, error)
 }
 
 // NewRPCServer creates a new RPCServer backed by the given Server.
