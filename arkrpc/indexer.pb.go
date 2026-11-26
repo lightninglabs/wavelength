@@ -1462,8 +1462,12 @@ type TreePath struct {
 	// sweep_tapscript_root is the tapscript root hash for tweaking branch
 	// outputs. Empty for connector trees.
 	SweepTapscriptRoot []byte `protobuf:"bytes,4,opt,name=sweep_tapscript_root,json=sweepTapscriptRoot,proto3" json:"sweep_tapscript_root,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// batch_asset_root is the optional 32-byte Taproot Asset commitment leaf
+	// hash composed beside sweep_tapscript_root in batch_output. Empty for
+	// Bitcoin-only trees.
+	BatchAssetRoot []byte `protobuf:"bytes,5,opt,name=batch_asset_root,json=batchAssetRoot,proto3" json:"batch_asset_root,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *TreePath) Reset() {
@@ -1520,6 +1524,13 @@ func (x *TreePath) GetBatchOutput() *TxOut {
 func (x *TreePath) GetSweepTapscriptRoot() []byte {
 	if x != nil {
 		return x.SweepTapscriptRoot
+	}
+	return nil
+}
+
+func (x *TreePath) GetBatchAssetRoot() []byte {
+	if x != nil {
+		return x.BatchAssetRoot
 	}
 	return nil
 }
@@ -2987,12 +2998,13 @@ const file_indexer_proto_rawDesc = "" +
 	"\tsignature\x18\x06 \x01(\fR\tsignature\x1a;\n" +
 	"\rChildrenEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\rR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01\"\xd3\x01\n" +
+	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01\"\xfd\x01\n" +
 	"\bTreePath\x12*\n" +
 	"\x05nodes\x18\x01 \x03(\v2\x14.arkrpc.TreePathNodeR\x05nodes\x127\n" +
 	"\x0ebatch_outpoint\x18\x02 \x01(\v2\x10.arkrpc.OutPointR\rbatchOutpoint\x120\n" +
 	"\fbatch_output\x18\x03 \x01(\v2\r.arkrpc.TxOutR\vbatchOutput\x120\n" +
-	"\x14sweep_tapscript_root\x18\x04 \x01(\fR\x12sweepTapscriptRoot\"\xbf\x02\n" +
+	"\x14sweep_tapscript_root\x18\x04 \x01(\fR\x12sweepTapscriptRoot\x12(\n" +
+	"\x10batch_asset_root\x18\x05 \x01(\fR\x0ebatchAssetRoot\"\xbf\x02\n" +
 	"\fAncestryPath\x12-\n" +
 	"\ttree_path\x18\x01 \x01(\v2\x10.arkrpc.TreePathR\btreePath\x12'\n" +
 	"\x0fcommitment_txid\x18\x02 \x01(\fR\x0ecommitmentTxid\x12#\n" +

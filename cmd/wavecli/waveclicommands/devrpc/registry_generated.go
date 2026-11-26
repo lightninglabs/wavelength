@@ -150,6 +150,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "SendOOR initiates an out-of-round transfer directly between the\nclient and operator, without waiting for a round.",
 				},
 				{
+					Name:     "SendAssetOOR",
+					Aliases:  []string{"send-asset-oor"},
+					Input:    "waverpc.SendAssetOORRequest",
+					Output:   "waverpc.SendAssetOORResponse",
+					Comments: "SendAssetOOR initiates an out-of-round Taproot Asset transfer directly\nbetween the client and operator, merging up to eight live asset VTXOs\nand leasing an operator carrier float for the new asset leaves.",
+				},
+				{
 					Name:     "PrepareOOR",
 					Aliases:  []string{"prepare-oor"},
 					Input:    "waverpc.PrepareOORRequest",
