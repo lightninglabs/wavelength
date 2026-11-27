@@ -322,7 +322,7 @@ func NewOORRegistryActor(cfg OORRegistryConfig) (*OORRegistryActor, error) {
 			map[SessionID]clientdb.OORSessionDirection,
 		),
 		incoming:            make(map[SessionID]struct{}),
-		activeIncomingEvent: make(map[SessionID]uint64),
+		activeIncomingHint:  make(map[SessionID]IncomingHintKey),
 		pendingOutgoingKeys: make(map[string]SessionID),
 		parkedSelfHints: make(
 			map[SessionID][]*ResolveIncomingTransferRequest,
@@ -432,11 +432,11 @@ type oorRegistryBehavior struct {
 	spawnFunc func(SessionID, clientdb.OORSessionDirection) (
 		*OORSessionActor, error)
 
-	// activeIncomingEvent tracks the RecipientEventID currently being
-	// driven by each resident incoming session child, so a distinct
-	// recipient event for the same session can be parked and immediately
+	// activeIncomingHint tracks the (pkScript, RecipientEventID) hint
+	// currently being driven by each resident incoming session child, so a
+	// distinct hint for the same session can be parked and immediately
 	// redriven when the active pass completes and reaps.
-	activeIncomingEvent map[SessionID]uint64
+	activeIncomingHint map[SessionID]IncomingHintKey
 
 	// parkedSelfHints holds incoming hints deferred because their session
 	// is still active as outgoing or currently resolving another owned
@@ -1249,14 +1249,18 @@ func (r *oorRegistryBehavior) handleResolveIncoming(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 
+	hintKey := NewIncomingHintKey(
+		req.RecipientPkScript, req.RecipientEventID,
+	)
+
 	_, existed := r.active[req.SessionID]
 	if existed &&
 		r.activeDirs[req.SessionID] ==
 			clientdb.OORSessionDirectionIncoming &&
-		req.RecipientEventID > 0 {
+		!hintKey.IsZero() {
 
-		activeID := r.activeIncomingEvent[req.SessionID]
-		if activeID > 0 && activeID != req.RecipientEventID {
+		activeHint := r.activeIncomingHint[req.SessionID]
+		if !activeHint.IsZero() && activeHint != hintKey {
 			r.parkSelfHint(req)
 
 			return fn.Err[ActorResp](
@@ -1273,7 +1277,7 @@ func (r *oorRegistryBehavior) handleResolveIncoming(ctx context.Context,
 	// Remove any parked copy of this specific hint now that it is being
 	// admitted, while preserving any other distinct parked hints for the
 	// same session.
-	r.unparkSelfHint(req.SessionID, req.RecipientEventID)
+	r.unparkSelfHint(req.SessionID, hintKey)
 
 	// Bound the number of resident incoming children one daemon admits at
 	// once. A new admission past the cap is rejected before any child is
@@ -1326,14 +1330,13 @@ func (r *oorRegistryBehavior) handleResolveIncoming(ctx context.Context,
 	}
 
 	if !existed {
-		if req.RecipientEventID > 0 {
-			if r.activeIncomingEvent == nil {
-				r.activeIncomingEvent = make(
-					map[SessionID]uint64,
+		if !hintKey.IsZero() {
+			if r.activeIncomingHint == nil {
+				r.activeIncomingHint = make(
+					map[SessionID]IncomingHintKey,
 				)
 			}
-			r.activeIncomingEvent[req.SessionID] = req.
-				RecipientEventID
+			r.activeIncomingHint[req.SessionID] = hintKey
 		}
 		r.logger(ctx).InfoS(ctx, "Admitting incoming OOR session",
 			slog.String("session_id", req.SessionID.String()),
@@ -1432,8 +1435,14 @@ func (r *oorRegistryBehavior) parkSelfHint(
 	}
 
 	queued := r.parkedSelfHints[req.SessionID]
+	reqKey := NewIncomingHintKey(
+		req.RecipientPkScript, req.RecipientEventID,
+	)
 	for i := range queued {
-		if queued[i].RecipientEventID == req.RecipientEventID {
+		curKey := NewIncomingHintKey(
+			queued[i].RecipientPkScript, queued[i].RecipientEventID,
+		)
+		if curKey == reqKey {
 			queued[i] = req
 
 			return
@@ -1446,10 +1455,10 @@ func (r *oorRegistryBehavior) parkSelfHint(
 	r.parkedSelfHints[req.SessionID] = append(queued, req)
 }
 
-// unparkSelfHint removes one parked hint matching recipientEventID from
-// sessionID's queue, leaving any other distinct parked hints intact.
+// unparkSelfHint removes one parked hint matching hintKey from sessionID's
+// queue, leaving any other distinct parked hints intact.
 func (r *oorRegistryBehavior) unparkSelfHint(sessionID SessionID,
-	recipientEventID uint64) {
+	hintKey IncomingHintKey) {
 
 	queued := r.parkedSelfHints[sessionID]
 	if len(queued) == 0 {
@@ -1458,7 +1467,10 @@ func (r *oorRegistryBehavior) unparkSelfHint(sessionID SessionID,
 
 	kept := queued[:0]
 	for _, h := range queued {
-		if h.RecipientEventID == recipientEventID {
+		curKey := NewIncomingHintKey(
+			h.RecipientPkScript, h.RecipientEventID,
+		)
+		if curKey == hintKey {
 			continue
 		}
 		kept = append(kept, h)
@@ -1952,7 +1964,7 @@ func (r *oorRegistryBehavior) dropChild(sessionID SessionID,
 	delete(r.active, sessionID)
 	delete(r.activeDirs, sessionID)
 	delete(r.incoming, sessionID)
-	delete(r.activeIncomingEvent, sessionID)
+	delete(r.activeIncomingHint, sessionID)
 	for key, pendingID := range r.pendingOutgoingKeys {
 		if pendingID == sessionID {
 			delete(r.pendingOutgoingKeys, key)
@@ -2050,6 +2062,14 @@ func (r *oorRegistryBehavior) restoreNonTerminal(ctx context.Context) error {
 				err)
 		}
 
+		if rows[i].Direction == clientdb.OORSessionDirectionIncoming &&
+			len(rows[i].SnapshotData) > 0 {
+
+			r.restoreActiveIncomingHint(
+				sessionID, rows[i].SnapshotData,
+			)
+		}
+
 		// Re-emit the outbox implied by the restored state. The Tell
 		// lands in the child's durable mailbox, so the resume itself
 		// survives a crash between this loop and the child's turn.
@@ -2081,4 +2101,28 @@ func (r *oorRegistryBehavior) restoreNonTerminal(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// restoreActiveIncomingHint reconstructs the registry's in-flight hint entry
+// from a restored incoming session snapshot so concurrent hints for a busy
+// session are parked instead of racing after restart.
+func (r *oorRegistryBehavior) restoreActiveIncomingHint(sessionID SessionID,
+	snapshotData []byte) {
+
+	snap, err := decodeIncomingSnapshotWithLimits(
+		snapshotData, r.cfg.Limits,
+	)
+	if err != nil {
+		return
+	}
+
+	activeHint := snap.ActiveHintKey()
+	if activeHint.IsZero() {
+		return
+	}
+
+	if r.activeIncomingHint == nil {
+		r.activeIncomingHint = make(map[SessionID]IncomingHintKey)
+	}
+	r.activeIncomingHint[sessionID] = activeHint
 }

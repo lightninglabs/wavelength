@@ -2,6 +2,7 @@ package oor
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -577,14 +578,23 @@ func (b *sessionBehavior) handleResolveIncomingTransfer(ctx context.Context,
 	}
 
 	// Handle hints targeting an already-loaded incoming session:
-	//   - While a pass is in flight for another recipient event of the
-	//     same session, postpone so the new event runs once the current
-	//     pass completes (rather than dropping it as a duplicate).
-	//   - Once completed, allow a distinct new recipient event ID (such as
-	//     asset change + Bitcoin carrier return in one transfer) to start a
-	//     fresh ReceiveResolving pass while keeping previously completed
-	//     event IDs and legacy completed snapshots idempotent.
-	var priorCompleted []uint64
+	//   - While a pass is in flight for another per-script recipient hint
+	//     of the same session, postpone so the new hint runs once the
+	//     current pass completes (rather than dropping it as a duplicate).
+	//   - Once completed, allow a distinct new (pkScript, eventID) hint
+	//     whose plain script was not already materialized (such as asset
+	//     change + Bitcoin carrier return in one transfer) to start a fresh
+	//     ReceiveResolving pass while keeping previously completed hints,
+	//     already-materialized plain Bitcoin scripts, and legacy completed
+	//     snapshots idempotent.
+	hintKey := NewIncomingHintKey(
+		req.RecipientPkScript, req.RecipientEventID,
+	)
+
+	var (
+		priorCompleted    []IncomingHintKey
+		priorPlainScripts [][sha256.Size]byte
+	)
 	if b.loaded && b.fsm != nil {
 		curState, err := b.fsm.CurrentState()
 		if err != nil {
@@ -593,9 +603,9 @@ func (b *sessionBehavior) handleResolveIncomingTransfer(ctx context.Context,
 
 		completed, isCompleted := curState.(*ReceiveCompleted)
 		if !isCompleted {
-			activeID := activeIncomingEventID(curState)
-			if req.RecipientEventID > 0 && activeID > 0 &&
-				activeID != req.RecipientEventID {
+			activeHint := activeIncomingHint(curState)
+			if !hintKey.IsZero() && !activeHint.IsZero() &&
+				activeHint != hintKey {
 
 				postpone := actor.Postpone(
 					selfHintRedeliveryBackoff,
@@ -604,24 +614,29 @@ func (b *sessionBehavior) handleResolveIncomingTransfer(ctx context.Context,
 				return fn.Err[ActorResp](
 					fmt.Errorf("incoming session %s busy "+
 						"with event %d: %w",
-						req.SessionID, activeID,
-						postpone),
+						req.SessionID,
+						activeHint.EventID, postpone),
 				)
 			}
 
 			return fn.Ok[ActorResp](&DriveEventResponse{})
 		}
 
-		if req.RecipientEventID == 0 ||
-			len(completed.CompletedEventIDs) == 0 ||
-			completed.HasEventID(req.RecipientEventID) ||
-			len(completed.CompletedEventIDs) >=
+		if hintKey.IsZero() ||
+			len(completed.CompletedHints) == 0 ||
+			completed.HasHint(hintKey) ||
+			completed.HasPlainScript(hintKey.ScriptHash) ||
+			len(completed.CompletedHints) >=
 				maxCompletedIncomingEventIDs {
 			return fn.Ok[ActorResp](&DriveEventResponse{})
 		}
 
 		priorCompleted = append(
-			[]uint64(nil), completed.CompletedEventIDs...,
+			[]IncomingHintKey(nil), completed.CompletedHints...,
+		)
+		priorPlainScripts = append(
+			[][sha256.Size]byte(nil),
+			completed.MaterializedPlainScripts...,
 		)
 	}
 
@@ -631,8 +646,9 @@ func (b *sessionBehavior) handleResolveIncomingTransfer(ctx context.Context,
 			RecipientPkScript: append(
 				[]byte(nil), req.RecipientPkScript...,
 			),
-			RecipientEventID:  req.RecipientEventID,
-			CompletedEventIDs: priorCompleted,
+			RecipientEventID:         req.RecipientEventID,
+			CompletedHints:           priorCompleted,
+			MaterializedPlainScripts: priorPlainScripts,
 		}, b.envConfig(),
 	)
 	if err != nil {

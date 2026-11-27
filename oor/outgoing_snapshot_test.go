@@ -255,6 +255,46 @@ func TestOutgoingReplayRecipientsRejectsMalformedProof(t *testing.T) {
 	require.ErrorContains(t, err, "pkScript is truncated")
 }
 
+// TestOutgoingAssetReplayRoundTripAndRejectsMalformed verifies v2 asset replay
+// proof encoding, decoding, version isolation, and strict framing.
+func TestOutgoingAssetReplayRoundTripAndRejectsMalformed(t *testing.T) {
+	t.Parallel()
+
+	orig := OutgoingAssetReplay{
+		OutputIndex:        1,
+		SelectedInputCount: 2,
+		AssetRef:           "asset-usd",
+		AssetAmount:        500,
+		AssetChangeAmount:  250,
+		SenderBtcChangeSat: 1_200,
+		RecipientPolicy: []byte{
+			0x01,
+			0x02,
+			0x03,
+			0x04,
+		},
+	}
+
+	raw, err := NewOutgoingAssetReplayData(orig)
+	require.NoError(t, err)
+	require.True(t, IsOutgoingAssetReplayData(raw))
+
+	// Bitcoin v1 decoder must reject v2 asset proofs.
+	_, err = OutgoingReplayRecipients(raw)
+	require.ErrorContains(t, err, "unknown outgoing replay proof version")
+
+	decoded, err := DecodeOutgoingAssetReplayData(raw)
+	require.NoError(t, err)
+	require.Equal(t, orig, decoded)
+
+	trailing := append(append([]byte(nil), raw...), 0x00)
+	_, err = DecodeOutgoingAssetReplayData(trailing)
+	require.ErrorContains(t, err, "trailing bytes")
+
+	_, err = DecodeOutgoingAssetReplayData(raw[:len(raw)-1])
+	require.Error(t, err)
+}
+
 // TestSnapshotRetryMetadataRoundTrip verifies that RetryAfter and retry
 // reason survive TLV encode/decode. This is essential for restart-safe
 // retry scheduling: the actor persists retry metadata alongside the real

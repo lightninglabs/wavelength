@@ -2,6 +2,7 @@ package oor
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 
@@ -26,7 +27,9 @@ const (
 	incomingSnapshotResolveAttemptsType       tlv.Type = 21
 	incomingSnapshotRecipientsType            tlv.Type = 23
 	incomingSnapshotTaprootAssetTransferType  tlv.Type = 25
-	incomingSnapshotCompletedEventIDsType     tlv.Type = 27
+	incomingSnapshotCompletedHintsType        tlv.Type = 27
+	incomingSnapshotActiveScriptHashType      tlv.Type = 29
+	incomingSnapshotPlainScriptHashesType     tlv.Type = 31
 )
 
 // IncomingPhase identifies the coarse stage of an incoming OOR receive
@@ -97,13 +100,21 @@ type IncomingSnapshot struct {
 	RecipientPkScript []byte
 
 	// RecipientEventID is the per-script cursor hint paired with
-	// RecipientPkScript during resolve-pending restart and carried through
-	// ReceiveNotified/ReceiveAwaitingAck until ReceiveCompleted records it.
+	// RecipientPkScript or ActiveScriptHash until ReceiveCompleted records
+	// the completed hint.
 	RecipientEventID uint64
 
-	// CompletedEventIDs records recipient event IDs already processed by
-	// this session across sequential receive passes.
-	CompletedEventIDs []uint64
+	// ActiveScriptHash is the SHA-256 hash of the active hint's routing
+	// pkScript during materialize-pending and ack-pending phases.
+	ActiveScriptHash [sha256.Size]byte
+
+	// CompletedHints records per-script recipient hints already processed
+	// by this session across sequential receive passes.
+	CompletedHints []IncomingHintKey
+
+	// MaterializedPlainScripts records SHA-256 hashes of non-asset scripts
+	// already materialized on this session.
+	MaterializedPlainScripts [][sha256.Size]byte
 
 	// MetadataAttempts is the persisted retry count for the authoritative
 	// metadata resolution, used to bound backoff and the terminal give-up
@@ -141,8 +152,11 @@ func NewIncomingSnapshot(sessionID SessionID,
 			[]byte(nil), s.RecipientPkScript...,
 		)
 		snap.RecipientEventID = s.RecipientEventID
-		snap.CompletedEventIDs = append(
-			[]uint64(nil), s.CompletedEventIDs...,
+		snap.CompletedHints = append(
+			[]IncomingHintKey(nil), s.CompletedHints...,
+		)
+		snap.MaterializedPlainScripts = append(
+			[][sha256.Size]byte(nil), s.MaterializedPlainScripts...,
 		)
 		snap.ResolveAttempts = s.ResolveAttempts
 
@@ -167,23 +181,34 @@ func NewIncomingSnapshot(sessionID SessionID,
 		)
 		snap.Recipients = CloneArkRecipients(s.Recipients)
 		snap.TaprootAssetTransfer = s.TaprootAssetTransfer.Clone()
-		snap.RecipientEventID = s.RecipientEventID
-		snap.CompletedEventIDs = append(
-			[]uint64(nil), s.CompletedEventIDs...,
+		snap.RecipientEventID = s.ActiveHint.EventID
+		snap.ActiveScriptHash = s.ActiveHint.ScriptHash
+		snap.CompletedHints = append(
+			[]IncomingHintKey(nil), s.CompletedHints...,
+		)
+		snap.MaterializedPlainScripts = append(
+			[][sha256.Size]byte(nil), s.MaterializedPlainScripts...,
 		)
 		snap.MetadataAttempts = s.MetadataAttempts
 
 	case *ReceiveAwaitingAck:
 		snap.Phase = IncomingPhaseAckPending
-		snap.RecipientEventID = s.RecipientEventID
-		snap.CompletedEventIDs = append(
-			[]uint64(nil), s.CompletedEventIDs...,
+		snap.RecipientEventID = s.ActiveHint.EventID
+		snap.ActiveScriptHash = s.ActiveHint.ScriptHash
+		snap.CompletedHints = append(
+			[]IncomingHintKey(nil), s.CompletedHints...,
+		)
+		snap.MaterializedPlainScripts = append(
+			[][sha256.Size]byte(nil), s.MaterializedPlainScripts...,
 		)
 
 	case *ReceiveCompleted:
 		snap.Phase = IncomingPhaseCompleted
-		snap.CompletedEventIDs = append(
-			[]uint64(nil), s.CompletedEventIDs...,
+		snap.CompletedHints = append(
+			[]IncomingHintKey(nil), s.CompletedHints...,
+		)
+		snap.MaterializedPlainScripts = append(
+			[][sha256.Size]byte(nil), s.MaterializedPlainScripts...,
 		)
 
 	case *Failed:
@@ -218,6 +243,28 @@ func NewReceiveSessionFromSnapshot(ctx context.Context,
 	)
 }
 
+// ActiveHintKey returns the active per-script hint tracked by this snapshot
+// for non-terminal incoming phases, or the zero key when unset.
+func (s *IncomingSnapshot) ActiveHintKey() IncomingHintKey {
+	if s == nil {
+		return IncomingHintKey{}
+	}
+	if s.Phase == IncomingPhaseResolvePending {
+		return NewIncomingHintKey(
+			s.RecipientPkScript, s.RecipientEventID,
+		)
+	}
+	if s.RecipientEventID == 0 ||
+		s.ActiveScriptHash == ([sha256.Size]byte{}) {
+		return IncomingHintKey{}
+	}
+
+	return IncomingHintKey{
+		ScriptHash: s.ActiveScriptHash,
+		EventID:    s.RecipientEventID,
+	}
+}
+
 // IncomingStateFromSnapshot converts an incoming receive snapshot into the
 // corresponding concrete state.
 func IncomingStateFromSnapshot(snapshot *IncomingSnapshot) (SessionState,
@@ -243,8 +290,13 @@ func IncomingStateFromSnapshot(snapshot *IncomingSnapshot) (SessionState,
 				[]byte(nil), snapshot.RecipientPkScript...,
 			),
 			RecipientEventID: snapshot.RecipientEventID,
-			CompletedEventIDs: append(
-				[]uint64(nil), snapshot.CompletedEventIDs...,
+			CompletedHints: append(
+				[]IncomingHintKey(nil),
+				snapshot.CompletedHints...,
+			),
+			MaterializedPlainScripts: append(
+				[][sha256.Size]byte(nil),
+				snapshot.MaterializedPlainScripts...,
 			),
 			ResolveAttempts: snapshot.ResolveAttempts,
 		}, nil
@@ -275,26 +327,41 @@ func IncomingStateFromSnapshot(snapshot *IncomingSnapshot) (SessionState,
 			),
 			TaprootAssetTransfer: snapshot.TaprootAssetTransfer.
 				Clone(),
-			RecipientEventID: snapshot.RecipientEventID,
-			CompletedEventIDs: append(
-				[]uint64(nil), snapshot.CompletedEventIDs...,
+			ActiveHint: snapshot.ActiveHintKey(),
+			CompletedHints: append(
+				[]IncomingHintKey(nil),
+				snapshot.CompletedHints...,
+			),
+			MaterializedPlainScripts: append(
+				[][sha256.Size]byte(nil),
+				snapshot.MaterializedPlainScripts...,
 			),
 			MetadataAttempts: snapshot.MetadataAttempts,
 		}, nil
 
 	case IncomingPhaseAckPending:
 		return &ReceiveAwaitingAck{
-			SessionID:        snapshot.SessionID,
-			RecipientEventID: snapshot.RecipientEventID,
-			CompletedEventIDs: append(
-				[]uint64(nil), snapshot.CompletedEventIDs...,
+			SessionID:  snapshot.SessionID,
+			ActiveHint: snapshot.ActiveHintKey(),
+			CompletedHints: append(
+				[]IncomingHintKey(nil),
+				snapshot.CompletedHints...,
+			),
+			MaterializedPlainScripts: append(
+				[][sha256.Size]byte(nil),
+				snapshot.MaterializedPlainScripts...,
 			),
 		}, nil
 
 	case IncomingPhaseCompleted:
 		return &ReceiveCompleted{
-			CompletedEventIDs: append(
-				[]uint64(nil), snapshot.CompletedEventIDs...,
+			CompletedHints: append(
+				[]IncomingHintKey(nil),
+				snapshot.CompletedHints...,
+			),
+			MaterializedPlainScripts: append(
+				[][sha256.Size]byte(nil),
+				snapshot.MaterializedPlainScripts...,
 			),
 		}, nil
 
@@ -399,12 +466,34 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 			),
 		)
 	}
-	if len(snapshot.CompletedEventIDs) > 0 {
-		completedIDsRaw := encodeUint64List(snapshot.CompletedEventIDs)
+	if len(snapshot.CompletedHints) > 0 {
+		completedHintsRaw := encodeIncomingHintKeys(
+			snapshot.CompletedHints,
+		)
 		records = append(
 			records, tlv.MakePrimitiveRecord(
-				incomingSnapshotCompletedEventIDsType,
-				&completedIDsRaw,
+				incomingSnapshotCompletedHintsType,
+				&completedHintsRaw,
+			),
+		)
+	}
+	if snapshot.ActiveScriptHash != ([sha256.Size]byte{}) {
+		activeHashRaw := snapshot.ActiveScriptHash[:]
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				incomingSnapshotActiveScriptHashType,
+				&activeHashRaw,
+			),
+		)
+	}
+	if len(snapshot.MaterializedPlainScripts) > 0 {
+		plainScriptsRaw := encodeScriptHashes(
+			snapshot.MaterializedPlainScripts,
+		)
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				incomingSnapshotPlainScriptHashesType,
+				&plainScriptsRaw,
 			),
 		)
 	}
@@ -418,20 +507,22 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 	limits ReceiveLimits) (*IncomingSnapshot, error) {
 
 	var (
-		version           uint64
-		sessionBytes      []byte
-		phaseBytes        []byte
-		arkPSBT           []byte
-		checkpointsRaw    []byte
-		failReasonRaw     []byte
-		recipientPkScript []byte
-		recipientEventID  uint64
-		ancestorPackages  []byte
-		metadataAttempts  uint64
-		resolveAttempts   uint64
-		recipientsRaw     []byte
-		assetTransferRaw  []byte
-		completedIDsRaw   []byte
+		version            uint64
+		sessionBytes       []byte
+		phaseBytes         []byte
+		arkPSBT            []byte
+		checkpointsRaw     []byte
+		failReasonRaw      []byte
+		recipientPkScript  []byte
+		recipientEventID   uint64
+		ancestorPackages   []byte
+		metadataAttempts   uint64
+		resolveAttempts    uint64
+		recipientsRaw      []byte
+		assetTransferRaw   []byte
+		completedHintsRaw  []byte
+		activeScriptHash   []byte
+		plainScriptHashRaw []byte
 	)
 
 	records := []tlv.Record{
@@ -478,7 +569,14 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 			&assetTransferRaw,
 		),
 		tlv.MakePrimitiveRecord(
-			incomingSnapshotCompletedEventIDsType, &completedIDsRaw,
+			incomingSnapshotCompletedHintsType, &completedHintsRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotActiveScriptHashType, &activeScriptHash,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotPlainScriptHashesType,
+			&plainScriptHashRaw,
 		),
 	}
 
@@ -537,12 +635,30 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		decodedAssetTransfer = &transfer
 	}
 
-	completedEventIDs, err := decodeUint64List(
-		completedIDsRaw, maxCompletedIncomingEventIDs,
+	completedHints, err := decodeIncomingHintKeys(
+		completedHintsRaw, maxCompletedIncomingEventIDs,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("decode incoming snapshot completed "+
-			"event ids: %w", err)
+			"hints: %w", err)
+	}
+
+	var decodedActiveHash [sha256.Size]byte
+	if len(activeScriptHash) > 0 {
+		if len(activeScriptHash) != sha256.Size {
+			return nil, fmt.Errorf("incoming snapshot active "+
+				"script hash must be %d bytes, got %d",
+				sha256.Size, len(activeScriptHash))
+		}
+		copy(decodedActiveHash[:], activeScriptHash)
+	}
+
+	plainScripts, err := decodeScriptHashes(
+		plainScriptHashRaw, maxCompletedIncomingEventIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decode incoming snapshot plain script "+
+			"hashes: %w", err)
 	}
 
 	decodedVersion, err := decodeUint64ToUint8(
@@ -567,40 +683,87 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		RecipientPkScript: append(
 			[]byte(nil), recipientPkScript...,
 		),
-		RecipientEventID:  recipientEventID,
-		CompletedEventIDs: completedEventIDs,
-		MetadataAttempts:  uint32(metadataAttempts),
-		ResolveAttempts:   uint32(resolveAttempts),
+		RecipientEventID:         recipientEventID,
+		ActiveScriptHash:         decodedActiveHash,
+		CompletedHints:           completedHints,
+		MaterializedPlainScripts: plainScripts,
+		MetadataAttempts:         uint32(metadataAttempts),
+		ResolveAttempts:          uint32(resolveAttempts),
 	}, nil
 }
 
-// encodeUint64List encodes a slice of uint64 values as big-endian 8-byte words.
-func encodeUint64List(ids []uint64) []byte {
-	out := make([]byte, len(ids)*8)
-	for i, id := range ids {
-		binary.BigEndian.PutUint64(out[i*8:(i+1)*8], id)
+const incomingHintKeySize = sha256.Size + 8
+
+// encodeIncomingHintKeys encodes per-script hint keys as fixed 40-byte entries
+// (32-byte ScriptHash || 8-byte big-endian EventID).
+func encodeIncomingHintKeys(hints []IncomingHintKey) []byte {
+	out := make([]byte, len(hints)*incomingHintKeySize)
+	for i, h := range hints {
+		off := i * incomingHintKeySize
+		copy(out[off:off+sha256.Size], h.ScriptHash[:])
+		binary.BigEndian.PutUint64(
+			out[off+sha256.Size:off+incomingHintKeySize], h.EventID,
+		)
 	}
 
 	return out
 }
 
-// decodeUint64List decodes big-endian 8-byte words into a bounded uint64 slice.
-func decodeUint64List(raw []byte, maxCount int) ([]uint64, error) {
+// decodeIncomingHintKeys decodes fixed 40-byte hint-key entries.
+func decodeIncomingHintKeys(raw []byte,
+	maxCount int) ([]IncomingHintKey, error) {
+
 	if len(raw) == 0 {
 		return nil, nil
 	}
-	if len(raw)%8 != 0 {
-		return nil, fmt.Errorf("byte length %d is not a multiple of 8",
-			len(raw))
+	if len(raw)%incomingHintKeySize != 0 {
+		return nil, fmt.Errorf("byte length %d is not a multiple of %d",
+			len(raw), incomingHintKeySize)
 	}
-	count := len(raw) / 8
+	count := len(raw) / incomingHintKeySize
 	if maxCount > 0 && count > maxCount {
 		return nil, fmt.Errorf("count %d exceeds limit %d", count,
 			maxCount)
 	}
-	out := make([]uint64, count)
+	out := make([]IncomingHintKey, count)
 	for i := range count {
-		out[i] = binary.BigEndian.Uint64(raw[i*8 : (i+1)*8])
+		off := i * incomingHintKeySize
+		copy(out[i].ScriptHash[:], raw[off:off+sha256.Size])
+		out[i].EventID = binary.BigEndian.Uint64(
+			raw[off+sha256.Size : off+incomingHintKeySize],
+		)
+	}
+
+	return out, nil
+}
+
+// encodeScriptHashes encodes SHA-256 script hashes as contiguous 32-byte words.
+func encodeScriptHashes(hashes [][sha256.Size]byte) []byte {
+	out := make([]byte, len(hashes)*sha256.Size)
+	for i, h := range hashes {
+		copy(out[i*sha256.Size:(i+1)*sha256.Size], h[:])
+	}
+
+	return out
+}
+
+// decodeScriptHashes decodes contiguous 32-byte SHA-256 script hashes.
+func decodeScriptHashes(raw []byte, maxCount int) ([][sha256.Size]byte, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if len(raw)%sha256.Size != 0 {
+		return nil, fmt.Errorf("byte length %d is not a multiple of %d",
+			len(raw), sha256.Size)
+	}
+	count := len(raw) / sha256.Size
+	if maxCount > 0 && count > maxCount {
+		return nil, fmt.Errorf("count %d exceeds limit %d", count,
+			maxCount)
+	}
+	out := make([][sha256.Size]byte, count)
+	for i := range count {
+		copy(out[i][:], raw[i*sha256.Size:(i+1)*sha256.Size])
 	}
 
 	return out, nil

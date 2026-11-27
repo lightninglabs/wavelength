@@ -12,15 +12,26 @@ import (
 
 const (
 	// outgoingReplayVersion is the normalized recipient-proof encoding
-	// written before an outgoing submit can be dispatched.
+	// written before an outgoing Bitcoin OOR submit can be dispatched.
 	outgoingReplayVersion byte = 1
+
+	// outgoingAssetReplayVersion is the normalized request-identity and
+	// summary proof encoding written before an outgoing asset OOR submit
+	// can be dispatched. Using a distinct version byte isolates Bitcoin
+	// and asset idempotency namespaces cleanly.
+	outgoingAssetReplayVersion byte = 2
 
 	// maxOutgoingReplayPkScriptSize is Bitcoin's maximum script size. OOR
 	// construction validates scripts before this proof is written.
 	maxOutgoingReplayPkScriptSize = 10_000
 
-	outgoingReplayHeaderSize = 5
-	outgoingReplayEntrySize  = 16
+	// maxOutgoingAssetRefSize bounds canonical asset references encoded in
+	// outgoing asset replay proofs.
+	maxOutgoingAssetRefSize = 256
+
+	outgoingReplayHeaderSize      = 5
+	outgoingReplayEntrySize       = 16
+	outgoingAssetReplayHeaderSize = 33
 )
 
 // NewOutgoingReplayData binds the caller-requested recipients to their
@@ -196,4 +207,151 @@ func OutgoingReplayRecipients(raw []byte) ([]ArkRecipientOutput, error) {
 	}
 
 	return recipients, nil
+}
+
+// OutgoingAssetReplay binds an asset OOR idempotency attempt to its canonical
+// request parameters and response summary so replays verify identity and return
+// the original figures instead of newly built or blank values.
+type OutgoingAssetReplay struct {
+	OutputIndex        uint32
+	SelectedInputCount uint32
+	AssetRef           string
+	AssetAmount        uint64
+	AssetChangeAmount  uint64
+	SenderBtcChangeSat int64
+	RecipientPolicy    []byte
+}
+
+// IsOutgoingAssetReplayData reports whether raw is a v2 asset OOR replay proof.
+func IsOutgoingAssetReplayData(raw []byte) bool {
+	return len(raw) > 0 && raw[0] == outgoingAssetReplayVersion
+}
+
+// NewOutgoingAssetReplayData validates and serializes an asset OOR replay
+// proof.
+func NewOutgoingAssetReplayData(r OutgoingAssetReplay) ([]byte, error) {
+	switch {
+	case r.AssetRef == "" || len(r.AssetRef) > maxOutgoingAssetRefSize:
+		return nil, fmt.Errorf("invalid asset replay ref length %d",
+			len(r.AssetRef))
+
+	case r.AssetAmount == 0:
+		return nil, fmt.Errorf("asset replay amount must be positive")
+
+	case r.SenderBtcChangeSat < 0 ||
+		r.SenderBtcChangeSat > btcutil.MaxSatoshi:
+		return nil, fmt.Errorf("invalid asset replay sender BTC "+
+			"change %d", r.SenderBtcChangeSat)
+
+	case len(r.RecipientPolicy) == 0 ||
+		len(r.RecipientPolicy) > maxOutgoingReplayPkScriptSize:
+		return nil, fmt.Errorf("invalid asset replay recipient policy "+
+			"length %d", len(r.RecipientPolicy))
+	}
+
+	totalLen := outgoingAssetReplayHeaderSize + 4 + len(r.AssetRef) +
+		4 + len(r.RecipientPolicy)
+	raw := make([]byte, 0, totalLen)
+	raw = append(raw, outgoingAssetReplayVersion)
+
+	var scratch [8]byte
+	binary.BigEndian.PutUint32(scratch[:4], r.OutputIndex)
+	raw = append(raw, scratch[:4]...)
+
+	binary.BigEndian.PutUint32(scratch[:4], r.SelectedInputCount)
+	raw = append(raw, scratch[:4]...)
+
+	binary.BigEndian.PutUint64(scratch[:], r.AssetAmount)
+	raw = append(raw, scratch[:]...)
+
+	binary.BigEndian.PutUint64(scratch[:], r.AssetChangeAmount)
+	raw = append(raw, scratch[:]...)
+
+	binary.BigEndian.PutUint64(scratch[:], uint64(r.SenderBtcChangeSat))
+	raw = append(raw, scratch[:]...)
+
+	binary.BigEndian.PutUint32(scratch[:4], uint32(len(r.AssetRef)))
+	raw = append(raw, scratch[:4]...)
+	raw = append(raw, r.AssetRef...)
+
+	binary.BigEndian.PutUint32(scratch[:4], uint32(len(r.RecipientPolicy)))
+	raw = append(raw, scratch[:4]...)
+	raw = append(raw, r.RecipientPolicy...)
+
+	return raw, nil
+}
+
+// DecodeOutgoingAssetReplayData decodes a v2 asset OOR replay proof.
+func DecodeOutgoingAssetReplayData(raw []byte) (OutgoingAssetReplay, error) {
+	var out OutgoingAssetReplay
+	if len(raw) < outgoingAssetReplayHeaderSize+8 {
+		return out, fmt.Errorf("asset outgoing replay proof is " +
+			"truncated")
+	}
+	if raw[0] != outgoingAssetReplayVersion {
+		return out, fmt.Errorf("unknown asset outgoing replay proof "+
+			"version: %d", raw[0])
+	}
+
+	offset := 1
+	out.OutputIndex = binary.BigEndian.Uint32(raw[offset:])
+	offset += 4
+
+	out.SelectedInputCount = binary.BigEndian.Uint32(raw[offset:])
+	offset += 4
+
+	out.AssetAmount = binary.BigEndian.Uint64(raw[offset:])
+	offset += 8
+	if out.AssetAmount == 0 {
+		return OutgoingAssetReplay{}, fmt.Errorf("asset replay " +
+			"amount must be positive")
+	}
+
+	out.AssetChangeAmount = binary.BigEndian.Uint64(raw[offset:])
+	offset += 8
+
+	senderChange := binary.BigEndian.Uint64(raw[offset:])
+	offset += 8
+	if senderChange > uint64(btcutil.MaxSatoshi) {
+		return OutgoingAssetReplay{}, fmt.Errorf("invalid asset "+
+			"replay sender BTC change %d", senderChange)
+	}
+	out.SenderBtcChangeSat = int64(senderChange)
+
+	if len(raw)-offset < 4 {
+		return OutgoingAssetReplay{}, fmt.Errorf("asset replay ref " +
+			"length is truncated")
+	}
+	refLen := binary.BigEndian.Uint32(raw[offset:])
+	offset += 4
+	if refLen == 0 || refLen > maxOutgoingAssetRefSize ||
+		uint32(len(raw)-offset) < refLen {
+		return OutgoingAssetReplay{}, fmt.Errorf("invalid asset "+
+			"replay ref length %d", refLen)
+	}
+	out.AssetRef = string(raw[offset : offset+int(refLen)])
+	offset += int(refLen)
+
+	if len(raw)-offset < 4 {
+		return OutgoingAssetReplay{}, fmt.Errorf("asset replay " +
+			"policy length is truncated")
+	}
+	policyLen := binary.BigEndian.Uint32(raw[offset:])
+	offset += 4
+	if policyLen == 0 || policyLen > maxOutgoingReplayPkScriptSize ||
+		uint32(len(raw)-offset) < policyLen {
+		return OutgoingAssetReplay{}, fmt.Errorf("invalid asset "+
+			"replay policy length %d", policyLen)
+	}
+	out.RecipientPolicy = append(
+		[]byte(nil), raw[offset:offset+int(policyLen)]...,
+	)
+	offset += int(policyLen)
+
+	if offset != len(raw) {
+		return OutgoingAssetReplay{}, fmt.Errorf("asset outgoing "+
+			"replay proof has %d trailing bytes", len(raw)-offset)
+	}
+
+	return out, nil
 }

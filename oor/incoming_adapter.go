@@ -180,9 +180,10 @@ func IncomingTransferEventFromResponseWithLimits(sessionID SessionID,
 		return nil, err
 	}
 
-	recipients, assetTransfer, err := incomingRecipientsFromEvent(
-		arkPSBT, recipientEvt, len(checkpoints),
-	)
+	recipients, assetTransfer, routingScript, err :=
+		incomingRecipientsFromEvent(
+			arkPSBT, recipientEvt, len(checkpoints),
+		)
 	if err != nil {
 		return nil, err
 	}
@@ -200,31 +201,33 @@ func IncomingTransferEventFromResponseWithLimits(sessionID SessionID,
 		AncestorPackages:     ancestors,
 		Recipients:           recipients,
 		TaprootAssetTransfer: assetTransfer,
+		RecipientEventID:     recipientEventID,
+		RecipientPkScript:    routingScript,
 	}, nil
 }
 
 // incomingRecipientsFromEvent overlays the policy and optional Taproot Asset
 // metadata carried by the recipient event onto the structurally extracted Ark
-// outputs.
+// outputs and returns the matched recipient's uncomposed routing script.
 func incomingRecipientsFromEvent(ark *psbt.Packet,
 	evt *arkrpc.OORRecipientEvent, checkpointCount int) (
-	[]ArkRecipientOutput, *oortx.TaprootAssetTransfer, error) {
+	[]ArkRecipientOutput, *oortx.TaprootAssetTransfer, []byte, error) {
 
 	recipients, err := ExtractArkRecipients(ark)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	if evt.GetValue() > uint64(math.MaxInt64) {
-		return nil, nil, fmt.Errorf("recipient event value overflows " +
-			"int64")
+		return nil, nil, nil, fmt.Errorf("recipient event value " +
+			"overflows int64")
 	}
 
 	asset, assetTransfer, err := parseIncomingEventAsset(
 		evt, checkpointCount,
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	value := btcutil.Amount(evt.GetValue())
@@ -234,14 +237,14 @@ func incomingRecipientsFromEvent(ark *psbt.Packet,
 		}
 
 		if recipients[i].Value != value {
-			return nil, nil, fmt.Errorf("recipient event value " +
-				"mismatch")
+			return nil, nil, nil, fmt.Errorf("recipient event " +
+				"value mismatch")
 		}
 
 		if !bytes.Equal(
 			recipients[i].PkScript, evt.GetRecipientPkScript(),
 		) {
-			return nil, nil, fmt.Errorf("recipient event " +
+			return nil, nil, nil, fmt.Errorf("recipient event " +
 				"pkscript mismatch")
 		}
 
@@ -249,18 +252,16 @@ func incomingRecipientsFromEvent(ark *psbt.Packet,
 			[]byte(nil), evt.GetVtxoPolicyTemplate()...,
 		)
 		recipients[i].Asset = asset
-		if asset != nil {
-			_, err := recipients[i].RoutingPkScript()
-			if err != nil {
-				return nil, nil, fmt.Errorf("recipient event "+
-					"asset script binding: %w", err)
-			}
+		routingScript, err := recipients[i].RoutingPkScript()
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("recipient event "+
+				"asset script binding: %w", err)
 		}
 
-		return recipients, assetTransfer, nil
+		return recipients, assetTransfer, routingScript, nil
 	}
 
-	return nil, nil, fmt.Errorf("recipient event output %d not found",
+	return nil, nil, nil, fmt.Errorf("recipient event output %d not found",
 		evt.GetOutputIndex())
 }
 
@@ -272,7 +273,7 @@ func parseIncomingEventAsset(evt *arkrpc.OORRecipientEvent,
 	*oortx.TaprootAssetTransfer, error) {
 
 	rootRaw := evt.GetTaprootAssetRoot()
-	ref := evt.GetTaprootAssetRef()
+	ref := strings.ToLower(strings.TrimSpace(evt.GetTaprootAssetRef()))
 	amount := evt.GetTaprootAssetAmount()
 	transferRaw := evt.GetTaprootAssetTransfer()
 

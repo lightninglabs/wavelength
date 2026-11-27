@@ -112,28 +112,33 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   authoritative metadata lookup go through durable `serverconn` query
   messages and return as fresh events. Multi-output transfers owned by the
   same wallet (such as asset change plus Bitcoin carrier return in one OOR
-  session) serialize distinct `RecipientEventID` hints per session: concurrent
-  distinct hints park in FIFO order on `parkedSelfHints` and redrive at
-  terminal reap, while `ReceiveCompleted.CompletedEventIDs` (optional TLV type
-  `27` in `IncomingSnapshot`, bounded to `maxCompletedIncomingEventIDs`) lets
-  each distinct event run a fresh `ReceiveResolving` pass while keeping
-  duplicates and legacy snapshots idempotent.
+  session) serialize distinct per-script `IncomingHintKey{ScriptHash, EventID}`
+  hints per session (because operators number `recipient_event_id` per
+  `pk_script` starting at 1): concurrent distinct hints park in FIFO order on
+  `parkedSelfHints` and redrive at terminal reap, `ReceiveCompleted.CompletedHints`
+  (TLV `27`), `ActiveScriptHash` (TLV `29`), and `MaterializedPlainScripts`
+  (TLV `31`) keep already-materialized plain Bitcoin scripts dormant without
+  reopening while letting distinct unmaterialized hints run fresh passes
+  (preserving prior `ReceiveCompleted` if a follow-up pass fails).
 - Incoming batch expiry and Taproot Asset packages are authenticated by
   `AuthenticateIncomingMetadataRequest` before materialization opens its DB
   transaction. Indexer expiry and creation-height scalars are replaced by
   the earliest sweep maturity and confirmation height from the same local
   evidence. For asset-bearing incoming outputs, `VerifyIncomingAssetPackage`
   verifies the sealed Ark package against the asset backend and authenticated
-  lineage outside the actor's SQLite write lock (marking `AssetVerified = true`);
-  `handleMaterializeIncoming` fails closed if an asset recipient arrives
-  unverified or without a verifier, persists `TaprootAssetRoot`/`Ref`/`Amount`/
-  `TaprootAssetSealedPackage` on the materialized `vtxo.Descriptor`, and checks
-  asset equality on duplicate-VTXO idempotency. `QueryIncomingMetadataRequest`
-  passes each asset recipient's uncomposed `RoutingPkScript()` in
-  `SignerScripts` parallel to its composed `PkScript`. Chain failures retry
-  the outbox; invalid sweep/tree or asset-package evidence (`ErrInvalidIncomingAssetPackage`)
-  fails terminally. Contradictory authenticated heights also fail terminally
-  before persistence, including on replay and synchronous recovery. The
+  lineage synchronously outside the actor's SQLite write lock (marking
+  `AssetVerified = true`); per-output asset verification failures or a nil
+  verifier (assets disabled) are isolated to the affected asset output so
+  sibling plain Bitcoin outputs still materialize. `handleMaterializeIncoming`
+  refuses to store unverified asset outputs, skips persisting/notifying
+  already-terminal stored VTXO rows, persists `TaprootAssetRoot`/`Ref`/`Amount`/
+  `TaprootAssetSealedPackage` (with canonical lowercased `Ref`) on the
+  materialized `vtxo.Descriptor`, and checks asset equality on duplicate-VTXO
+  idempotency. `QueryIncomingMetadataRequest` passes each asset recipient's
+  uncomposed `RoutingPkScript()` in `SignerScripts` parallel to its composed
+  `PkScript`. Proof-backend and chain failures retry with bounded backoff;
+  structural/malformed asset errors (`ErrInvalidIncomingAssetPackage`) and
+  contradictory authenticated heights fail terminally before persistence. The
   descriptor's relative expiry comes from its matching policy template,
   not from operator configuration. Custom policies consider only canonical
   block-mode CSV sequences; CLTV non-final sentinels are not block delays.

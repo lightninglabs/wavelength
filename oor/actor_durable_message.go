@@ -113,6 +113,8 @@ const (
 	eventPayloadRetryAfterNanosRecordType  tlv.Type = 21
 	eventPayloadIncomingRecipientsType     tlv.Type = 23
 	eventPayloadTaprootAssetTransferType   tlv.Type = 25
+	eventPayloadRecipientEventIDType       tlv.Type = 27
+	eventPayloadRecipientPkScriptType      tlv.Type = 29
 )
 
 const (
@@ -2470,20 +2472,22 @@ func decodeDriveEventRequestPayloadWithLimits(raw []byte,
 //nolint:funlen
 func encodeEventPayload(event Event) ([]byte, error) {
 	var (
-		eventKind        uint64
-		submitSession    []byte
-		arkPSBT          []byte
-		checkpointPSBT   []byte
-		reason           []byte
-		outpointPayload  []byte
-		metadataPayload  []byte
-		ancestorPayload  []byte
-		outboxType       []byte
-		retryable        uint8
-		retryAfterNanos  uint64
-		err              error
-		recipientPayload []byte
-		assetTransferRaw []byte
+		eventKind         uint64
+		submitSession     []byte
+		arkPSBT           []byte
+		checkpointPSBT    []byte
+		reason            []byte
+		outpointPayload   []byte
+		metadataPayload   []byte
+		ancestorPayload   []byte
+		outboxType        []byte
+		retryable         uint8
+		retryAfterNanos   uint64
+		err               error
+		recipientPayload  []byte
+		assetTransferRaw  []byte
+		recipientEventID  uint64
+		recipientPkScript []byte
 	)
 
 	switch evt := event.(type) {
@@ -2595,6 +2599,8 @@ func encodeEventPayload(event Event) ([]byte, error) {
 					"taproot asset transfer: %w", err)
 			}
 		}
+		recipientEventID = evt.RecipientEventID
+		recipientPkScript = evt.RecipientPkScript
 
 	case *IncomingHandledEvent:
 		eventKind = eventKindIncomingHandled
@@ -2687,6 +2693,22 @@ func encodeEventPayload(event Event) ([]byte, error) {
 			),
 		)
 	}
+	if recipientEventID > 0 {
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				eventPayloadRecipientEventIDType,
+				&recipientEventID,
+			),
+		)
+	}
+	if len(recipientPkScript) > 0 {
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				eventPayloadRecipientPkScriptType,
+				&recipientPkScript,
+			),
+		)
+	}
 
 	return tlvutil.EncodeRecordsToBytes(records...)
 }
@@ -2699,19 +2721,21 @@ func decodeEventPayloadWithLimits(raw []byte,
 	limits ReceiveLimits) (Event, error) {
 
 	var (
-		eventKind        uint64
-		submitSession    []byte
-		arkPSBT          []byte
-		checkpointPSBT   []byte
-		reason           []byte
-		outpointPayload  []byte
-		metadataPayload  []byte
-		ancestorPayload  []byte
-		outboxType       []byte
-		retryable        uint8
-		retryAfterNanos  uint64
-		recipientPayload []byte
-		assetTransferRaw []byte
+		eventKind         uint64
+		submitSession     []byte
+		arkPSBT           []byte
+		checkpointPSBT    []byte
+		reason            []byte
+		outpointPayload   []byte
+		metadataPayload   []byte
+		ancestorPayload   []byte
+		outboxType        []byte
+		retryable         uint8
+		retryAfterNanos   uint64
+		recipientPayload  []byte
+		assetTransferRaw  []byte
+		recipientEventID  uint64
+		recipientPkScript []byte
 	)
 
 	records := []tlv.Record{
@@ -2750,6 +2774,12 @@ func decodeEventPayloadWithLimits(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			eventPayloadTaprootAssetTransferType, &assetTransferRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadRecipientEventIDType, &recipientEventID,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadRecipientPkScriptType, &recipientPkScript,
 		),
 	}
 
@@ -2875,6 +2905,10 @@ func decodeEventPayloadWithLimits(raw []byte,
 			AncestorPackages:     ancestors,
 			Recipients:           recipients,
 			TaprootAssetTransfer: assetTransfer,
+			RecipientEventID:     recipientEventID,
+			RecipientPkScript: append(
+				[]byte(nil), recipientPkScript...,
+			),
 		}, nil
 
 	case eventKindIncomingHandled:

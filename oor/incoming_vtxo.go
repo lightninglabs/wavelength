@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"strings"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -229,7 +230,9 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 		root := cfg.Asset.Root
 		desc.TapScript = nil
 		desc.TaprootAssetRoot = &root
-		desc.TaprootAssetRef = cfg.Asset.Ref
+		desc.TaprootAssetRef = strings.ToLower(
+			strings.TrimSpace(cfg.Asset.Ref),
+		)
 		desc.TaprootAssetAmount = cfg.Asset.Amount
 		desc.TaprootAssetSealedPackage = bytes.Clone(
 			cfg.TaprootAssetSealedPackage,

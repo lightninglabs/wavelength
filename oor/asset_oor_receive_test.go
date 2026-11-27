@@ -3,11 +3,13 @@ package oor
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
@@ -28,9 +30,9 @@ import (
 // checkpoint PSBT paying an asset-bearing composed output to recipientKey.
 func buildTestIncomingAssetGraph(t *testing.T, recipientKey *btcec.PublicKey,
 	operatorPriv *btcec.PrivateKey, exitDelay uint32,
-	assetRoot chainhash.Hash, assetRef string, assetAmount uint64) (
-	*psbt.Packet, []*psbt.Packet, []byte, []byte, []byte,
-	*oortx.TaprootAssetTransfer) {
+	assetRoot chainhash.Hash, assetRef string, assetAmount uint64,
+	extraOutputs ...oortx.RecipientOutput) (*psbt.Packet, []*psbt.Packet,
+	[]byte, []byte, []byte, *oortx.TaprootAssetTransfer) {
 
 	t.Helper()
 
@@ -43,12 +45,17 @@ func buildTestIncomingAssetGraph(t *testing.T, recipientKey *btcec.PublicKey,
 		CSVDelay:    exitDelay,
 	}
 
+	totalVal := btcutil.Amount(1_000)
+	for i := range extraOutputs {
+		totalVal += extraOutputs[i].Value
+	}
+
 	inVTXO := newTestComposedAssetInput(
 		t, senderPriv, operatorKey, wire.OutPoint{
 			Hash:  chainhash.Hash{0x11},
 			Index: 0,
 		},
-		1_000,
+		totalVal,
 		chainhash.Hash{0x22},
 		assetRef,
 		assetAmount,
@@ -97,8 +104,7 @@ func buildTestIncomingAssetGraph(t *testing.T, recipientKey *btcec.PublicKey,
 	)
 	require.NoError(t, err)
 
-	arkPSBT, err := oortx.BuildArkPSBT(
-		[]oortx.CheckpointOutput{cpOut},
+	outputs := append(
 		[]oortx.RecipientOutput{{
 			PkScript:           composedPkScript,
 			Value:              1_000,
@@ -109,6 +115,11 @@ func buildTestIncomingAssetGraph(t *testing.T, recipientKey *btcec.PublicKey,
 				Amount: assetAmount,
 			},
 		}},
+		extraOutputs...,
+	)
+
+	arkPSBT, err := oortx.BuildArkPSBT(
+		[]oortx.CheckpointOutput{cpOut}, outputs,
 	)
 	require.NoError(t, err)
 
@@ -604,11 +615,13 @@ func TestLocalPersistenceHandlerIncomingAssetMaterialization(t *testing.T) {
 }
 
 // TestMultiEventIncomingReceivePass verifies that an incoming OOR session
-// records completed recipient event IDs across snapshots, allows a distinct
-// recipient event for the same session (e.g. asset change plus Bitcoin carrier
-// return) to run a fresh receive pass after ReceiveCompleted, postpones a
-// distinct event arriving while another pass is in flight, absorbs duplicates,
-// and preserves multiple parked self-hints per session in FIFO order.
+// keys completed hints by (pkScript, eventID) across snapshots, allows a
+// distinct script with the same per-script event ID (e.g. both fresh scripts
+// numbered 1) to run a fresh receive pass after ReceiveCompleted, does not
+// reopen completed sessions for already-materialized plain Bitcoin scripts,
+// preserves ReceiveCompleted on follow-up failure, rejects stale phase-1
+// events, postpones concurrent distinct hints, and preserves parked hints in
+// FIFO order.
 func TestMultiEventIncomingReceivePass(t *testing.T) {
 	t.Parallel()
 
@@ -616,40 +629,65 @@ func TestMultiEventIncomingReceivePass(t *testing.T) {
 	require.NoError(t, err)
 	recipPriv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
+	secondScript := bytes.Repeat([]byte{0x51}, 34)
+	plainScript := bytes.Repeat([]byte{0x52}, 34)
+	plainScriptHash := sha256.Sum256(plainScript)
 
 	arkPSBT, cps, _, routingScript, _, xfer := buildTestIncomingAssetGraph(
 		t, recipPriv.PubKey(), operatorPriv, 144, chainhash.Hash{0xaa},
 		"asset-usd", 150,
 	)
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	hintA := NewIncomingHintKey(routingScript, 1)
+	hintB := NewIncomingHintKey(secondScript, 1)
+	hintPlain := NewIncomingHintKey(plainScript, 1)
 
-	// Walk ReceiveResolving(event 3) -> ReceiveNotified ->
-	// ReceiveAwaitingAck -> ReceiveCompleted{CompletedEventIDs: [3]}.
+	// Walk ReceiveResolving(scriptA, event 1) -> ReceiveNotified ->
+	// ReceiveAwaitingAck -> ReceiveCompleted.
 	sess, err := newReceiveSessionWithState(
 		t.Context(), sessionID, &ReceiveResolving{
 			SessionID:         sessionID,
 			RecipientPkScript: routingScript,
-			RecipientEventID:  3,
+			RecipientEventID:  1,
 		}, EnvConfig{},
 	)
 	require.NoError(t, err)
 
+	// A stale phase-1 resolution for a different (script, event) must be
+	// ignored without advancing ReceiveResolving.
+	staleRes := sess.FSM.AskEvent(t.Context(), &IncomingTransferEvent{
+		SessionID:            sessionID,
+		RecipientPkScript:    secondScript,
+		RecipientEventID:     1,
+		ArkPSBT:              arkPSBT,
+		FinalCheckpointPSBTs: cps,
+		TaprootAssetTransfer: xfer,
+	}).Await(t.Context())
+	require.NoError(t, staleRes.Err())
+	st, err := sess.FSM.CurrentState()
+	require.NoError(t, err)
+	_, stillResolving := st.(*ReceiveResolving)
+	require.True(t, stillResolving)
+
 	res := sess.FSM.AskEvent(t.Context(), &IncomingTransferEvent{
 		SessionID:            sessionID,
+		RecipientPkScript:    routingScript,
+		RecipientEventID:     1,
 		ArkPSBT:              arkPSBT,
 		FinalCheckpointPSBTs: cps,
 		TaprootAssetTransfer: xfer,
 	}).Await(t.Context())
 	require.NoError(t, res.Err())
 
-	st, err := sess.FSM.CurrentState()
+	st, err = sess.FSM.CurrentState()
 	require.NoError(t, err)
 	notified, ok := st.(*ReceiveNotified)
 	require.True(t, ok)
-	require.EqualValues(t, 3, notified.RecipientEventID)
+	require.Equal(t, hintA, notified.ActiveHint)
 
-	res = sess.FSM.AskEvent(t.Context(), &IncomingHandledEvent{}).
-		Await(t.Context())
+	res = sess.FSM.AskEvent(t.Context(), &IncomingHandledEvent{
+		MaterializedPlainScripts: [][sha256.Size]byte{plainScriptHash},
+	}).Await(t.Context())
 	require.NoError(t, res.Err())
 
 	res = sess.FSM.AskEvent(t.Context(), &IncomingAckSentEvent{}).
@@ -660,11 +698,13 @@ func TestMultiEventIncomingReceivePass(t *testing.T) {
 	require.NoError(t, err)
 	completed, ok := st.(*ReceiveCompleted)
 	require.True(t, ok)
-	require.Equal(t, []uint64{3}, completed.CompletedEventIDs)
-	require.True(t, completed.HasEventID(3))
-	require.False(t, completed.HasEventID(2))
+	require.Equal(t, []IncomingHintKey{hintA}, completed.CompletedHints)
+	require.True(t, completed.HasHint(hintA))
+	require.False(t, completed.HasHint(hintB))
+	require.True(t, completed.HasPlainScript(plainScriptHash))
 
-	// Snapshot round-trip preserves CompletedEventIDs on ReceiveCompleted.
+	// Snapshot round-trip preserves CompletedHints and
+	// MaterializedPlainScripts on ReceiveCompleted.
 	snap, err := NewIncomingSnapshot(sessionID, completed)
 	require.NoError(t, err)
 	raw, err := encodeIncomingSnapshot(snap)
@@ -677,11 +717,24 @@ func TestMultiEventIncomingReceivePass(t *testing.T) {
 	require.NoError(t, err)
 	restoredCompleted, ok := restoredState.(*ReceiveCompleted)
 	require.True(t, ok)
-	require.Equal(t, []uint64{3}, restoredCompleted.CompletedEventIDs)
+	require.Equal(
+		t, []IncomingHintKey{hintA}, restoredCompleted.CompletedHints,
+	)
+	require.Equal(
+		t, [][sha256.Size]byte{plainScriptHash},
+		restoredCompleted.MaterializedPlainScripts,
+	)
 
-	// On the session behavior: repeating event 3 is a no-op; a distinct
-	// event 2 starts a fresh ReceiveResolving pass carrying [3]; and while
-	// event 2 is active, a distinct event 4 postpones instead of dropping.
+	// On the session behavior:
+	// - repeating hintA is a no-op;
+	// - a hint for an already-materialized plain Bitcoin script stays
+	//   dormant (no-op) without reopening;
+	// - a distinct script with the same per-script event ID (hintB,
+	//   event_id=1) starts a fresh ReceiveResolving pass carrying hintA;
+	// - while hintB is active, a third hint postpones instead of dropping;
+	// - if the follow-up pass fails, the session returns to
+	//   ReceiveCompleted rather than overwriting prior completion with
+	//   Failed.
 	b := &sessionBehavior{
 		sessionID: sessionID,
 		log:       btclog.Disabled,
@@ -693,7 +746,7 @@ func TestMultiEventIncomingReceivePass(t *testing.T) {
 		t.Context(), &ResolveIncomingTransferRequest{
 			SessionID:         sessionID,
 			RecipientPkScript: routingScript,
-			RecipientEventID:  3,
+			RecipientEventID:  1,
 		},
 	)
 	require.NoError(t, dupRes.Err())
@@ -702,11 +755,24 @@ func TestMultiEventIncomingReceivePass(t *testing.T) {
 	_, stillCompleted := st.(*ReceiveCompleted)
 	require.True(t, stillCompleted)
 
+	plainRes := b.handleResolveIncomingTransfer(
+		t.Context(), &ResolveIncomingTransferRequest{
+			SessionID:         sessionID,
+			RecipientPkScript: plainScript,
+			RecipientEventID:  hintPlain.EventID,
+		},
+	)
+	require.NoError(t, plainRes.Err())
+	st, err = b.fsm.CurrentState()
+	require.NoError(t, err)
+	_, stillCompleted = st.(*ReceiveCompleted)
+	require.True(t, stillCompleted)
+
 	nextRes := b.handleResolveIncomingTransfer(
 		t.Context(), &ResolveIncomingTransferRequest{
 			SessionID:         sessionID,
-			RecipientPkScript: routingScript,
-			RecipientEventID:  2,
+			RecipientPkScript: secondScript,
+			RecipientEventID:  1,
 		},
 	)
 	require.NoError(t, nextRes.Err())
@@ -714,50 +780,303 @@ func TestMultiEventIncomingReceivePass(t *testing.T) {
 	require.NoError(t, err)
 	resolving, ok := st.(*ReceiveResolving)
 	require.True(t, ok)
-	require.EqualValues(t, 2, resolving.RecipientEventID)
-	require.Equal(t, []uint64{3}, resolving.CompletedEventIDs)
+	require.Equal(t, hintB, resolving.HintKey())
+	require.Equal(t, []IncomingHintKey{hintA}, resolving.CompletedHints)
 
 	busyRes := b.handleResolveIncomingTransfer(
 		t.Context(), &ResolveIncomingTransferRequest{
 			SessionID:         sessionID,
-			RecipientPkScript: routingScript,
-			RecipientEventID:  4,
+			RecipientPkScript: secondScript,
+			RecipientEventID:  2,
 		},
 	)
 	require.ErrorIs(t, busyRes.Err(), actor.ErrPostponed)
 
-	// Registry parkedSelfHints preserves multiple distinct recipient
-	// events for the same session in FIFO order and deduplicates repeats.
+	// A follow-up pass failure must preserve ReceiveCompleted with hintA.
+	failRes := b.fsm.AskEvent(t.Context(), &FailEvent{
+		Reason: "follow-up verification failed",
+	}).Await(t.Context())
+	require.NoError(t, failRes.Err())
+	st, err = b.fsm.CurrentState()
+	require.NoError(t, err)
+	preserved, ok := st.(*ReceiveCompleted)
+	require.True(t, ok)
+	require.Equal(t, []IncomingHintKey{hintA}, preserved.CompletedHints)
+
+	// Registry parkedSelfHints keys by (pkScript, eventID) so two fresh
+	// scripts both with event_id=1 do not collide, preserves FIFO order,
+	// and deduplicates exact repeats.
 	reg := &oorRegistryBehavior{}
 	reg.parkSelfHint(&ResolveIncomingTransferRequest{
 		SessionID:         sessionID,
 		RecipientPkScript: routingScript,
-		RecipientEventID:  2,
+		RecipientEventID:  1,
+	})
+	reg.parkSelfHint(&ResolveIncomingTransferRequest{
+		SessionID:         sessionID,
+		RecipientPkScript: secondScript,
+		RecipientEventID:  1,
 	})
 	reg.parkSelfHint(&ResolveIncomingTransferRequest{
 		SessionID:         sessionID,
 		RecipientPkScript: routingScript,
-		RecipientEventID:  3,
-	})
-	reg.parkSelfHint(&ResolveIncomingTransferRequest{
-		SessionID:         sessionID,
-		RecipientPkScript: routingScript,
-		RecipientEventID:  2,
+		RecipientEventID:  1,
 	})
 	require.Len(t, reg.parkedSelfHints[sessionID], 2)
-	require.EqualValues(
-		t, 2, reg.parkedSelfHints[sessionID][0].
-			RecipientEventID,
+	require.Equal(
+		t, routingScript,
+		reg.parkedSelfHints[sessionID][0].RecipientPkScript,
 	)
-	require.EqualValues(
-		t, 3, reg.parkedSelfHints[sessionID][1].
-			RecipientEventID,
+	require.Equal(
+		t, secondScript,
+		reg.parkedSelfHints[sessionID][1].RecipientPkScript,
 	)
 
-	reg.unparkSelfHint(sessionID, 2)
+	reg.unparkSelfHint(sessionID, hintA)
 	require.Len(t, reg.parkedSelfHints[sessionID], 1)
-	require.EqualValues(
-		t, 3, reg.parkedSelfHints[sessionID][0].
-			RecipientEventID,
+	require.Equal(
+		t, secondScript,
+		reg.parkedSelfHints[sessionID][0].RecipientPkScript,
 	)
+}
+
+// TestIncomingPersistSkipsTerminalAndCanonicalizesAssetRef verifies that
+// persistIncomingDescriptor never resurrects an already-spent VTXO (even if
+// SaveVTXO uses an upsert that returns nil), that mixed asset+Bitcoin sessions
+// still materialize sibling Bitcoin outputs when assets are disabled or an
+// asset output fails verification, and that incoming asset refs are
+// canonicalized to lowercase.
+func TestIncomingPersistSkipsTerminalAndCanonicalizesAssetRef(t *testing.T) {
+	t.Parallel()
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	recipPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	btcPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const exitDelay = uint32(144)
+
+	// Build a spent VTXO in the store and verify persistIncomingDescriptor
+	// refuses to overwrite it or notify the manager.
+	spentOP := wire.OutPoint{Hash: chainhash.Hash{0x44}, Index: 0}
+	spentStore := newTestVTXOStore()
+	require.NoError(
+		t,
+		spentStore.SaveVTXO(
+			t.Context(), &vtxo.Descriptor{
+				Outpoint: spentOP,
+				Amount:   1_000,
+				Status:   vtxo.VTXOStatusSpent,
+			},
+		),
+	)
+	spentHandler := &LocalPersistenceOutboxHandler{
+		Store: spentStore,
+	}
+
+	persisted, notify, err := spentHandler.persistIncomingDescriptor(
+		t.Context(), &vtxo.Descriptor{
+			Outpoint: spentOP,
+			Amount:   1_000,
+			Status:   vtxo.VTXOStatusLive,
+		},
+	)
+	require.NoError(t, err)
+	require.False(t, notify)
+	require.Equal(t, vtxo.VTXOStatusSpent, persisted.Status)
+
+	gotSpent, err := spentStore.GetVTXO(t.Context(), spentOP)
+	require.NoError(t, err)
+	require.Equal(t, vtxo.VTXOStatusSpent, gotSpent.Status)
+
+	// Build an asset-bearing Ark PSBT and append a sibling plain Bitcoin
+	// output owned by btcPriv. With VerifyIncomingAssetPackage == nil
+	// (assets disabled), the plain Bitcoin output must still materialize
+	// while the asset output is skipped.
+	btcPolicyBytes, err := arkscript.EncodeStandardVTXOTemplate(
+		btcPriv.PubKey(), operatorPriv.PubKey(), exitDelay,
+	)
+	require.NoError(t, err)
+	btcTemplate, err := arkscript.DecodePolicyTemplate(btcPolicyBytes)
+	require.NoError(t, err)
+	btcCompiled, err := btcTemplate.Compile()
+	require.NoError(t, err)
+	btcPkScript, err := txscript.PayToTaprootScript(
+		btcCompiled.OutputKey(),
+	)
+	require.NoError(t, err)
+
+	assetRoot := chainhash.Hash{0xbb}
+	const assetRef = "asset-usd"
+	const assetAmount = uint64(200)
+	arkPSBT, cps, recipPolicy, _, composedScript, xfer :=
+		buildTestIncomingAssetGraph(
+			t, recipPriv.PubKey(), operatorPriv, exitDelay,
+			assetRoot, assetRef, assetAmount,
+			oortx.RecipientOutput{
+				PkScript: btcPkScript,
+				Value:    1_000,
+			},
+		)
+
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	recipients := []ArkRecipientOutput{
+		{
+			OutputIndex:        0,
+			Value:              1_000,
+			PkScript:           composedScript,
+			VTXOPolicyTemplate: recipPolicy,
+			Asset: &oortx.RecipientAsset{
+				Root:   assetRoot,
+				Ref:    assetRef,
+				Amount: assetAmount,
+			},
+		},
+		{
+			OutputIndex: 1,
+			Value:       1_000,
+			PkScript:    btcPkScript,
+		},
+	}
+
+	commitmentID := chainhash.Hash{0x66}
+	matches := []IncomingMetadataMatch{
+		{
+			OutputIndex: 0,
+			Metadata: IncomingVTXOMetadata{
+				RoundID:        "round-1",
+				CommitmentTxID: commitmentID,
+				ChainDepth:     1,
+				OperatorKey:    operatorPriv.PubKey(),
+				Ancestry: validTestIncomingAncestry(
+					commitmentID,
+				),
+			},
+		},
+		{
+			OutputIndex: 1,
+			Metadata: IncomingVTXOMetadata{
+				RoundID:        "round-1",
+				CommitmentTxID: commitmentID,
+				ChainDepth:     1,
+				OperatorKey:    operatorPriv.PubKey(),
+				Ancestry: validTestIncomingAncestry(
+					commitmentID,
+				),
+			},
+		},
+	}
+
+	disabledStore := newTestVTXOStore()
+	var notified []*vtxo.Descriptor
+
+	disabledHandler := &LocalPersistenceOutboxHandler{
+		Store:        disabledStore,
+		PackageStore: &testPackageStore{},
+		OperatorKey:  operatorPriv.PubKey(),
+		ExitDelay:    exitDelay,
+		AuthenticateIncomingExpiry: func(_ context.Context,
+			_ []vtxo.Ancestry) (vtxo.AuthenticatedBatchEvidence,
+			error) {
+
+			return vtxo.AuthenticatedBatchEvidence{
+				BatchExpiry:              10_000,
+				EarliestCommitmentHeight: 100,
+			}, nil
+		},
+		// VerifyIncomingAssetPackage intentionally nil (assets off).
+		ResolveIncomingClientKey: func(_ context.Context,
+			recipient ArkRecipientOutput) (keychain.KeyDescriptor,
+			error) {
+
+			if bytes.Equal(recipient.PkScript, btcPkScript) {
+				return keychain.KeyDescriptor{
+					PubKey: btcPriv.PubKey(),
+				}, nil
+			}
+
+			return keychain.KeyDescriptor{
+				PubKey: recipPriv.PubKey(),
+			}, nil
+		},
+		NotifyIncomingVTXOs: func(_ context.Context,
+			descs []*vtxo.Descriptor) error {
+
+			notified = append(notified, descs...)
+
+			return nil
+		},
+	}
+
+	authEvents, err := disabledHandler.Handle(
+		t.Context(), sessionID, &AuthenticateIncomingMetadataRequest{
+			SessionID:            sessionID,
+			Matches:              matches,
+			ArkPSBT:              arkPSBT,
+			FinalCheckpointPSBTs: cps,
+			Recipients:           recipients,
+			TaprootAssetTransfer: xfer,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, authEvents, 1)
+
+	resolved, ok := authEvents[0].(*IncomingMetadataResolvedEvent)
+	require.True(t, ok)
+	require.Len(t, resolved.Matches, 1)
+	require.EqualValues(t, 1, resolved.Matches[0].OutputIndex)
+	require.False(t, resolved.Matches[0].Metadata.AssetVerified)
+
+	matEvents, err := disabledHandler.Handle(
+		t.Context(), sessionID, &MaterializeIncomingVTXOsRequest{
+			SessionID:            sessionID,
+			ArkPSBT:              arkPSBT,
+			FinalCheckpointPSBTs: cps,
+			Recipients:           recipients,
+			MetadataMatches:      resolved.Matches,
+			TaprootAssetTransfer: xfer,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, matEvents, 1)
+
+	handledEv, ok := matEvents[0].(*IncomingHandledEvent)
+	require.True(t, ok)
+	require.Equal(
+		t, [][sha256.Size]byte{sha256.Sum256(btcPkScript)},
+		handledEv.MaterializedPlainScripts,
+	)
+	require.Len(t, notified, 1)
+	require.Equal(t, btcPkScript, notified[0].PkScript)
+
+	// Asset output 0 must NOT have been saved while Bitcoin output 1 was.
+	_, err = disabledStore.GetVTXO(t.Context(), wire.OutPoint{
+		Hash:  chainhash.Hash(sessionID),
+		Index: 0,
+	})
+	require.Error(t, err)
+
+	savedBTC, err := disabledStore.GetVTXO(t.Context(), wire.OutPoint{
+		Hash:  chainhash.Hash(sessionID),
+		Index: 1,
+	})
+	require.NoError(t, err)
+	require.Equal(t, btcPkScript, savedBTC.PkScript)
+
+	// Canonicalization check (M-8): incoming mixed-case TaprootAssetRef is
+	// lowercased and trimmed by parseRecipientEventAsset.
+	xferBytes, err := xfer.MarshalBinary()
+	require.NoError(t, err)
+	parsedAsset, _, err := parseIncomingEventAsset(
+		&arkrpc.OORRecipientEvent{
+			TaprootAssetRoot:     assetRoot[:],
+			TaprootAssetRef:      "  ASSET-USD-MIXED  ",
+			TaprootAssetAmount:   assetAmount,
+			TaprootAssetTransfer: xferBytes,
+		}, len(cps),
+	)
+	require.NoError(t, err)
+	require.Equal(t, "asset-usd-mixed", parsedAsset.Ref)
 }
