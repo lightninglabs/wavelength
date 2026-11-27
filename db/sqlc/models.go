@@ -644,6 +644,13 @@ type VtxoAncestryPath struct {
 	CommitmentHeight  int32
 }
 
+type VtxoManualExitOption struct {
+	OutpointHash       []byte
+	OutpointIndex      int32
+	SweepScript        []byte
+	FeeRateSatPerVbyte int64
+}
+
 type WalletFeeSplit struct {
 	Singleton int64
 	Candidate []byte

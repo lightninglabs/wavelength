@@ -62,6 +62,7 @@ type Querier interface {
 	DeleteActivityEventsByCanonicalID(ctx context.Context, canonicalID string) error
 	DeleteAssetEngineProof(ctx context.Context, arg DeleteAssetEngineProofParams) error
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
+	DeleteManualExitOptions(ctx context.Context, arg DeleteManualExitOptionsParams) error
 	DeleteOORPackageCheckpoints(ctx context.Context, sessionID []byte) error
 	DeleteOrphanedPendingBoardIntents(ctx context.Context) error
 	// A terminally failed intent is a durable record, not a sweepable orphan:
@@ -143,6 +144,7 @@ type Querier interface {
 	GetInternalKeyByID(ctx context.Context, id int64) (InternalKey, error)
 	// Macaroon root key store queries.
 	GetMacaroonRootKey(ctx context.Context, id []byte) (Macaroon, error)
+	GetManualExitOptions(ctx context.Context, arg GetManualExitOptionsParams) (GetManualExitOptionsRow, error)
 	// A stored package may be a local transfer even if its registry row is gone.
 	GetOORDiagnosticPackage(ctx context.Context, sessionID []byte) (GetOORDiagnosticPackageRow, error)
 	GetOORDispatchAttemptByIdempotencyKey(ctx context.Context, idempotencyKey string) (OorDispatchAttempt, error)
@@ -586,6 +588,7 @@ type Querier interface {
 	// PullActivityEvents returns transition rows strictly after the cursor in
 	// event_seq order, the resumable-subscribe replay primitive.
 	PullActivityEvents(ctx context.Context, arg PullActivityEventsParams) ([]ActivityEvent, error)
+	PutManualExitOptions(ctx context.Context, arg PutManualExitOptionsParams) error
 	// ReadCurrentActivityEvents bounds a replay page by a captured event ceiling,
 	// while returning the current canonical projection for every selected event.
 	// Removed internal activity has no replay rows and cannot reappear here.

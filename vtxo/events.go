@@ -161,6 +161,9 @@ type ForceUnrollEvent struct {
 	// persist for this target. None selects the standard VTXO timeout
 	// policy.
 	ExitPolicy fn.Option[actormsg.ExitPolicy]
+
+	// ManualOptions are persisted before publishing the exit notification.
+	ManualOptions *actormsg.ManualExitOptions
 }
 
 // VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.

@@ -1149,6 +1149,21 @@ func (a *VTXOActor) processStatusUpdate(ctx context.Context,
 	)
 
 	switch {
+	case m.ManualExitOptions != nil:
+		store, ok := a.cfg.Store.(interface {
+			UpdateVTXOStatusWithExitOptions(context.Context,
+				wire.OutPoint, *actormsg.ManualExitOptions,
+				bool) error
+		})
+		if !ok {
+			return fmt.Errorf("VTXO store cannot persist manual " +
+				"exit options")
+		}
+		err = store.UpdateVTXOStatusWithExitOptions(
+			ctx, m.Outpoint, m.ManualExitOptions,
+			m.ReleaseSpendReservation,
+		)
+
 	case isForfeitingWithTx:
 		err = a.cfg.Store.MarkForfeiting(
 			ctx, m.Outpoint, m.RoundID, m.ForfeitTx,

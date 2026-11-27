@@ -274,8 +274,9 @@ func (s *LiveState) handleForceUnroll(_ context.Context,
 			ExitPolicy:      evt.ExitPolicy,
 		},
 		&VTXOStatusUpdate{
-			Outpoint:  s.VTXO.Outpoint,
-			NewStatus: VTXOStatusUnilateralExit,
+			Outpoint:          s.VTXO.Outpoint,
+			NewStatus:         VTXOStatusUnilateralExit,
+			ManualExitOptions: evt.ManualOptions,
 		},
 	}
 
@@ -852,8 +853,9 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 				ExitPolicy:      evt.ExitPolicy,
 			},
 			&VTXOStatusUpdate{
-				Outpoint:  s.VTXO.Outpoint,
-				NewStatus: VTXOStatusUnilateralExit,
+				Outpoint:          s.VTXO.Outpoint,
+				NewStatus:         VTXOStatusUnilateralExit,
+				ManualExitOptions: evt.ManualOptions,
 			},
 		}
 
@@ -1257,8 +1259,9 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 				ExitPolicy:      evt.ExitPolicy,
 			},
 			&VTXOStatusUpdate{
-				Outpoint:  s.VTXO.Outpoint,
-				NewStatus: VTXOStatusUnilateralExit,
+				Outpoint:          s.VTXO.Outpoint,
+				NewStatus:         VTXOStatusUnilateralExit,
+				ManualExitOptions: evt.ManualOptions,
 			},
 		}
 
@@ -1510,8 +1513,9 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 				ExitPolicy:      evt.ExitPolicy,
 			},
 			&VTXOStatusUpdate{
-				Outpoint:  s.VTXO.Outpoint,
-				NewStatus: VTXOStatusUnilateralExit,
+				Outpoint:          s.VTXO.Outpoint,
+				NewStatus:         VTXOStatusUnilateralExit,
+				ManualExitOptions: evt.ManualOptions,
 
 				ReleaseSpendReservation: true,
 			},

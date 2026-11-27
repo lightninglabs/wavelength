@@ -1937,6 +1937,16 @@ CREATE TABLE "vtxo_ancestry_paths" (
     CHECK (path_order >= 0 AND path_order < 64)
 );
 
+CREATE TABLE vtxo_manual_exit_options (
+    outpoint_hash BLOB NOT NULL,
+    outpoint_index INTEGER NOT NULL,
+    sweep_script BLOB NOT NULL,
+    fee_rate_sat_per_vbyte BIGINT NOT NULL CHECK (fee_rate_sat_per_vbyte >= 0),
+    PRIMARY KEY (outpoint_hash, outpoint_index),
+    FOREIGN KEY (outpoint_hash, outpoint_index)
+        REFERENCES vtxos (outpoint_hash, outpoint_index) ON DELETE CASCADE
+);
+
 CREATE TABLE vtxos (
     -- outpoint_hash and outpoint_index form the VTXO outpoint (primary key).
     outpoint_hash BLOB NOT NULL,

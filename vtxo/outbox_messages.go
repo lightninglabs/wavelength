@@ -167,6 +167,10 @@ type VTXOStatusUpdate struct {
 	// same transaction as the status update. Set on transitions that move
 	// the VTXO out of SpendingState so the row never outlives the spend.
 	ReleaseSpendReservation bool
+
+	// ManualExitOptions binds the requested payout and fee to this status
+	// transition before the exit registry can start work.
+	ManualExitOptions *actormsg.ManualExitOptions
 }
 
 func (m *VTXOStatusUpdate) vtxoOutMsgSealed() {}
