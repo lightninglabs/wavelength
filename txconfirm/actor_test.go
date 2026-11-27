@@ -3187,3 +3187,36 @@ func TestInitialConfirmedAsyncDeliveryRetainsSubscriber(t *testing.T) {
 			"completed via the async path — handleTerminalNotify"+
 			"Result probably evicted it on completion")
 }
+
+// TestManualPackageUsesInitialFeeRate checks the actual child fee under a
+// new anchor publication with an explicit rate.
+func TestManualPackageUsesInitialFeeRate(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	coin := makeWalletUTXO(t)
+	ref, _ := newTestActor(t, Config{
+		ChainSource: chain,
+		Wallet:      &fakeWallet{utxos: []*walletcore.Utxo{coin}},
+	})
+	tx := makeTestTx(true)
+	const customRate = 7
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx: tx,
+		Subscriber: actor.NewChannelTellOnlyRef[Notification](
+			"manual", 4,
+		),
+		InitialFeeRateSatPerVByte: customRate,
+	})
+	require.Equal(t, TxStateAwaitingConfirmation, resp.State)
+	require.Equal(t, 1, chain.packageCallCount())
+
+	chain.mu.Lock()
+	child := chain.packageCalls[0].Child.Copy()
+	chain.mu.Unlock()
+
+	require.Len(t, child.TxOut, 1)
+	pkgVBytes := (EstimateWeight(tx) + EstimateWeight(child) + 3) / 4
+	require.GreaterOrEqual(
+		t, int64(coin.Amount)-child.TxOut[0].Value,
+		pkgVBytes*customRate,
+	)
+}

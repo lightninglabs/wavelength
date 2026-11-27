@@ -1205,12 +1205,18 @@ func (b *behavior) ensureNodeConfirmed(ctx context.Context,
 		return err
 	}
 
+	var initialFeeRate int64
+	if b.desc != nil && b.desc.ManualExitOptions != nil {
+		initialFeeRate = b.desc.ManualExitOptions.FeeRateSatPerVByte
+	}
+
 	resp, err := b.cfg.TxConfirmRef.Ask(ctx, &txconfirm.EnsureConfirmedReq{
-		Tx:                   node.Tx,
-		ConfirmationPkScript: pkScript,
-		Label:                "unroll-node-" + txid.String(),
-		HeightHint:           heightHint,
-		Subscriber:           b.notificationRef(),
+		Tx:                        node.Tx,
+		InitialFeeRateSatPerVByte: initialFeeRate,
+		ConfirmationPkScript:      pkScript,
+		Label:                     "unroll-node-" + txid.String(),
+		HeightHint:                heightHint,
+		Subscriber:                b.notificationRef(),
 	}).Await(ctx).Unpack()
 	if err != nil {
 		return err
@@ -3089,7 +3095,18 @@ func (b *behavior) emitExitCostIfCompleted(ctx context.Context, phase Phase,
 	sink := b.cfg.LedgerSink.UnsafeFromSome()
 
 	if !b.exitCostNotified {
-		msg, err := b.exitCostMsg(job)
+		ownWallet, err := b.exitPaysWallet(ctx)
+		if err != nil {
+			b.log.WarnS(
+				ctx,
+				"Deferring exit accounting; payout ownership "+
+					"lookup failed",
+				err,
+			)
+
+			return false
+		}
+		msg, err := b.exitCostMsg(job, ownWallet)
 		if err != nil {
 			b.log.ErrorS(ctx, "Unbuildable unroll exit cost on "+
 				"completed actor", err)
@@ -3107,9 +3124,33 @@ func (b *behavior) emitExitCostIfCompleted(ctx context.Context, phase Phase,
 		}
 
 		b.exitCostNotified = true
+		if !ownWallet {
+			b.proceedsRecorded = true
+		}
 	}
 
 	return b.recordExitProceedsUTXO(ctx, notifyCtx, sink, job)
+}
+
+// exitPaysWallet preserves the default wallet-owned sweep and checks whether
+// an explicitly chosen destination is also owned before crediting proceeds.
+func (b *behavior) exitPaysWallet(ctx context.Context) (bool, error) {
+	if b.desc == nil || b.desc.ManualExitOptions == nil ||
+		len(b.desc.ManualExitOptions.SweepScript) == 0 {
+		return true, nil
+	}
+	if b.cfg.OwnedWalletScripts.IsNone() {
+		return false, nil
+	}
+
+	script, err := safeTxOutPkScript(b.sweepTx, 0)
+	if err != nil {
+		return false, err
+	}
+
+	return b.cfg.OwnedWalletScripts.UnsafeFromSome().IsOwnedWalletScript(
+		ctx, script,
+	)
 }
 
 // recordExitProceedsUTXO records the sweep output the exit paid into the
@@ -3245,7 +3286,9 @@ func (b *behavior) exitProceedsMsg(ctx context.Context, job *JobState) (
 
 // exitCostMsg derives the ledger event from the proof target output and the
 // persisted final sweep transaction.
-func (b *behavior) exitCostMsg(job *JobState) (*ledger.ExitCostMsg, error) {
+func (b *behavior) exitCostMsg(job *JobState, ownWallet bool) (
+	*ledger.ExitCostMsg, error) {
+
 	if b.proof == nil {
 		return nil, fmt.Errorf("missing proof")
 	}
@@ -3288,34 +3331,13 @@ func (b *behavior) exitCostMsg(job *JobState) (*ledger.ExitCostMsg, error) {
 
 	target := b.proof.TargetOutpoint()
 
-	// DestinationOwnWallet is a literal rather than a comparison of
-	// safeTxOutPkScript(b.sweepTx, 0) against the wallet script, because
-	// nothing durable carries that script: buildSweepTx derives it from
-	// SweepWallet.NewWalletPkScript at build time and the checkpoint keeps
-	// only the sweep tx, so a restart-resumed unroll has nothing to
-	// compare against. Adding it would be a checkpoint format change.
-	//
-	// The invariant the literal stands on: every sweep this package builds
-	// pays a script the wallet handed out. buildSweepTx (unroll/sweep.go)
-	// sources DestinationPkScript from SweepWallet.NewWalletPkScript, and
-	// the one exit-spend policy in this package,
-	// StandardVTXOExitSpendPolicy, writes that script verbatim into the
-	// output it adds. So the exited value landed back in the client's own
-	// wallet rather than leaving for a counterparty, and the ledger books
-	// the send leg as an internal move into wallet_balance instead of an
-	// outflow. A future exit-spend policy that pays a caller-supplied
-	// destination must revisit this.
-	//
-	// The flag says only that the value came home; which output it came
-	// home to is exitProceedsMsg's question, and that one is answered
-	// from the owned-script registry rather than from this invariant.
 	return &ledger.ExitCostMsg{
 		OutpointHash:         target.Hash,
 		OutpointIndex:        target.Index,
 		AmountSat:            targetOutput.Value,
 		ExitCostSat:          exitCost,
 		BlockHeight:          height,
-		DestinationOwnWallet: true,
+		DestinationOwnWallet: ownWallet,
 	}, nil
 }
 

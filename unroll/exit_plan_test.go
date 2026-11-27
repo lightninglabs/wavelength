@@ -74,6 +74,48 @@ func TestPlanExitFundingShortfallCoversBalance(t *testing.T) {
 	require.EqualValues(t, 610, plan.FundingShortfallSat)
 }
 
+// TestPlanExitFundingRejectsDepositsForStructuralBlocks checks that an
+// empty wallet cannot turn a dust or uneconomical exit into a funding request.
+func TestPlanExitFundingRejectsDepositsForStructuralBlocks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		amount btcutil.Amount
+		reason ExitInfeasibilityReason
+	}{
+		{
+			1_200,
+			ExitSweepBelowDust,
+		},
+		{
+			2_000,
+			ExitUneconomical,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.reason.String(), func(t *testing.T) {
+			t.Parallel()
+
+			plan := PlanExitFunding(
+				testExitPlanDescriptor(tc.amount, 2), nil, 6,
+				ExitFundingSnapshot{},
+			)
+
+			require.False(t, plan.Feasibility.Feasible)
+			require.Equal(t, tc.reason, plan.Feasibility.Reason)
+			require.Equal(
+				t, 2, plan.Feasibility.RequiredWalletInputs,
+			)
+			require.Positive(
+				t, plan.Feasibility.TotalRecoveryCostSat,
+			)
+			require.Zero(t, plan.FundingShortfallSat)
+			require.Zero(t, plan.RecommendedTotalFundingSat)
+			require.Zero(t, plan.RecommendedUTXOAmountSat)
+		})
+	}
+}
+
 func testExitPlanDescriptor(amount btcutil.Amount, paths int) *vtxo.Descriptor {
 	desc := &vtxo.Descriptor{
 		Amount: amount,

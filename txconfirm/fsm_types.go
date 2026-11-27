@@ -78,6 +78,9 @@ type trackedTxData struct {
 	// RetryUntilAccepted is the caller's initial-broadcast retry contract.
 	RetryUntilAccepted bool
 
+	// InitialFeeRateSatPerVByte is the requested first-publication rate.
+	InitialFeeRateSatPerVByte int64
+
 	// ParentFee is the absolute miner fee, in satoshis, that the tracked
 	// transaction already pays on its own. It is used only for a funded-
 	// anchor parent, where the CPFP child subtracts it so a fee bump lands

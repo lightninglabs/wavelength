@@ -2,6 +2,9 @@ package unroll
 
 import (
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/btcsuite/btcwallet/wallet/txrules"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/txconfirm"
 	"github.com/lightninglabs/wavelength/vtxo"
 )
@@ -45,6 +48,15 @@ type ExitFundingPlan struct {
 func PlanExitFunding(desc *vtxo.Descriptor, mat *LineageMaterial,
 	feeRate btcutil.Amount, wallet ExitFundingSnapshot) ExitFundingPlan {
 
+	return PlanExitFundingWithOptions(desc, mat, feeRate, wallet, nil)
+}
+
+// PlanExitFundingWithOptions uses the same fee model with the chosen final
+// payout script's dust threshold.
+func PlanExitFundingWithOptions(desc *vtxo.Descriptor, mat *LineageMaterial,
+	feeRate btcutil.Amount, wallet ExitFundingSnapshot,
+	options *actormsg.ManualExitOptions) ExitFundingPlan {
+
 	numTxs, numPaths, vbytes := recoveryEstimate(desc, mat)
 	var (
 		amount     btcutil.Amount
@@ -65,6 +77,24 @@ func PlanExitFunding(desc *vtxo.Descriptor, mat *LineageMaterial,
 		WalletUsableInputs: wallet.WalletUsableInputs,
 		AssetClaim:         assetClaim,
 	})
+
+	if options != nil && len(options.SweepScript) != 0 &&
+		isDustExitPayout(
+			options.SweepScript, feasibility.NetRecoveredSat,
+		) {
+
+		feasibility.Feasible = false
+		feasibility.Reason = ExitSweepBelowDust
+	}
+	// A deposit cannot fix dust or an exit that costs more than the coin.
+	// Preserve the cost estimate so callers can explain the blocked exit.
+	if feasibility.Reason == ExitSweepBelowDust ||
+		feasibility.Reason == ExitUneconomical {
+		return ExitFundingPlan{
+			Feasibility:           feasibility,
+			RequiredConfirmations: RequiredFeeInputConfirmations,
+		}
+	}
 
 	recommended := RecommendedExitFeeInputAmount(feasibility)
 
@@ -138,4 +168,15 @@ func ceilDivAmount(a, b btcutil.Amount) btcutil.Amount {
 	}
 
 	return (a + b - 1) / b
+}
+
+// isDustExitPayout checks the payout against the exact script's standard relay
+// floor.
+func isDustExitPayout(script []byte, amount btcutil.Amount) bool {
+	return txrules.IsDustOutput(
+		wire.NewTxOut(
+			int64(amount), script,
+		),
+		txrules.DefaultRelayFeePerKb,
+	)
 }
