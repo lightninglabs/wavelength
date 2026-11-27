@@ -5254,6 +5254,14 @@ func (r *RPCServer) resolveOutputPkScript(ctx context.Context,
 func (r *RPCServer) Unroll(ctx context.Context, req *waverpc.UnrollRequest) (
 	*waverpc.UnrollResponse, error) {
 
+	return r.UnrollWithOptions(ctx, req.GetOutpoint(), ManualExitTerms{})
+}
+
+// UnrollWithOptions starts a unilateral exit without discarding its reviewed
+// payout or initial fee rate. The VTXO actor persists both with its transition.
+func (r *RPCServer) UnrollWithOptions(ctx context.Context, target string,
+	terms ManualExitTerms) (*waverpc.UnrollResponse, error) {
+
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
@@ -5263,10 +5271,14 @@ func (r *RPCServer) Unroll(ctx context.Context, req *waverpc.UnrollRequest) (
 			"not initialized")
 	}
 
-	outpoint, err := parseOutpointString(req.Outpoint)
+	outpoint, err := parseOutpointString(target)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid "+
 			"outpoint: %v", err)
+	}
+	_, options, err := r.validateManualExitTerms(terms)
+	if err != nil {
+		return nil, err
 	}
 
 	// Detach admission from the RPC stream: a CLI/RPC disconnect must
@@ -5323,10 +5335,26 @@ func (r *RPCServer) Unroll(ctx context.Context, req *waverpc.UnrollRequest) (
 	// that the wallet cannot fund (insufficient balance or too few
 	// distinct CPFP fee inputs). Failing closed here keeps the VTXO out
 	// of an exit state the user can't easily back out of.
-	if err := r.preflightUnrollFeasibility(
-		admissionCtx, desc,
-	); err != nil {
+	if err := validateManualExitTarget(desc, options); err != nil {
 		return nil, err
+	}
+	if options == nil {
+		if err := r.preflightUnrollFeasibility(
+			admissionCtx, desc,
+		); err != nil {
+			return nil, err
+		}
+	} else {
+		verdict, err := r.assessUnrollFeasibilityWithOptions(
+			admissionCtx, desc, options,
+		)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "preflight "+
+				"exit: %v", err)
+		}
+		if !verdict.Feasible {
+			return nil, unrollInfeasibleError(verdict)
+		}
 	}
 
 	// Route through the VTXO manager which tells the VTXO actor to
@@ -5343,7 +5371,8 @@ func (r *RPCServer) Unroll(ctx context.Context, req *waverpc.UnrollRequest) (
 			// hand-typed unroll then records as the expiry safety
 			// net, so the job's persisted provenance names a
 			// trigger that never fired.
-			Trigger: actormsg.UnrollTriggerManual,
+			Trigger:       actormsg.UnrollTriggerManual,
+			ManualOptions: options,
 		},
 	).Await(admissionCtx).Unpack()
 	if askErr != nil {
@@ -5423,6 +5452,14 @@ func (r *RPCServer) preflightUnrollFeasibility(ctx context.Context,
 func (r *RPCServer) assessUnrollFeasibility(ctx context.Context,
 	desc *vtxo.Descriptor) (unroll.ExitFeasibility, error) {
 
+	return r.assessUnrollFeasibilityWithOptions(ctx, desc, nil)
+}
+
+// assessUnrollFeasibilityWithOptions checks the same terms the planner quotes.
+func (r *RPCServer) assessUnrollFeasibilityWithOptions(ctx context.Context,
+	desc *vtxo.Descriptor, options *actormsg.ManualExitOptions) (
+	unroll.ExitFeasibility, error) {
+
 	walletSnapshot, err := r.walletExitFundingSnapshot(ctx)
 	if err != nil {
 		return unroll.ExitFeasibility{}, fmt.Errorf("wallet "+
@@ -5430,8 +5467,15 @@ func (r *RPCServer) assessUnrollFeasibility(ctx context.Context,
 	}
 
 	mat := r.resolveExitLineage(ctx, desc.Outpoint, desc)
-	plan := unroll.PlanExitFunding(
-		desc, mat, r.estimateUnrollFeeRate(ctx), walletSnapshot,
+	var rate btcutil.Amount
+	if options != nil {
+		rate = btcutil.Amount(options.FeeRateSatPerVByte)
+	}
+	if rate == 0 {
+		rate = r.estimateUnrollFeeRate(ctx)
+	}
+	plan := unroll.PlanExitFundingWithOptions(
+		desc, mat, rate, walletSnapshot, options,
 	)
 
 	return plan.Feasibility, nil
@@ -5618,6 +5662,13 @@ func (r *RPCServer) GetUnrollStatus(ctx context.Context,
 		}
 		if found {
 			r.stampConfirmedExitCost(ctx, resp, outpoint)
+			if req.Detailed {
+				if err := r.stampExitSweepAddress(
+					ctx, resp, outpoint,
+				); err != nil {
+					return nil, err
+				}
+			}
 
 			return resp, nil
 		}
@@ -5666,6 +5717,11 @@ func (r *RPCServer) GetUnrollStatus(ctx context.Context,
 	// persisted descriptor and a human phase line, which keeps a completed
 	// or failed exit inspectable via this same endpoint.
 	if req.Detailed {
+		if err := r.stampExitSweepAddress(
+			ctx, resp, outpoint,
+		); err != nil {
+			return nil, err
+		}
 		resp.PhaseDetail = unrollPhaseDetail(resp.Status, nil)
 		r.enrichExitFees(ctx, resp, outpoint, fn.None[int64](), nil)
 	}
@@ -5939,9 +5995,15 @@ func (r *RPCServer) enrichExitFees(ctx context.Context,
 		return
 	}
 
-	feeRate, err := r.estimateWalletFeeRate(ctx, 0)
-	if err != nil {
-		return
+	var feeRate int64
+	if desc.ManualExitOptions != nil {
+		feeRate = desc.ManualExitOptions.FeeRateSatPerVByte
+	}
+	if feeRate == 0 {
+		feeRate, err = r.estimateWalletFeeRate(ctx, 0)
+		if err != nil {
+			return
+		}
 	}
 
 	// Resolve the lineage material so the CPFP estimate sizes the OOR

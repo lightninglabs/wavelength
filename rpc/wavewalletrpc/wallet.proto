@@ -1252,6 +1252,13 @@ message GetExitPlanRequest {
     // conf_target selects the fee-estimation target in blocks. Zero uses
     // the daemon's default unroll confirmation target.
     uint32 conf_target = 2;
+
+    // sweep_address is an optional final payout address on the wallet's
+    // network.
+    string sweep_address = 3;
+
+    // fee_rate_sat_per_vbyte overrides the automatic rate when positive.
+    int64 fee_rate_sat_per_vbyte = 4;
 }
 
 // ExitPlanEntry is the per-outpoint unilateral-exit readiness preview: the
@@ -1405,6 +1412,13 @@ message GetExitPlanResponse {
     // total_recommended_funding_sat is the summed recommended funding across
     // entries.
     int64 total_recommended_funding_sat = 5;
+
+    // sweep_address echoes the validated final payout address, if supplied.
+    string sweep_address = 6;
+
+    // total_estimated_fee_sat sums the estimated costs of individual exits.
+    // It can overestimate when several VTXOs share recovery transactions.
+    optional int64 total_estimated_fee_sat = 7;
 }
 
 // PreviewUnilateralExitResponse quotes a full recovery from its proof graphs
@@ -1441,6 +1455,9 @@ message PreviewUnilateralExitResponse {
 
     // funding_action describes the estimated use of confirmed wallet coins.
     UnilateralExitFundingAction funding_action = 8;
+
+    // sweep_address echoes the validated custom destination, if supplied.
+    string sweep_address = 9;
 }
 
 // UnilateralExitTarget describes one selected coin and any existing job.
@@ -1470,6 +1487,9 @@ message UnilateralExitTarget {
     // A cooperative round currently holds the coin. Manual recovery remains
     // available if the operator cannot complete the round.
     string round_commitment = 8;
+
+    // infeasibility_reason identifies an economic refusal.
+    ExitInfeasibilityReason infeasibility_reason = 9;
 }
 
 // UnilateralExitFundingAction describes the initial funding requirement.
@@ -1568,8 +1588,18 @@ message ExitRequest {
     // force_unroll_ack must be exactly "I_KNOW_WHAT_I_AM_DOING" to bypass
     // cooperative leave and start unilateral unroll. It cannot be combined
     // with onchain_address, and the server requires at least one confirmed
-    // local backing-wallet UTXO before admitting forced unroll.
+    // local backing-wallet UTXO before admitting forced unroll. To set an
+    // explicit fee rate or sweep address, use
+    // "I_KNOW_WHAT_I_AM_DOING_WITH_CUSTOM_EXIT_OPTIONS" so older daemons fail
+    // closed instead of ignoring the new fields.
     string force_unroll_ack = 3;
+
+    // sweep_address overrides the final payout for a manual unilateral exit.
+    string sweep_address = 4;
+
+    // fee_rate_sat_per_vbyte sets the initial unilateral broadcast rate.
+    // Zero uses automatic pricing.
+    int64 fee_rate_sat_per_vbyte = 5;
 }
 
 // ExitResponse reports the exit path the daemon took and its per-path detail
@@ -1818,6 +1848,9 @@ message ExitStatusResponse {
     // current_height is the best block height the exit job has observed. Set
     // only on a detailed query against a live job.
     int32 current_height = 10;
+
+    // sweep_address is the persisted custom payout, empty for wallet funding.
+    string sweep_address = 11;
 }
 
 // ExitSummaryRequest asks for the wallet-wide portfolio of in-progress exits.

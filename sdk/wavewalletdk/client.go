@@ -679,10 +679,23 @@ func (c *Client) Exit(ctx context.Context, req ExitRequest) (*ExitResult,
 			"force_unroll_ack")
 	}
 
+	sweepAddress := strings.TrimSpace(req.SweepAddress)
+	if sweepAddress != "" || req.FeeRateSatPerVByte != 0 {
+		// The versioned acknowledgement makes older daemons fail closed
+		// rather than admitting an exit with the default destination.
+		if ack != "I_KNOW_WHAT_I_AM_DOING" {
+			return nil, fmt.Errorf("custom exit options require " +
+				"unilateral acknowledgement")
+		}
+		ack += "_WITH_CUSTOM_EXIT_OPTIONS"
+	}
+
 	resp, err := c.wallet.Exit(ctx, &wavewalletrpc.ExitRequest{
-		Outpoint:       req.Outpoint,
-		OnchainAddress: dest,
-		ForceUnrollAck: ack,
+		Outpoint:           req.Outpoint,
+		OnchainAddress:     dest,
+		ForceUnrollAck:     ack,
+		SweepAddress:       sweepAddress,
+		FeeRateSatPerVbyte: req.FeeRateSatPerVByte,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("exit: %w", err)
@@ -767,8 +780,10 @@ func (c *Client) GetExitPlan(ctx context.Context, req GetExitPlanRequest) (
 
 	resp, err := c.wallet.GetExitPlan(
 		ctx, &wavewalletrpc.GetExitPlanRequest{
-			Outpoints:  req.Outpoints,
-			ConfTarget: req.ConfTarget,
+			Outpoints:          req.Outpoints,
+			ConfTarget:         req.ConfTarget,
+			SweepAddress:       strings.TrimSpace(req.SweepAddress),
+			FeeRateSatPerVbyte: req.FeeRateSatPerVByte,
 		},
 	)
 	if err != nil {

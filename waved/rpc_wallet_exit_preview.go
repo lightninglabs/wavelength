@@ -7,6 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/unroll"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/wallet"
@@ -28,6 +29,9 @@ type WalletExitPreview struct {
 	// FeeRate is the estimated package fee rate in satoshis per virtual
 	// byte.
 	FeeRate int64
+
+	// SweepAddress is the validated custom destination, if requested.
+	SweepAddress string
 
 	// Quote prices the union of the selected targets' proof transactions.
 	Quote unroll.WalletExitQuote
@@ -53,6 +57,9 @@ type WalletExitPreviewEntry struct {
 	// dust.
 	AdmissionError string
 
+	// InfeasibilityReason identifies an economic refusal for display.
+	InfeasibilityReason unroll.ExitInfeasibilityReason
+
 	// RoundCommitment warns that a cooperative round holds this VTXO.
 	// Manual recovery remains available.
 	RoundCommitment error
@@ -77,9 +84,16 @@ func (r *RPCServer) PreviewUnilateralExit(ctx context.Context,
 			codes.Unavailable, "VTXO store not initialized",
 		)
 	}
-	rate, err := r.estimateWalletFeeRate(ctx, req.ConfTarget)
+	address, options, err := r.validateManualExitTerms(req.ManualTerms)
 	if err != nil {
 		return nil, err
+	}
+	rate := req.ManualTerms.FeeRateSatPerVByte
+	if rate == 0 {
+		rate, err = r.estimateWalletFeeRate(ctx, req.ConfTarget)
+		if err != nil {
+			return nil, err
+		}
 	}
 	resolver := unroll.DescriptorLineageResolver{
 		VTXOStore: r.server.vtxoStore,
@@ -90,7 +104,9 @@ func (r *RPCServer) PreviewUnilateralExit(ctx context.Context,
 
 	// Preserve the selection order in the RPC even though the funding
 	// simulation orders targets by their batch expiry.
-	result := &WalletExitPreview{FeeRate: rate}
+	result := &WalletExitPreview{
+		FeeRate: rate, SweepAddress: address,
+	}
 	seen := make(map[wire.OutPoint]bool)
 	var targets []unroll.WalletExitTarget
 	for _, raw := range req.Outpoints {
@@ -139,6 +155,11 @@ func (r *RPCServer) PreviewUnilateralExit(ctx context.Context,
 
 			continue
 		}
+		if err := validateManualExitTarget(desc, options); err != nil {
+			entry.AdmissionError = status.Convert(err).Message()
+
+			continue
+		}
 		mat, err := resolver.ResolveLineage(ctx, op)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -157,7 +178,9 @@ func (r *RPCServer) PreviewUnilateralExit(ctx context.Context,
 			continue
 		}
 
-		entry.setFundingEligibility(desc, mat, btcutil.Amount(rate))
+		entry.setFundingEligibility(
+			desc, mat, btcutil.Amount(rate), options,
+		)
 		if entry.AdmissionError != "" {
 			continue
 		}
@@ -200,15 +223,17 @@ func (r *RPCServer) PreviewUnilateralExit(ctx context.Context,
 // setFundingEligibility keeps a live cooperative round visible to the caller
 // while preserving the manual recovery path when the operator is unavailable.
 func (e *WalletExitPreviewEntry) setFundingEligibility(desc *vtxo.Descriptor,
-	mat *unroll.LineageMaterial, rate btcutil.Amount) {
+	mat *unroll.LineageMaterial, rate btcutil.Amount,
+	options *actormsg.ManualExitOptions) {
 
 	e.RoundCommitment = exitPlanRoundCommitment(desc)
-	verdict := unroll.PlanExitFunding(
-		desc, mat, rate, unroll.ExitFundingSnapshot{},
+	verdict := unroll.PlanExitFundingWithOptions(
+		desc, mat, rate, unroll.ExitFundingSnapshot{}, options,
 	).Feasibility
 	if verdict.Reason == unroll.ExitSweepBelowDust ||
 		verdict.Reason == unroll.ExitUneconomical {
 
+		e.InfeasibilityReason = verdict.Reason
 		e.AdmissionError = unrollInfeasibleError(verdict).Error()
 	}
 }

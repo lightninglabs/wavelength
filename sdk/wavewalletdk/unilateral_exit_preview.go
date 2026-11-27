@@ -44,6 +44,9 @@ type UnilateralExitPreview struct {
 	// Entries retains request order and reports the outcome of each
 	// selected outpoint.
 	Entries []UnilateralExitTarget
+
+	// SweepAddress is the validated custom destination, if requested.
+	SweepAddress string
 }
 
 // UnilateralExitTarget reports the selected coin's deadline and current job.
@@ -73,6 +76,9 @@ type UnilateralExitTarget struct {
 	// dust.
 	AdmissionError string
 
+	// InfeasibilityReason identifies an economic refusal.
+	InfeasibilityReason ExitInfeasibilityReason
+
 	// RoundCommitment warns that a cooperative round holds this VTXO.
 	// Manual recovery remains available.
 	RoundCommitment string
@@ -88,8 +94,10 @@ func (c *Client) PreviewUnilateralExit(ctx context.Context,
 	}
 	resp, err := c.wallet.PreviewUnilateralExit(
 		ctx, &wavewalletrpc.GetExitPlanRequest{
-			Outpoints:  req.Outpoints,
-			ConfTarget: req.ConfTarget,
+			Outpoints:          req.Outpoints,
+			ConfTarget:         req.ConfTarget,
+			SweepAddress:       req.SweepAddress,
+			FeeRateSatPerVbyte: req.FeeRateSatPerVByte,
 		},
 	)
 	if err != nil {
@@ -103,6 +111,7 @@ func (c *Client) PreviewUnilateralExit(ctx context.Context,
 		EstimatedNetworkFeeSat: resp.GetEstimatedNetworkFeeSat(),
 		WalletFeeSat:           resp.GetWalletFeeSat(),
 		AdditionalFundingSat:   resp.GetAdditionalFundingSat(),
+		SweepAddress:           resp.GetSweepAddress(),
 		FundingAction: strings.ToLower(
 			strings.TrimPrefix(
 				resp.GetFundingAction().String(),
@@ -119,9 +128,12 @@ func (c *Client) PreviewUnilateralExit(ctx context.Context,
 			ExitStatus: exitJobStatusFromProto(
 				entry.GetExitStatus(),
 			),
-			SweepTxid:       entry.GetSweepTxid(),
-			LastError:       entry.GetLastError(),
-			AdmissionError:  entry.GetAdmissionError(),
+			SweepTxid:      entry.GetSweepTxid(),
+			LastError:      entry.GetLastError(),
+			AdmissionError: entry.GetAdmissionError(),
+			InfeasibilityReason: exitInfeasibilityReasonFromProto(
+				entry.GetInfeasibilityReason(),
+			),
 			RoundCommitment: entry.GetRoundCommitment(),
 		})
 	}

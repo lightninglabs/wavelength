@@ -143,6 +143,13 @@ func (s *Service) exit(ctx context.Context, req *wavewalletrpc.ExitRequest) (
 		return s.forceUnroll(ctx, req, ack)
 	}
 
+	if req.GetSweepAddress() != "" || req.GetFeeRateSatPerVbyte() != 0 {
+		return nil, status.Error(
+			codes.InvalidArgument, "custom sweep address and "+
+				"fee rate require unilateral exit",
+		)
+	}
+
 	return s.cooperativeExit(ctx, req)
 }
 
@@ -219,19 +226,48 @@ func (s *Service) forceUnroll(ctx context.Context,
 				"to the given address instead",
 		)
 	}
-	if ack != forceUnrollAck {
+	custom := req.GetSweepAddress() != "" ||
+		req.GetFeeRateSatPerVbyte() != 0
+	requiredAck := forceUnrollAck
+	if custom {
+		requiredAck += "_WITH_CUSTOM_EXIT_OPTIONS"
+	}
+	if ack != requiredAck {
 		return nil, status.Errorf(codes.InvalidArgument,
-			"force_unroll_ack must be exactly %q", forceUnrollAck)
+			"force_unroll_ack must be exactly %q", requiredAck)
 	}
 	if err := s.requireLocalUnrollBalance(ctx); err != nil {
 		return nil, err
 	}
 
-	resp, err := s.deps.RPCServer.Unroll(
-		ctx, &waverpc.UnrollRequest{
-			Outpoint: req.GetOutpoint(),
-		},
+	var (
+		resp *waverpc.UnrollResponse
+		err  error
 	)
+	if custom {
+		server, ok := s.deps.RPCServer.(interface {
+			UnrollWithOptions(context.Context, string,
+				waved.ManualExitTerms) (
+				*waverpc.UnrollResponse,
+				error,
+			)
+		})
+		if !ok {
+			return nil, status.Error(
+				codes.Unimplemented, "custom unilateral "+
+					"exit options are unavailable",
+			)
+		}
+		resp, err = server.UnrollWithOptions(ctx, req.GetOutpoint(),
+			waved.ManualExitTerms{
+				SweepAddress:       req.GetSweepAddress(),
+				FeeRateSatPerVByte: req.GetFeeRateSatPerVbyte(),
+			})
+	} else {
+		resp, err = s.deps.RPCServer.Unroll(ctx, &waverpc.UnrollRequest{
+			Outpoint: req.GetOutpoint(),
+		})
+	}
 	if err != nil {
 		return nil, status.Errorf(status.Code(err), "exit: %v", err)
 	}
@@ -306,6 +342,10 @@ func (s *Service) getExitPlan(ctx context.Context,
 		ctx, &waved.ExitPlanRequest{
 			Outpoints:  req.GetOutpoints(),
 			ConfTarget: req.GetConfTarget(),
+			ManualTerms: waved.ManualExitTerms{
+				SweepAddress:       req.GetSweepAddress(),
+				FeeRateSatPerVByte: req.GetFeeRateSatPerVbyte(),
+			},
 		},
 	)
 	if err != nil {
@@ -345,6 +385,8 @@ func (s *Service) getExitPlan(ctx context.Context,
 		CanStart:                   resp.CanStart,
 		TotalFundingShortfallSat:   resp.TotalFundingShortfallSat,
 		TotalRecommendedFundingSat: resp.TotalRecommendedFundingSat,
+		SweepAddress:               resp.SweepAddress,
+		TotalEstimatedFeeSat:       resp.TotalEstimatedFeeSat,
 	}, nil
 }
 
@@ -360,6 +402,10 @@ func (s *Service) PreviewUnilateralExit(ctx context.Context,
 		ctx, &waved.ExitPlanRequest{
 			Outpoints:  req.GetOutpoints(),
 			ConfTarget: req.GetConfTarget(),
+			ManualTerms: waved.ManualExitTerms{
+				SweepAddress:       req.GetSweepAddress(),
+				FeeRateSatPerVByte: req.GetFeeRateSatPerVbyte(),
+			},
 		},
 	)
 	if err != nil {
@@ -372,6 +418,7 @@ func (s *Service) PreviewUnilateralExit(ctx context.Context,
 		EstimatedNetworkFeeSat: int64(preview.Quote.NetworkFee),
 		WalletFeeSat:           int64(preview.Quote.WalletFee),
 		AdditionalFundingSat:   int64(preview.Quote.Deposit),
+		SweepAddress:           preview.SweepAddress,
 	}
 	switch {
 	case preview.Quote.Transactions == 0:
@@ -399,6 +446,9 @@ func (s *Service) PreviewUnilateralExit(ctx context.Context,
 				SweepTxid:      entry.Status.GetSweepTxid(),
 				LastError:      entry.Status.GetLastError(),
 				AdmissionError: entry.AdmissionError,
+				InfeasibilityReason: infeasibilityReasonFromUnroll(
+					entry.InfeasibilityReason,
+				),
 				RoundCommitment: errorString(
 					entry.RoundCommitment,
 				),
@@ -482,11 +532,12 @@ func (s *Service) exitStatus(ctx context.Context,
 	}
 
 	return &wavewalletrpc.ExitStatusResponse{
-		Found:       resp.GetFound(),
-		Status:      exitStatusFromDaemon(resp.GetStatus()),
-		SweepTxid:   resp.GetSweepTxid(),
-		LastError:   resp.GetLastError(),
-		PhaseDetail: resp.GetPhaseDetail(),
+		Found:        resp.GetFound(),
+		Status:       exitStatusFromDaemon(resp.GetStatus()),
+		SweepTxid:    resp.GetSweepTxid(),
+		SweepAddress: resp.GetSweepAddress(),
+		LastError:    resp.GetLastError(),
+		PhaseDetail:  resp.GetPhaseDetail(),
 		Progress: exitProgressFromDaemon(
 			resp.GetProgress(),
 		),

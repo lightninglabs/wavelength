@@ -17,30 +17,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// exitFundingShortfallForTest recomputes the funding shortfall from the
-// exported feasibility verdict fields, mirroring the unexported
-// unroll.exitFundingShortfall so the waved entry mapping can be asserted
-// without a live wallet/DB. For a wallet that covers both the required
-// distinct fee inputs and the CPFP balance the result is zero.
-func exitFundingShortfallForTest(v unroll.ExitFeasibility) int64 {
-	recommended := unroll.RecommendedExitFeeInputAmount(v)
-
-	missingInputs := 0
-	if v.WalletUsableInputs < v.RequiredWalletInputs {
-		missingInputs = v.RequiredWalletInputs - v.WalletUsableInputs
-	}
-	inputShortfall := int64(recommended) * int64(missingInputs)
-
-	var balanceShortfall int64
-	if v.WalletConfirmedSat < v.CPFPFeeTotalSat {
-		balanceShortfall = int64(
-			v.CPFPFeeTotalSat - v.WalletConfirmedSat,
-		)
-	}
-
-	return max(inputShortfall, balanceShortfall)
-}
-
 func newReadyExitPlanRPCServer() *RPCServer {
 	walletReady := make(chan struct{})
 	close(walletReady)
@@ -193,92 +169,48 @@ func TestExitPlanBatchSharedSupplyDecrements(t *testing.T) {
 	require.Equal(t, unroll.ExitWalletTooFewInputs, second.Reason)
 }
 
-// TestExitPlanEntrySurfacesStructuralInfeasibility locks the #894 fix: when a
-// VTXO fails the dust or uneconomical gate against a well-funded wallet, the
-// entry must report can_start=false with a ZERO funding shortfall (no amount
-// of wallet funding fixes it) AND carry the structural reason on
-// InfeasibilityReason, rather than leaving the caller with a silent
-// can_start=false and an empty error. It mirrors the exact verdict->entry
-// mapping exitPlanEntry performs.
+// TestExitPlanEntrySurfacesStructuralInfeasibility drives the RPC's real
+// per-VTXO planner with an empty fee wallet. Neither structural block should
+// allocate an address or ask the caller to fund the wallet.
 func TestExitPlanEntrySurfacesStructuralInfeasibility(t *testing.T) {
 	t.Parallel()
 
-	// A well-funded wallet so the block can never be a funding gap: any
-	// infeasibility must be structural (dust or uneconomical).
-	const (
-		feeRate         = btcutil.Amount(50)
-		walletConfirmed = btcutil.Amount(10_000_000)
-		walletInputs    = 10
-	)
-
 	tests := []struct {
-		name       string
-		in         unroll.ExitFeasibilityInput
-		wantReason unroll.ExitInfeasibilityReason
+		amount btcutil.Amount
+		reason unroll.ExitInfeasibilityReason
 	}{
 		{
-			// A 1-sat VTXO: after any sweep fee the swept output is
-			// far below dust, so the sweep can never relay.
-			name: "sub-dust vtxo",
-			in: unroll.ExitFeasibilityInput{
-				NumRecoveryTxs:     1,
-				NumAncestryPaths:   1,
-				VTXOAmountSat:      1,
-				FeeRateSatPerVByte: feeRate,
-				WalletConfirmedSat: walletConfirmed,
-				WalletUsableInputs: walletInputs,
-			},
-			wantReason: unroll.ExitSweepBelowDust,
+			1_200,
+			unroll.ExitSweepBelowDust,
 		},
 		{
-			// A deep lineage on a small (but above-dust-net) VTXO
-			// at a high fee rate: CPFP fees dwarf the coin's value.
-			name: "uneconomical vtxo",
-			in: unroll.ExitFeasibilityInput{
-				NumRecoveryTxs:     50,
-				NumAncestryPaths:   1,
-				VTXOAmountSat:      20_000,
-				FeeRateSatPerVByte: feeRate,
-				WalletConfirmedSat: walletConfirmed,
-				WalletUsableInputs: walletInputs,
-			},
-			wantReason: unroll.ExitUneconomical,
+			2_000,
+			unroll.ExitUneconomical,
 		},
 	}
-
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.reason.String(), func(t *testing.T) {
 			t.Parallel()
 
-			verdict := unroll.AssessExitFeasibility(tc.in)
-
-			// The well-funded wallet covers both the required
-			// distinct fee inputs and the CPFP balance, so the
-			// funding shortfall is zero: the block is purely
-			// structural (dust/uneconomical), not a funding gap.
-			require.GreaterOrEqual(
-				t, verdict.WalletUsableInputs,
-				verdict.RequiredWalletInputs,
-			)
-			require.GreaterOrEqual(
-				t, int64(verdict.WalletConfirmedSat),
-				int64(verdict.CPFPFeeTotalSat),
-			)
-			shortfall := exitFundingShortfallForTest(verdict)
-
-			// Mirror the exact verdict->entry mapping exitPlanEntry
-			// performs.
-			entry := ExitPlanEntry{
-				CanStart:            verdict.Feasible,
-				InfeasibilityReason: verdict.Reason,
-				FundingShortfallSat: shortfall,
+			rpc, store := newLeaveAdmissionServer(t)
+			desc := newRefreshEstimateVTXO(t, 0x60, tc.amount, 900)
+			desc.Ancestry = []vtxo.Ancestry{
+				recoveryTestFragment(desc.CommitmentTxID, 0),
 			}
+			require.NoError(t, store.SaveVTXO(t.Context(), desc))
 
-			require.False(t, entry.CanStart)
-			require.Zero(t, entry.FundingShortfallSat)
-			require.Equal(
-				t, tc.wantReason, entry.InfeasibilityReason,
+			entry, verdict := rpc.exitPlanEntry(
+				t.Context(), desc.Outpoint.String(), 6,
+				unroll.ExitFundingSnapshot{},
 			)
+			require.NoError(t, entry.Err)
+			require.False(t, entry.CanStart)
+			require.Equal(t, tc.reason, entry.InfeasibilityReason)
+			require.Positive(t, verdict.TotalRecoveryCostSat)
+			require.Zero(t, entry.FundingShortfallSat)
+			require.Zero(t, entry.RecommendedUTXOAmountSat)
+			require.Zero(t, entry.RecommendedTotalFundingSat)
+			require.Empty(t, entry.FundingAddress)
 		})
 	}
 }
@@ -325,7 +257,7 @@ func TestPreviewUnilateralExitCommittedTarget(t *testing.T) {
 		t, store, 0x61, vtxo.VTXOStatusPendingForfeit,
 	)
 	var entry WalletExitPreviewEntry
-	entry.setFundingEligibility(desc, nil, 1)
+	entry.setFundingEligibility(desc, nil, 1, nil)
 	require.Empty(t, entry.AdmissionError)
 	require.ErrorIs(t, entry.RoundCommitment, vtxo.ErrForfeitInFlight)
 }
@@ -486,6 +418,44 @@ func TestExitPlanRoundCommitmentScope(t *testing.T) {
 	}
 }
 
+// TestManualExitTermsRespectNetworkAndLimits tests the terms used by both
+// preview and admission before either can act on a VTXO.
+func TestManualExitTermsRespectNetworkAndLimits(t *testing.T) {
+	t.Parallel()
+
+	rpc := newReadyExitPlanRPCServer()
+	regtest, err := btcaddr.NewAddressWitnessPubKeyHash(
+		make([]byte, 20), &chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+	mainnet, err := btcaddr.NewAddressWitnessPubKeyHash(
+		make([]byte, 20), &chaincfg.MainNetParams,
+	)
+	require.NoError(t, err)
+	address, options, err := rpc.validateManualExitTerms(ManualExitTerms{
+		SweepAddress: regtest.EncodeAddress(), FeeRateSatPerVByte: 7,
+	})
+	require.NoError(t, err)
+	require.Equal(t, regtest.EncodeAddress(), address)
+	require.NotEmpty(t, options.SweepScript)
+	require.EqualValues(t, 7, options.FeeRateSatPerVByte)
+
+	for _, terms := range []ManualExitTerms{
+		{
+			SweepAddress: mainnet.EncodeAddress(),
+		},
+		{
+			FeeRateSatPerVByte: -1,
+		},
+		{
+			FeeRateSatPerVByte: 101,
+		},
+	} {
+		_, _, err := rpc.validateManualExitTerms(terms)
+		require.Equal(t, codes.InvalidArgument, status.Code(err))
+	}
+}
+
 // TestPreviewUnilateralExitUnknownTargets retains refused entries in request
 // order and avoids consulting the wallet when none can contribute a proof.
 func TestPreviewUnilateralExitUnknownTargets(t *testing.T) {
@@ -504,12 +474,22 @@ func TestPreviewUnilateralExitUnknownTargets(t *testing.T) {
 
 	first, second := wire.OutPoint{Index: 7}, wire.OutPoint{Index: 8}
 	outpoints := []string{first.String(), second.String()}
+	destination, err := btcaddr.NewAddressWitnessPubKeyHash(
+		make([]byte, 20), &chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+	terms := ManualExitTerms{
+		SweepAddress:       destination.EncodeAddress(),
+		FeeRateSatPerVByte: 7,
+	}
 	preview, err := r.PreviewUnilateralExit(
 		t.Context(), &ExitPlanRequest{
-			Outpoints: outpoints,
+			Outpoints: outpoints, ManualTerms: terms,
 		},
 	)
 	require.NoError(t, err)
+	require.Equal(t, terms.SweepAddress, preview.SweepAddress)
+	require.Equal(t, terms.FeeRateSatPerVByte, preview.FeeRate)
 	require.Len(t, preview.Entries, len(outpoints))
 	for i, entry := range preview.Entries {
 		require.Equal(t, outpoints[i], entry.Outpoint)

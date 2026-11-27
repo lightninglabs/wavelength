@@ -517,6 +517,14 @@ type ExitRequest struct {
 	// cooperative leave and start unilateral unroll. Cannot be combined
 	// with Destination; the server rejects the pair with InvalidArgument.
 	ForceUnrollAck string
+
+	// SweepAddress is the optional final destination of the unilateral
+	// sweep.
+	SweepAddress string
+
+	// FeeRateSatPerVByte is the initial unilateral fee rate, or zero for
+	// automatic.
+	FeeRateSatPerVByte int64
 }
 
 // ExitPath identifies which branch of the Exit decision tree the
@@ -609,7 +617,9 @@ type ExitStatusResult struct {
 	Found     bool
 	Status    ExitJobStatus
 	SweepTxid string
-	LastError string
+	// SweepAddress is the durable custom payout for a detailed status read.
+	SweepAddress string
+	LastError    string
 
 	// PhaseDetail is a one-line human description of the current phase.
 	// Empty on a coarse (non-detailed) query.
@@ -700,6 +710,12 @@ type ExitSummaryEntry struct {
 type GetExitPlanRequest struct {
 	Outpoints  []string
 	ConfTarget uint32
+
+	// SweepAddress validates and quotes a custom final destination.
+	SweepAddress string
+
+	// FeeRateSatPerVByte overrides the automatic rate when positive.
+	FeeRateSatPerVByte int64
 }
 
 // ExitPlanEntry describes how to fund the backing wallet before Exit for a
@@ -757,6 +773,12 @@ const (
 // GetExitPlanResult describes the combined backing-wallet funding plan for
 // every previewed outpoint plus aggregate totals.
 type GetExitPlanResult struct {
+	// SweepAddress is the canonical destination acknowledged by the daemon.
+	SweepAddress string
+
+	// TotalEstimatedFeeSat is nil when the full selection could not be
+	// quoted.
+	TotalEstimatedFeeSat       *int64
 	Plans                      []ExitPlanEntry
 	FeeRateSatPerVByte         int64
 	CanStart                   bool

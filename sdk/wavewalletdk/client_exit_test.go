@@ -214,3 +214,40 @@ func TestExitRejectsEmptyOutpoint(t *testing.T) {
 	require.Nil(t, res)
 	require.Zero(t, wallet.exitCalls)
 }
+
+// TestManualExitOptionsUseVersionedAck ensures a consumer with an older
+// daemon cannot admit the default payout by silently ignoring the new fields.
+func TestManualExitOptionsUseVersionedAck(t *testing.T) {
+	t.Parallel()
+
+	wallet := &stubWalletClient{
+		exit: func(_ context.Context, _ *wavewalletrpc.ExitRequest) (
+			*wavewalletrpc.ExitResponse, error) {
+
+			mode := wavewalletrpc.ExitMode_EXIT_MODE_UNILATERAL
+
+			return &wavewalletrpc.ExitResponse{
+				Mode:    mode,
+				Created: true,
+			}, nil
+		},
+	}
+	client := newExitTestClient(wallet)
+	_, err := client.Exit(t.Context(), ExitRequest{
+		Outpoint: testExitOutpoint, SweepAddress: testExitDestination,
+		FeeRateSatPerVByte: 7,
+	})
+	require.Error(t, err)
+	require.Zero(t, wallet.exitCalls)
+	_, err = client.Exit(t.Context(), ExitRequest{
+		Outpoint: testExitOutpoint, ForceUnrollAck: testForceUnrollAck,
+		SweepAddress: testExitDestination, FeeRateSatPerVByte: 7,
+	})
+	require.NoError(t, err)
+	require.Equal(
+		t, testForceUnrollAck+"_WITH_CUSTOM_EXIT_OPTIONS",
+		wallet.lastExit.GetForceUnrollAck(),
+	)
+	require.Equal(t, testExitDestination, wallet.lastExit.GetSweepAddress())
+	require.EqualValues(t, 7, wallet.lastExit.GetFeeRateSatPerVbyte())
+}
