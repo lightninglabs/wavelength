@@ -752,28 +752,6 @@ func (c *DaemonServiceClient) ClaimAssetDeposit(ctx context.Context,
 	return out, err
 }
 
-// NewAssetReceiveKeys derives the keys an asset is sent to on chain.
-func (c *DaemonServiceClient) NewAssetReceiveKeys(ctx context.Context,
-	in *waverpc.NewAssetReceiveKeysRequest, _ ...grpc.CallOption) (
-	*waverpc.AssetReceiveKeys, error) {
-
-	out := new(waverpc.AssetReceiveKeys)
-	err := c.client.Post(ctx, "/v1/daemon/new-asset-receive-keys", in, out)
-
-	return out, err
-}
-
-// ImportAssetProof adds a received asset to the daemon's asset wallet.
-func (c *DaemonServiceClient) ImportAssetProof(ctx context.Context,
-	in *waverpc.ImportAssetProofRequest, _ ...grpc.CallOption) (
-	*waverpc.OwnedAsset, error) {
-
-	out := new(waverpc.OwnedAsset)
-	err := c.client.Post(ctx, "/v1/daemon/import-asset-proof", in, out)
-
-	return out, err
-}
-
 // ListOwnedAssets returns the assets the daemon's asset wallet holds on
 // chain.
 func (c *DaemonServiceClient) ListOwnedAssets(ctx context.Context,
