@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/round"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -364,6 +365,10 @@ const MaxTaprootAssetRefBytes = 512
 // is the canonical representation persisted to storage and passed between
 // actors.
 type Descriptor struct {
+	// ManualExitOptions is present when an admitted exit has a custom
+	// payout script or fee rate.
+	ManualExitOptions *actormsg.ManualExitOptions
+
 	// Outpoint identifies the VTXO's location in the virtual transaction
 	// tree.
 	Outpoint wire.OutPoint

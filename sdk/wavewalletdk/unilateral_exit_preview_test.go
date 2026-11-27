@@ -31,6 +31,8 @@ func (s *previewWalletClient) PreviewUnilateralExit(_ context.Context,
 	return &wavewalletrpc.PreviewUnilateralExitResponse{
 		SelectedAmountSat:    20_000,
 		AdditionalFundingSat: 10_000,
+		FeeRateSatPerVbyte:   req.GetFeeRateSatPerVbyte(),
+		SweepAddress:         req.GetSweepAddress(),
 		Entries: []*wavewalletrpc.UnilateralExitTarget{
 			{
 				Outpoint:        "a:0",
@@ -47,11 +49,23 @@ func TestPreviewUnilateralExit(t *testing.T) {
 	t.Parallel()
 	wallet := &previewWalletClient{}
 	client := newExitTestClient(wallet)
-	req := GetExitPlanRequest{Outpoints: []string{"a:0"}, ConfTarget: 2}
+	req := GetExitPlanRequest{
+		Outpoints: []string{
+			"a:0",
+		}, ConfTarget: 2,
+		SweepAddress: "bcrt1qexample", FeeRateSatPerVByte: 7,
+	}
 	preview, err := client.PreviewUnilateralExit(t.Context(), req)
 	require.NoError(t, err)
 	require.Equal(t, req.Outpoints, wallet.request.GetOutpoints())
 	require.EqualValues(t, 2, wallet.request.GetConfTarget())
+	require.Equal(t, req.SweepAddress, wallet.request.GetSweepAddress())
+	require.Equal(
+		t, req.FeeRateSatPerVByte,
+		wallet.request.GetFeeRateSatPerVbyte(),
+	)
+	require.Equal(t, req.SweepAddress, preview.SweepAddress)
+	require.Equal(t, req.FeeRateSatPerVByte, preview.FeeRateSatPerVByte)
 	require.EqualValues(t, 20_000, preview.SelectedAmountSat)
 	require.EqualValues(t, 10_000, preview.AdditionalFundingSat)
 	require.Len(t, preview.Entries, 1)

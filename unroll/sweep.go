@@ -393,19 +393,33 @@ func buildSweepTx(ctx context.Context, wallet SweepWallet,
 		return nil, err
 	}
 
-	feeRate, err := estimateSweepFeeRate(
-		ctx, chainSource, maxFeeRate, fallbackFeeRate,
+	var (
+		feeRate       int64
+		sweepPkScript []byte
 	)
-	if err != nil {
-		return nil, fmt.Errorf("estimate fee: %w", err)
+	if options := desc.ManualExitOptions; options != nil &&
+		policy.Kind() == StandardVTXOTimeoutExitPolicyKind {
+
+		feeRate = options.FeeRateSatPerVByte
+		sweepPkScript = options.SweepScript
+	}
+	if feeRate == 0 {
+		feeRate, err = estimateSweepFeeRate(
+			ctx, chainSource, maxFeeRate, fallbackFeeRate,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("estimate fee: %w", err)
+		}
 	}
 
 	// The actor supplies a wallet that retains one destination across
 	// unsigned deferrals. Once signed, the staged transaction retains it
 	// across restart and broadcast retries.
-	sweepPkScript, err := wallet.NewWalletPkScript(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("sweep pkscript: %w", err)
+	if len(sweepPkScript) == 0 {
+		sweepPkScript, err = wallet.NewWalletPkScript(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("sweep pkscript: %w", err)
+		}
 	}
 
 	if len(sweepPkScript) == 0 {

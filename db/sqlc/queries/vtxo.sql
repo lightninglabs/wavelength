@@ -183,3 +183,19 @@ WHERE (outpoint_hash, outpoint_index) >
       (sqlc.arg(through_hash), CAST(sqlc.arg(through_index) AS INTEGER))
 ORDER BY outpoint_hash, outpoint_index
 LIMIT sqlc.arg(limit_count);
+
+-- name: PutManualExitOptions :exec
+INSERT INTO vtxo_manual_exit_options (
+    outpoint_hash, outpoint_index, sweep_script, fee_rate_sat_per_vbyte
+) VALUES ($1, $2, $3, $4)
+ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
+    sweep_script = EXCLUDED.sweep_script,
+    fee_rate_sat_per_vbyte = EXCLUDED.fee_rate_sat_per_vbyte;
+
+-- name: GetManualExitOptions :one
+SELECT sweep_script, fee_rate_sat_per_vbyte FROM vtxo_manual_exit_options
+WHERE outpoint_hash = $1 AND outpoint_index = $2;
+
+-- name: DeleteManualExitOptions :exec
+DELETE FROM vtxo_manual_exit_options
+WHERE outpoint_hash = $1 AND outpoint_index = $2;

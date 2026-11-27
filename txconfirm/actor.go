@@ -1747,11 +1747,12 @@ func (a *TxBroadcasterActor) newTrackedTx(ctx context.Context,
 		ConfirmationPkScript: append(
 			[]byte(nil), confirmationPkScript...,
 		),
-		Label:              req.Label,
-		HeightHint:         heightHint,
-		TargetConfs:        targetConfs,
-		ParentFee:          req.ParentFee,
-		RetryUntilAccepted: req.RetryUntilAccepted,
+		Label:                     req.Label,
+		HeightHint:                heightHint,
+		TargetConfs:               targetConfs,
+		ParentFee:                 req.ParentFee,
+		RetryUntilAccepted:        req.RetryUntilAccepted,
+		InitialFeeRateSatPerVByte: req.InitialFeeRateSatPerVByte,
 	}
 	fsm := newTrackedTxStateMachine(fsmLog, data)
 
@@ -2036,7 +2037,7 @@ func (a *TxBroadcasterActor) broadcastTrackedTxOpts(ctx context.Context,
 	// regardless of its outcome (including an early FSM-advance failure
 	// below), so clear it on every exit path: a failed forced bump must not
 	// silently pin the operator's rate onto later interval-paced bumps.
-	targetFeeRate := int64(0)
+	targetFeeRate := entry.data.InitialFeeRateSatPerVByte
 	if isFeeBump {
 		targetFeeRate = entry.pendingTargetFeeRate
 		defer func() {

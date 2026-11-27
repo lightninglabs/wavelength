@@ -3148,6 +3148,9 @@ message GetUnrollStatusResponse {
     // plain and detailed queries) only once the job is COMPLETED, and reads
     // zero for exits predating exit-cost accounting.
     int64 exit_cost_sat = 11;
+
+    // sweep_address is the persisted custom payout, empty for wallet funding.
+    string sweep_address = 12;
 }
 
 // VHTLCRecoveryDirection records which side owns a recovery job.

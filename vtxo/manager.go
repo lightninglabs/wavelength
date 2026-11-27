@@ -1129,9 +1129,10 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 	}
 
 	resp, err := actorRef.Ask(ctx, &ForceUnrollEvent{
-		Reason:     reason,
-		Trigger:    req.Trigger,
-		ExitPolicy: req.ExitPolicy,
+		Reason:        reason,
+		Trigger:       req.Trigger,
+		ExitPolicy:    req.ExitPolicy,
+		ManualOptions: req.ManualOptions,
 	}).Await(ctx).Unpack()
 	if err != nil {
 		return fn.Err[ManagerResp](

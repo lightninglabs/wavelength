@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/unroll"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/wallet"
@@ -25,8 +27,9 @@ const (
 // ExitPlanRequest asks the daemon to preview unilateral-exit funding
 // readiness for a slice of VTXO outpoints.
 type ExitPlanRequest struct {
-	Outpoints  []string
-	ConfTarget uint32
+	Outpoints   []string
+	ConfTarget  uint32
+	ManualTerms ManualExitTerms
 }
 
 // ExitPlanEntry describes the unroll CPFP fee-input readiness for a single
@@ -71,6 +74,8 @@ type ExitPlanEntry struct {
 // ExitPlanResponse describes the combined unroll CPFP fee-input readiness for
 // every previewed outpoint plus aggregate totals.
 type ExitPlanResponse struct {
+	SweepAddress               string
+	TotalEstimatedFeeSat       *int64
 	Plans                      []ExitPlanEntry
 	FeeRateSatPerVByte         int64
 	CanStart                   bool
@@ -140,10 +145,17 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 
 	// The fee estimate and wallet snapshot are wallet-wide, so compute
 	// them once and reuse them for every previewed outpoint.
-	feeRate, err := r.estimateWalletFeeRate(ctx, req.ConfTarget)
+	address, options, err := r.validateManualExitTerms(req.ManualTerms)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "estimate fee: %v",
-			err)
+		return nil, err
+	}
+	feeRate := req.ManualTerms.FeeRateSatPerVByte
+	if feeRate == 0 {
+		feeRate, err = r.estimateWalletFeeRate(ctx, req.ConfTarget)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal,
+				"estimate fee: %v", err)
+		}
 	}
 
 	walletSnapshot, err := r.walletExitFundingSnapshot(ctx)
@@ -154,6 +166,7 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 
 	resp := &ExitPlanResponse{
 		FeeRateSatPerVByte: feeRate,
+		SweepAddress:       address,
 	}
 	resp.Plans = make([]ExitPlanEntry, 0, len(req.Outpoints))
 
@@ -169,8 +182,12 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 	// error. It is only meaningful once at least one entry succeeds.
 	canStart := true
 	sawEntry := false
+	var totalFee int64
 	for _, raw := range req.Outpoints {
-		entry, verdict := r.exitPlanEntry(ctx, raw, feeRate, remaining)
+		entry, verdict := r.exitPlanEntryWithOptions(
+			ctx, raw, feeRate, remaining, options,
+		)
+		totalFee += int64(verdict.TotalRecoveryCostSat)
 		resp.Plans = append(resp.Plans, entry)
 		if entry.Err != nil {
 			continue
@@ -196,6 +213,13 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 	}
 
 	resp.CanStart = sawEntry && canStart
+	if sawEntry &&
+		!slices.ContainsFunc(resp.Plans, func(e ExitPlanEntry) bool {
+			return e.Err != nil
+		}) {
+
+		resp.TotalEstimatedFeeSat = &totalFee
+	}
 
 	// Summarize the aggregate readiness verdict on exit.
 	r.server.log.DebugS(ctx, "GetExitPlan computed",
@@ -213,6 +237,17 @@ func (r *RPCServer) GetExitPlan(ctx context.Context, req *ExitPlanRequest) (
 func (r *RPCServer) exitPlanEntry(ctx context.Context, raw string,
 	feeRate int64, walletSnapshot unroll.ExitFundingSnapshot) (
 	ExitPlanEntry, unroll.ExitFeasibility) {
+
+	return r.exitPlanEntryWithOptions(
+		ctx, raw, feeRate, walletSnapshot, nil,
+	)
+}
+
+// exitPlanEntryWithOptions prices a target with the requested payout and rate.
+func (r *RPCServer) exitPlanEntryWithOptions(ctx context.Context, raw string,
+	feeRate int64, walletSnapshot unroll.ExitFundingSnapshot,
+	options *actormsg.ManualExitOptions) (ExitPlanEntry,
+	unroll.ExitFeasibility) {
 
 	entry := ExitPlanEntry{Outpoint: raw}
 
@@ -243,8 +278,13 @@ func (r *RPCServer) exitPlanEntry(ctx context.Context, raw string,
 	}
 
 	mat := r.resolveExitLineage(ctx, outpoint, desc)
-	plan := unroll.PlanExitFunding(
-		desc, mat, btcutil.Amount(feeRate), walletSnapshot,
+	if err := validateManualExitTarget(desc, options); err != nil {
+		entry.Err = err
+
+		return entry, verdict
+	}
+	plan := unroll.PlanExitFundingWithOptions(
+		desc, mat, btcutil.Amount(feeRate), walletSnapshot, options,
 	)
 	verdict = plan.Feasibility
 	if verdict.RequiredWalletInputs == 0 {
@@ -312,10 +352,8 @@ func (r *RPCServer) exitPlanEntry(ctx context.Context, raw string,
 		)
 	}
 
-	// Only allocate a funding address when the outpoint is NOT feasible
-	// (there is a shortfall). When feasible, no address is needed so the
-	// preview must not persist one.
-	if !verdict.Feasible {
+	// Allocate an address only when a deposit can unblock this exit.
+	if plan.FundingShortfallSat > 0 {
 		fundingAddress, err := r.server.exitPlanFundingAddress(
 			ctx, outpoint.String(), true,
 		)

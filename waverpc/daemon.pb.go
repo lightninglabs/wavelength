@@ -11185,7 +11185,9 @@ type GetUnrollStatusResponse struct {
 	// estimates in fees, this is the settled figure, so it is set (on both
 	// plain and detailed queries) only once the job is COMPLETED, and reads
 	// zero for exits predating exit-cost accounting.
-	ExitCostSat   int64 `protobuf:"varint,11,opt,name=exit_cost_sat,json=exitCostSat,proto3" json:"exit_cost_sat,omitempty"`
+	ExitCostSat int64 `protobuf:"varint,11,opt,name=exit_cost_sat,json=exitCostSat,proto3" json:"exit_cost_sat,omitempty"`
+	// sweep_address is the persisted custom payout, empty for wallet funding.
+	SweepAddress  string `protobuf:"bytes,12,opt,name=sweep_address,json=sweepAddress,proto3" json:"sweep_address,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -11295,6 +11297,13 @@ func (x *GetUnrollStatusResponse) GetExitCostSat() int64 {
 		return x.ExitCostSat
 	}
 	return 0
+}
+
+func (x *GetUnrollStatusResponse) GetSweepAddress() string {
+	if x != nil {
+		return x.SweepAddress
+	}
+	return ""
 }
 
 type ArmVHTLCRecoveryRequest struct {
@@ -13668,7 +13677,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x11net_recovered_sat\x18\x05 \x01(\x03R\x0fnetRecoveredSat\x12+\n" +
 	"\x12fee_rate_sat_vbyte\x18\x06 \x01(\x03R\x0ffeeRateSatVbyte\x12(\n" +
 	"\x10sweep_fee_actual\x18\a \x01(\bR\x0esweepFeeActual\x12'\n" +
-	"\x10spent_so_far_sat\x18\b \x01(\x03R\rspentSoFarSat\"\xce\x03\n" +
+	"\x10spent_so_far_sat\x18\b \x01(\x03R\rspentSoFarSat\"\xf3\x03\n" +
 	"\x17GetUnrollStatusResponse\x12\x14\n" +
 	"\x05found\x18\x01 \x01(\bR\x05found\x120\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x18.waverpc.UnrollJobStatusR\x06status\x12\x1d\n" +
@@ -13683,7 +13692,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\x1abest_case_blocks_remaining\x18\t \x01(\x05R\x17bestCaseBlocksRemaining\x12%\n" +
 	"\x0ecurrent_height\x18\n" +
 	" \x01(\x05R\rcurrentHeight\x12\"\n" +
-	"\rexit_cost_sat\x18\v \x01(\x03R\vexitCostSat\"\xd4\x06\n" +
+	"\rexit_cost_sat\x18\v \x01(\x03R\vexitCostSat\x12#\n" +
+	"\rsweep_address\x18\f \x01(\tR\fsweepAddress\"\xd4\x06\n" +
 	"\x17ArmVHTLCRecoveryRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x17\n" +

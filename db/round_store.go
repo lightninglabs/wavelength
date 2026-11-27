@@ -197,6 +197,18 @@ type RoundStore interface {
 		ctx context.Context, arg sqlc.UpdateVTXOStatusParams,
 	) error
 
+	GetManualExitOptions(context.Context,
+		sqlc.GetManualExitOptionsParams) (
+		sqlc.GetManualExitOptionsRow,
+		error,
+	)
+
+	PutManualExitOptions(context.Context,
+		sqlc.PutManualExitOptionsParams) error
+
+	DeleteManualExitOptions(context.Context,
+		sqlc.DeleteManualExitOptionsParams) error
+
 	// DeleteSpendingReservation removes a spending-reservation row so the
 	// VTXO store can atomically update a VTXO's status and drop its
 	// reservation in the same transaction when it leaves SpendingState.

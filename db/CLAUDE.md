@@ -165,7 +165,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   have several rows. `UpdateReceive` writes the proofs in the transaction
   that moves the receive, so the wallet holds a receive's assets exactly
   when the receive reads confirmed.
-- `LatestMigrationVersion = 33` — current schema version.
+- `LatestMigrationVersion = 34` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).

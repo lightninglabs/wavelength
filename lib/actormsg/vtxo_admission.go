@@ -451,6 +451,13 @@ type ExitPolicy struct {
 	Ref ExitPolicyRef
 }
 
+// ManualExitOptions configures the initial network fee rate and final payout
+// script. An empty script or zero rate selects the respective wallet default.
+type ManualExitOptions struct {
+	SweepScript        []byte
+	FeeRateSatPerVByte int64
+}
+
 // ForceUnrollRequest asks the VTXO manager to transition a specific VTXO
 // into UnilateralExitState and trigger unroll through the chain resolver
 // seam. This converges manual, critical-expiry, fraud, and vHTLC-recovery
@@ -475,6 +482,9 @@ type ForceUnrollRequest struct {
 	// vHTLC refund policy) to persist for this target. None selects the
 	// standard VTXO timeout policy.
 	ExitPolicy fn.Option[ExitPolicy]
+
+	// ManualOptions are persisted with the normal Bitcoin exit transition.
+	ManualOptions *ManualExitOptions
 }
 
 // VTXOManagerMsg implements VTXOManagerMsg marker interface.

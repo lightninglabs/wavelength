@@ -236,9 +236,10 @@ func exitStatusResultFromProto(
 		Status: exitJobStatusFromProto(
 			resp.GetStatus(),
 		),
-		SweepTxid:   resp.GetSweepTxid(),
-		LastError:   resp.GetLastError(),
-		PhaseDetail: resp.GetPhaseDetail(),
+		SweepTxid:    resp.GetSweepTxid(),
+		SweepAddress: resp.GetSweepAddress(),
+		LastError:    resp.GetLastError(),
+		PhaseDetail:  resp.GetPhaseDetail(),
 		Progress: exitProgressFromProto(
 			resp.GetProgress(),
 		),
@@ -347,6 +348,8 @@ func exitPlanFromProto(
 	}
 
 	return &GetExitPlanResult{
+		SweepAddress:               r.GetSweepAddress(),
+		TotalEstimatedFeeSat:       r.TotalEstimatedFeeSat,
 		Plans:                      plans,
 		FeeRateSatPerVByte:         r.GetFeeRateSatPerVbyte(),
 		CanStart:                   r.GetCanStart(),

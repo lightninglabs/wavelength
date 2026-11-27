@@ -4578,9 +4578,14 @@ type GetExitPlanRequest struct {
 	Outpoints []string `protobuf:"bytes,1,rep,name=outpoints,proto3" json:"outpoints,omitempty"`
 	// conf_target selects the fee-estimation target in blocks. Zero uses
 	// the daemon's default unroll confirmation target.
-	ConfTarget    uint32 `protobuf:"varint,2,opt,name=conf_target,json=confTarget,proto3" json:"conf_target,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ConfTarget uint32 `protobuf:"varint,2,opt,name=conf_target,json=confTarget,proto3" json:"conf_target,omitempty"`
+	// sweep_address is an optional final payout address on the wallet's
+	// network.
+	SweepAddress string `protobuf:"bytes,3,opt,name=sweep_address,json=sweepAddress,proto3" json:"sweep_address,omitempty"`
+	// fee_rate_sat_per_vbyte overrides the automatic rate when positive.
+	FeeRateSatPerVbyte int64 `protobuf:"varint,4,opt,name=fee_rate_sat_per_vbyte,json=feeRateSatPerVbyte,proto3" json:"fee_rate_sat_per_vbyte,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *GetExitPlanRequest) Reset() {
@@ -4623,6 +4628,20 @@ func (x *GetExitPlanRequest) GetOutpoints() []string {
 func (x *GetExitPlanRequest) GetConfTarget() uint32 {
 	if x != nil {
 		return x.ConfTarget
+	}
+	return 0
+}
+
+func (x *GetExitPlanRequest) GetSweepAddress() string {
+	if x != nil {
+		return x.SweepAddress
+	}
+	return ""
+}
+
+func (x *GetExitPlanRequest) GetFeeRateSatPerVbyte() int64 {
+	if x != nil {
+		return x.FeeRateSatPerVbyte
 	}
 	return 0
 }
@@ -4863,8 +4882,13 @@ type GetExitPlanResponse struct {
 	// total_recommended_funding_sat is the summed recommended funding across
 	// entries.
 	TotalRecommendedFundingSat int64 `protobuf:"varint,5,opt,name=total_recommended_funding_sat,json=totalRecommendedFundingSat,proto3" json:"total_recommended_funding_sat,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	// sweep_address echoes the validated final payout address, if supplied.
+	SweepAddress string `protobuf:"bytes,6,opt,name=sweep_address,json=sweepAddress,proto3" json:"sweep_address,omitempty"`
+	// total_estimated_fee_sat sums the estimated costs of individual exits.
+	// It can overestimate when several VTXOs share recovery transactions.
+	TotalEstimatedFeeSat *int64 `protobuf:"varint,7,opt,name=total_estimated_fee_sat,json=totalEstimatedFeeSat,proto3,oneof" json:"total_estimated_fee_sat,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *GetExitPlanResponse) Reset() {
@@ -4932,6 +4956,20 @@ func (x *GetExitPlanResponse) GetTotalRecommendedFundingSat() int64 {
 	return 0
 }
 
+func (x *GetExitPlanResponse) GetSweepAddress() string {
+	if x != nil {
+		return x.SweepAddress
+	}
+	return ""
+}
+
+func (x *GetExitPlanResponse) GetTotalEstimatedFeeSat() int64 {
+	if x != nil && x.TotalEstimatedFeeSat != nil {
+		return *x.TotalEstimatedFeeSat
+	}
+	return 0
+}
+
 // PreviewUnilateralExitResponse quotes a full recovery from its proof graphs
 // at the current fee estimate. The estimate assumes each package confirms at
 // the quoted rate. It does not authorize a fee or commit any wallet funds.
@@ -4960,6 +4998,8 @@ type PreviewUnilateralExitResponse struct {
 	AdditionalFundingSat int64 `protobuf:"varint,7,opt,name=additional_funding_sat,json=additionalFundingSat,proto3" json:"additional_funding_sat,omitempty"`
 	// funding_action describes the estimated use of confirmed wallet coins.
 	FundingAction UnilateralExitFundingAction `protobuf:"varint,8,opt,name=funding_action,json=fundingAction,proto3,enum=wavewalletrpc.UnilateralExitFundingAction" json:"funding_action,omitempty"`
+	// sweep_address echoes the validated custom destination, if supplied.
+	SweepAddress  string `protobuf:"bytes,9,opt,name=sweep_address,json=sweepAddress,proto3" json:"sweep_address,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5050,6 +5090,13 @@ func (x *PreviewUnilateralExitResponse) GetFundingAction() UnilateralExitFunding
 	return UnilateralExitFundingAction_UNILATERAL_EXIT_FUNDING_ACTION_UNSPECIFIED
 }
 
+func (x *PreviewUnilateralExitResponse) GetSweepAddress() string {
+	if x != nil {
+		return x.SweepAddress
+	}
+	return ""
+}
+
 // UnilateralExitTarget describes one selected coin and any existing job.
 type UnilateralExitTarget struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -5071,8 +5118,10 @@ type UnilateralExitTarget struct {
 	// A cooperative round currently holds the coin. Manual recovery remains
 	// available if the operator cannot complete the round.
 	RoundCommitment string `protobuf:"bytes,8,opt,name=round_commitment,json=roundCommitment,proto3" json:"round_commitment,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// infeasibility_reason identifies an economic refusal.
+	InfeasibilityReason ExitInfeasibilityReason `protobuf:"varint,9,opt,name=infeasibility_reason,json=infeasibilityReason,proto3,enum=wavewalletrpc.ExitInfeasibilityReason" json:"infeasibility_reason,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *UnilateralExitTarget) Reset() {
@@ -5159,6 +5208,13 @@ func (x *UnilateralExitTarget) GetRoundCommitment() string {
 		return x.RoundCommitment
 	}
 	return ""
+}
+
+func (x *UnilateralExitTarget) GetInfeasibilityReason() ExitInfeasibilityReason {
+	if x != nil {
+		return x.InfeasibilityReason
+	}
+	return ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_UNSPECIFIED
 }
 
 // SweepWalletRequest describes a backing-wallet sweep to preview or broadcast
@@ -5426,10 +5482,18 @@ type ExitRequest struct {
 	// force_unroll_ack must be exactly "I_KNOW_WHAT_I_AM_DOING" to bypass
 	// cooperative leave and start unilateral unroll. It cannot be combined
 	// with onchain_address, and the server requires at least one confirmed
-	// local backing-wallet UTXO before admitting forced unroll.
+	// local backing-wallet UTXO before admitting forced unroll. To set an
+	// explicit fee rate or sweep address, use
+	// "I_KNOW_WHAT_I_AM_DOING_WITH_CUSTOM_EXIT_OPTIONS" so older daemons fail
+	// closed instead of ignoring the new fields.
 	ForceUnrollAck string `protobuf:"bytes,3,opt,name=force_unroll_ack,json=forceUnrollAck,proto3" json:"force_unroll_ack,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// sweep_address overrides the final payout for a manual unilateral exit.
+	SweepAddress string `protobuf:"bytes,4,opt,name=sweep_address,json=sweepAddress,proto3" json:"sweep_address,omitempty"`
+	// fee_rate_sat_per_vbyte sets the initial unilateral broadcast rate.
+	// Zero uses automatic pricing.
+	FeeRateSatPerVbyte int64 `protobuf:"varint,5,opt,name=fee_rate_sat_per_vbyte,json=feeRateSatPerVbyte,proto3" json:"fee_rate_sat_per_vbyte,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ExitRequest) Reset() {
@@ -5481,6 +5545,20 @@ func (x *ExitRequest) GetForceUnrollAck() string {
 		return x.ForceUnrollAck
 	}
 	return ""
+}
+
+func (x *ExitRequest) GetSweepAddress() string {
+	if x != nil {
+		return x.SweepAddress
+	}
+	return ""
+}
+
+func (x *ExitRequest) GetFeeRateSatPerVbyte() int64 {
+	if x != nil {
+		return x.FeeRateSatPerVbyte
+	}
+	return 0
 }
 
 // ExitResponse reports the exit path the daemon took and its per-path detail
@@ -6167,6 +6245,8 @@ type ExitStatusResponse struct {
 	// current_height is the best block height the exit job has observed. Set
 	// only on a detailed query against a live job.
 	CurrentHeight int32 `protobuf:"varint,10,opt,name=current_height,json=currentHeight,proto3" json:"current_height,omitempty"`
+	// sweep_address is the persisted custom payout, empty for wallet funding.
+	SweepAddress  string `protobuf:"bytes,11,opt,name=sweep_address,json=sweepAddress,proto3" json:"sweep_address,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6269,6 +6349,13 @@ func (x *ExitStatusResponse) GetCurrentHeight() int32 {
 		return x.CurrentHeight
 	}
 	return 0
+}
+
+func (x *ExitStatusResponse) GetSweepAddress() string {
+	if x != nil {
+		return x.SweepAddress
+	}
+	return ""
 }
 
 // ExitSummaryRequest asks for the wallet-wide portfolio of in-progress exits.
@@ -7625,11 +7712,13 @@ const file_wallet_proto_rawDesc = "" +
 	"\x17estimated_total_fee_sat\x18\x01 \x01(\x03H\x00R\x14estimatedTotalFeeSat\x88\x01\x01\x122\n" +
 	"\x15free_refresh_eligible\x18\x02 \x01(\bR\x13freeRefreshEligible\x12%\n" +
 	"\x0eestimate_error\x18\x03 \x01(\tR\restimateErrorB\x1a\n" +
-	"\x18_estimated_total_fee_sat\"S\n" +
+	"\x18_estimated_total_fee_sat\"\xac\x01\n" +
 	"\x12GetExitPlanRequest\x12\x1c\n" +
 	"\toutpoints\x18\x01 \x03(\tR\toutpoints\x12\x1f\n" +
 	"\vconf_target\x18\x02 \x01(\rR\n" +
-	"confTarget\"\x87\x06\n" +
+	"confTarget\x12#\n" +
+	"\rsweep_address\x18\x03 \x01(\tR\fsweepAddress\x122\n" +
+	"\x16fee_rate_sat_per_vbyte\x18\x04 \x01(\x03R\x12feeRateSatPerVbyte\"\x87\x06\n" +
 	"\rExitPlanEntry\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12'\n" +
 	"\x0ffunding_address\x18\x02 \x01(\tR\x0efundingAddress\x125\n" +
@@ -7650,13 +7739,16 @@ const file_wallet_proto_rawDesc = "" +
 	"last_error\x18\r \x01(\tR\tlastError\x12\x14\n" +
 	"\x05error\x18\x0e \x01(\tR\x05error\x12Y\n" +
 	"\x14infeasibility_reason\x18\x0f \x01(\x0e2&.wavewalletrpc.ExitInfeasibilityReasonR\x13infeasibilityReason\x12)\n" +
-	"\x10round_commitment\x18\x10 \x01(\tR\x0froundCommitment\"\x9c\x02\n" +
+	"\x10round_commitment\x18\x10 \x01(\tR\x0froundCommitment\"\x99\x03\n" +
 	"\x13GetExitPlanResponse\x122\n" +
 	"\x05plans\x18\x01 \x03(\v2\x1c.wavewalletrpc.ExitPlanEntryR\x05plans\x122\n" +
 	"\x16fee_rate_sat_per_vbyte\x18\x02 \x01(\x03R\x12feeRateSatPerVbyte\x12\x1b\n" +
 	"\tcan_start\x18\x03 \x01(\bR\bcanStart\x12=\n" +
 	"\x1btotal_funding_shortfall_sat\x18\x04 \x01(\x03R\x18totalFundingShortfallSat\x12A\n" +
-	"\x1dtotal_recommended_funding_sat\x18\x05 \x01(\x03R\x1atotalRecommendedFundingSat\"\xe3\x03\n" +
+	"\x1dtotal_recommended_funding_sat\x18\x05 \x01(\x03R\x1atotalRecommendedFundingSat\x12#\n" +
+	"\rsweep_address\x18\x06 \x01(\tR\fsweepAddress\x12:\n" +
+	"\x17total_estimated_fee_sat\x18\a \x01(\x03H\x00R\x14totalEstimatedFeeSat\x88\x01\x01B\x1a\n" +
+	"\x18_total_estimated_fee_sat\"\x88\x04\n" +
 	"\x1dPreviewUnilateralExitResponse\x12=\n" +
 	"\aentries\x18\x01 \x03(\v2#.wavewalletrpc.UnilateralExitTargetR\aentries\x12.\n" +
 	"\x13selected_amount_sat\x18\x02 \x01(\x03R\x11selectedAmountSat\x125\n" +
@@ -7665,7 +7757,8 @@ const file_wallet_proto_rawDesc = "" +
 	"\x19estimated_network_fee_sat\x18\x05 \x01(\x03R\x16estimatedNetworkFeeSat\x12$\n" +
 	"\x0ewallet_fee_sat\x18\x06 \x01(\x03R\fwalletFeeSat\x124\n" +
 	"\x16additional_funding_sat\x18\a \x01(\x03R\x14additionalFundingSat\x12Q\n" +
-	"\x0efunding_action\x18\b \x01(\x0e2*.wavewalletrpc.UnilateralExitFundingActionR\rfundingAction\"\xd2\x02\n" +
+	"\x0efunding_action\x18\b \x01(\x0e2*.wavewalletrpc.UnilateralExitFundingActionR\rfundingAction\x12#\n" +
+	"\rsweep_address\x18\t \x01(\tR\fsweepAddress\"\xad\x03\n" +
 	"\x14UnilateralExitTarget\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1d\n" +
 	"\n" +
@@ -7678,7 +7771,8 @@ const file_wallet_proto_rawDesc = "" +
 	"\n" +
 	"last_error\x18\x06 \x01(\tR\tlastError\x12'\n" +
 	"\x0fadmission_error\x18\a \x01(\tR\x0eadmissionError\x12)\n" +
-	"\x10round_commitment\x18\b \x01(\tR\x0froundCommitment\"\xb8\x01\n" +
+	"\x10round_commitment\x18\b \x01(\tR\x0froundCommitment\x12Y\n" +
+	"\x14infeasibility_reason\x18\t \x01(\x0e2&.wavewalletrpc.ExitInfeasibilityReasonR\x13infeasibilityReason\"\xb8\x01\n" +
 	"\x12SweepWalletRequest\x12/\n" +
 	"\x13destination_address\x18\x01 \x01(\tR\x12destinationAddress\x12\x1c\n" +
 	"\tbroadcast\x18\x02 \x01(\bR\tbroadcast\x122\n" +
@@ -7697,11 +7791,13 @@ const file_wallet_proto_rawDesc = "" +
 	"\x16fee_rate_sat_per_vbyte\x18\x05 \x01(\x03R\x12feeRateSatPerVbyte\x12#\n" +
 	"\rcan_broadcast\x18\x06 \x01(\bR\fcanBroadcast\x12\x12\n" +
 	"\x04txid\x18\a \x01(\tR\x04txid\x12%\n" +
-	"\x0efailure_reason\x18\b \x01(\tR\rfailureReason\"|\n" +
+	"\x0efailure_reason\x18\b \x01(\tR\rfailureReason\"\xd5\x01\n" +
 	"\vExitRequest\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12'\n" +
 	"\x0fonchain_address\x18\x02 \x01(\tR\x0eonchainAddress\x12(\n" +
-	"\x10force_unroll_ack\x18\x03 \x01(\tR\x0eforceUnrollAck\"\xc4\x01\n" +
+	"\x10force_unroll_ack\x18\x03 \x01(\tR\x0eforceUnrollAck\x12#\n" +
+	"\rsweep_address\x18\x04 \x01(\tR\fsweepAddress\x122\n" +
+	"\x16fee_rate_sat_per_vbyte\x18\x05 \x01(\x03R\x12feeRateSatPerVbyte\"\xc4\x01\n" +
 	"\fExitResponse\x12\x18\n" +
 	"\acreated\x18\x01 \x01(\bR\acreated\x12\x19\n" +
 	"\bactor_id\x18\x02 \x01(\tR\aactorId\x12+\n" +
@@ -7748,7 +7844,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\x11net_recovered_sat\x18\x05 \x01(\x03R\x0fnetRecoveredSat\x12+\n" +
 	"\x12fee_rate_sat_vbyte\x18\x06 \x01(\x03R\x0ffeeRateSatVbyte\x12(\n" +
 	"\x10sweep_fee_actual\x18\a \x01(\bR\x0esweepFeeActual\x12'\n" +
-	"\x10spent_so_far_sat\x18\b \x01(\x03R\rspentSoFarSat\"\xb5\x03\n" +
+	"\x10spent_so_far_sat\x18\b \x01(\x03R\rspentSoFarSat\"\xda\x03\n" +
 	"\x12ExitStatusResponse\x12\x14\n" +
 	"\x05found\x18\x01 \x01(\bR\x05found\x124\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1c.wavewalletrpc.ExitJobStatusR\x06status\x12\x1d\n" +
@@ -7762,7 +7858,8 @@ const file_wallet_proto_rawDesc = "" +
 	"\x04fees\x18\b \x01(\v2\x17.wavewalletrpc.ExitFeesR\x04fees\x12;\n" +
 	"\x1abest_case_blocks_remaining\x18\t \x01(\x05R\x17bestCaseBlocksRemaining\x12%\n" +
 	"\x0ecurrent_height\x18\n" +
-	" \x01(\x05R\rcurrentHeight\"\x14\n" +
+	" \x01(\x05R\rcurrentHeight\x12#\n" +
+	"\rsweep_address\x18\v \x01(\tR\fsweepAddress\"\x14\n" +
 	"\x12ExitSummaryRequest\"\xe9\x01\n" +
 	"\x0fExitSummaryItem\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x124\n" +
@@ -8078,78 +8175,79 @@ var file_wallet_proto_depIdxs = []int32{
 	59, // 33: wavewalletrpc.PreviewUnilateralExitResponse.entries:type_name -> wavewalletrpc.UnilateralExitTarget
 	7,  // 34: wavewalletrpc.PreviewUnilateralExitResponse.funding_action:type_name -> wavewalletrpc.UnilateralExitFundingAction
 	9,  // 35: wavewalletrpc.UnilateralExitTarget.exit_status:type_name -> wavewalletrpc.ExitJobStatus
-	61, // 36: wavewalletrpc.SweepWalletResponse.inputs:type_name -> wavewalletrpc.WalletSweepInput
-	5,  // 37: wavewalletrpc.ExitResponse.mode:type_name -> wavewalletrpc.ExitMode
-	8,  // 38: wavewalletrpc.ExitBatchInputResult.outcome:type_name -> wavewalletrpc.ExitBatchOutcome
-	66, // 39: wavewalletrpc.ExitBatchResponse.results:type_name -> wavewalletrpc.ExitBatchInputResult
-	9,  // 40: wavewalletrpc.ExitStatusResponse.status:type_name -> wavewalletrpc.ExitJobStatus
-	69, // 41: wavewalletrpc.ExitStatusResponse.progress:type_name -> wavewalletrpc.ExitProgress
-	70, // 42: wavewalletrpc.ExitStatusResponse.csv:type_name -> wavewalletrpc.ExitCSV
-	71, // 43: wavewalletrpc.ExitStatusResponse.fees:type_name -> wavewalletrpc.ExitFees
-	9,  // 44: wavewalletrpc.ExitSummaryItem.status:type_name -> wavewalletrpc.ExitJobStatus
-	74, // 45: wavewalletrpc.ExitSummaryResponse.exits:type_name -> wavewalletrpc.ExitSummaryItem
-	0,  // 46: wavewalletrpc.SubscribeWalletRequest.kinds:type_name -> wavewalletrpc.EntryKind
-	79, // 47: wavewalletrpc.SubscribeWalletResponse.entry:type_name -> wavewalletrpc.WalletEntry
-	78, // 48: wavewalletrpc.SubscribeWalletResponse.gap:type_name -> wavewalletrpc.SubscribeGap
-	0,  // 49: wavewalletrpc.WalletEntry.kind:type_name -> wavewalletrpc.EntryKind
-	1,  // 50: wavewalletrpc.WalletEntry.status:type_name -> wavewalletrpc.EntryStatus
-	80, // 51: wavewalletrpc.WalletEntry.request:type_name -> wavewalletrpc.WalletEntryRequest
-	85, // 52: wavewalletrpc.WalletEntry.progress:type_name -> wavewalletrpc.WalletEntryProgress
-	11, // 53: wavewalletrpc.WalletEntry.failure_code:type_name -> wavewalletrpc.EntryFailureCode
-	81, // 54: wavewalletrpc.WalletEntryRequest.lightning_invoice:type_name -> wavewalletrpc.LightningInvoiceRequest
-	82, // 55: wavewalletrpc.WalletEntryRequest.onchain_address:type_name -> wavewalletrpc.OnchainAddressRequest
-	83, // 56: wavewalletrpc.WalletEntryRequest.ark_address:type_name -> wavewalletrpc.ArkAddressRequest
-	10, // 57: wavewalletrpc.WalletEntryProgress.phase:type_name -> wavewalletrpc.WalletEntryPhase
-	84, // 58: wavewalletrpc.WalletEntryProgress.batch_window:type_name -> wavewalletrpc.ScheduledBatchWindow
-	12, // 59: wavewalletrpc.WalletService.Create:input_type -> wavewalletrpc.CreateRequest
-	14, // 60: wavewalletrpc.WalletService.Unlock:input_type -> wavewalletrpc.UnlockRequest
-	16, // 61: wavewalletrpc.WalletService.PrepareSend:input_type -> wavewalletrpc.PrepareSendRequest
-	18, // 62: wavewalletrpc.WalletService.Send:input_type -> wavewalletrpc.SendRequest
-	20, // 63: wavewalletrpc.WalletService.Recv:input_type -> wavewalletrpc.RecvRequest
-	21, // 64: wavewalletrpc.WalletService.LookupRecv:input_type -> wavewalletrpc.LookupRecvRequest
-	25, // 65: wavewalletrpc.WalletService.List:input_type -> wavewalletrpc.ListRequest
-	37, // 66: wavewalletrpc.WalletService.Deposit:input_type -> wavewalletrpc.DepositRequest
-	39, // 67: wavewalletrpc.WalletService.Balance:input_type -> wavewalletrpc.BalanceRequest
-	41, // 68: wavewalletrpc.WalletService.Status:input_type -> wavewalletrpc.StatusRequest
-	52, // 69: wavewalletrpc.WalletService.Refresh:input_type -> wavewalletrpc.RefreshRequest
-	55, // 70: wavewalletrpc.WalletService.GetExitPlan:input_type -> wavewalletrpc.GetExitPlanRequest
-	55, // 71: wavewalletrpc.WalletService.PreviewUnilateralExit:input_type -> wavewalletrpc.GetExitPlanRequest
-	43, // 72: wavewalletrpc.WalletService.ExportExit:input_type -> wavewalletrpc.ExportExitRequest
-	45, // 73: wavewalletrpc.WalletService.ExportExits:input_type -> wavewalletrpc.ExportExitsRequest
-	60, // 74: wavewalletrpc.WalletService.SweepWallet:input_type -> wavewalletrpc.SweepWalletRequest
-	63, // 75: wavewalletrpc.WalletService.Exit:input_type -> wavewalletrpc.ExitRequest
-	65, // 76: wavewalletrpc.WalletService.ExitBatch:input_type -> wavewalletrpc.ExitBatchRequest
-	68, // 77: wavewalletrpc.WalletService.ExitStatus:input_type -> wavewalletrpc.ExitStatusRequest
-	73, // 78: wavewalletrpc.WalletService.ExitSummary:input_type -> wavewalletrpc.ExitSummaryRequest
-	76, // 79: wavewalletrpc.WalletService.SubscribeWallet:input_type -> wavewalletrpc.SubscribeWalletRequest
-	32, // 80: wavewalletrpc.WalletInspectionService.InspectActivity:input_type -> wavewalletrpc.InspectActivityRequest
-	13, // 81: wavewalletrpc.WalletService.Create:output_type -> wavewalletrpc.CreateResponse
-	15, // 82: wavewalletrpc.WalletService.Unlock:output_type -> wavewalletrpc.UnlockResponse
-	17, // 83: wavewalletrpc.WalletService.PrepareSend:output_type -> wavewalletrpc.PrepareSendResponse
-	19, // 84: wavewalletrpc.WalletService.Send:output_type -> wavewalletrpc.SendResponse
-	22, // 85: wavewalletrpc.WalletService.Recv:output_type -> wavewalletrpc.RecvResponse
-	22, // 86: wavewalletrpc.WalletService.LookupRecv:output_type -> wavewalletrpc.RecvResponse
-	26, // 87: wavewalletrpc.WalletService.List:output_type -> wavewalletrpc.ListResponse
-	38, // 88: wavewalletrpc.WalletService.Deposit:output_type -> wavewalletrpc.DepositResponse
-	40, // 89: wavewalletrpc.WalletService.Balance:output_type -> wavewalletrpc.BalanceResponse
-	42, // 90: wavewalletrpc.WalletService.Status:output_type -> wavewalletrpc.StatusResponse
-	53, // 91: wavewalletrpc.WalletService.Refresh:output_type -> wavewalletrpc.RefreshResponse
-	57, // 92: wavewalletrpc.WalletService.GetExitPlan:output_type -> wavewalletrpc.GetExitPlanResponse
-	58, // 93: wavewalletrpc.WalletService.PreviewUnilateralExit:output_type -> wavewalletrpc.PreviewUnilateralExitResponse
-	44, // 94: wavewalletrpc.WalletService.ExportExit:output_type -> wavewalletrpc.ExportExitResponse
-	46, // 95: wavewalletrpc.WalletService.ExportExits:output_type -> wavewalletrpc.ExportExitsResponse
-	62, // 96: wavewalletrpc.WalletService.SweepWallet:output_type -> wavewalletrpc.SweepWalletResponse
-	64, // 97: wavewalletrpc.WalletService.Exit:output_type -> wavewalletrpc.ExitResponse
-	67, // 98: wavewalletrpc.WalletService.ExitBatch:output_type -> wavewalletrpc.ExitBatchResponse
-	72, // 99: wavewalletrpc.WalletService.ExitStatus:output_type -> wavewalletrpc.ExitStatusResponse
-	75, // 100: wavewalletrpc.WalletService.ExitSummary:output_type -> wavewalletrpc.ExitSummaryResponse
-	77, // 101: wavewalletrpc.WalletService.SubscribeWallet:output_type -> wavewalletrpc.SubscribeWalletResponse
-	33, // 102: wavewalletrpc.WalletInspectionService.InspectActivity:output_type -> wavewalletrpc.InspectActivityResponse
-	81, // [81:103] is the sub-list for method output_type
-	59, // [59:81] is the sub-list for method input_type
-	59, // [59:59] is the sub-list for extension type_name
-	59, // [59:59] is the sub-list for extension extendee
-	0,  // [0:59] is the sub-list for field type_name
+	6,  // 36: wavewalletrpc.UnilateralExitTarget.infeasibility_reason:type_name -> wavewalletrpc.ExitInfeasibilityReason
+	61, // 37: wavewalletrpc.SweepWalletResponse.inputs:type_name -> wavewalletrpc.WalletSweepInput
+	5,  // 38: wavewalletrpc.ExitResponse.mode:type_name -> wavewalletrpc.ExitMode
+	8,  // 39: wavewalletrpc.ExitBatchInputResult.outcome:type_name -> wavewalletrpc.ExitBatchOutcome
+	66, // 40: wavewalletrpc.ExitBatchResponse.results:type_name -> wavewalletrpc.ExitBatchInputResult
+	9,  // 41: wavewalletrpc.ExitStatusResponse.status:type_name -> wavewalletrpc.ExitJobStatus
+	69, // 42: wavewalletrpc.ExitStatusResponse.progress:type_name -> wavewalletrpc.ExitProgress
+	70, // 43: wavewalletrpc.ExitStatusResponse.csv:type_name -> wavewalletrpc.ExitCSV
+	71, // 44: wavewalletrpc.ExitStatusResponse.fees:type_name -> wavewalletrpc.ExitFees
+	9,  // 45: wavewalletrpc.ExitSummaryItem.status:type_name -> wavewalletrpc.ExitJobStatus
+	74, // 46: wavewalletrpc.ExitSummaryResponse.exits:type_name -> wavewalletrpc.ExitSummaryItem
+	0,  // 47: wavewalletrpc.SubscribeWalletRequest.kinds:type_name -> wavewalletrpc.EntryKind
+	79, // 48: wavewalletrpc.SubscribeWalletResponse.entry:type_name -> wavewalletrpc.WalletEntry
+	78, // 49: wavewalletrpc.SubscribeWalletResponse.gap:type_name -> wavewalletrpc.SubscribeGap
+	0,  // 50: wavewalletrpc.WalletEntry.kind:type_name -> wavewalletrpc.EntryKind
+	1,  // 51: wavewalletrpc.WalletEntry.status:type_name -> wavewalletrpc.EntryStatus
+	80, // 52: wavewalletrpc.WalletEntry.request:type_name -> wavewalletrpc.WalletEntryRequest
+	85, // 53: wavewalletrpc.WalletEntry.progress:type_name -> wavewalletrpc.WalletEntryProgress
+	11, // 54: wavewalletrpc.WalletEntry.failure_code:type_name -> wavewalletrpc.EntryFailureCode
+	81, // 55: wavewalletrpc.WalletEntryRequest.lightning_invoice:type_name -> wavewalletrpc.LightningInvoiceRequest
+	82, // 56: wavewalletrpc.WalletEntryRequest.onchain_address:type_name -> wavewalletrpc.OnchainAddressRequest
+	83, // 57: wavewalletrpc.WalletEntryRequest.ark_address:type_name -> wavewalletrpc.ArkAddressRequest
+	10, // 58: wavewalletrpc.WalletEntryProgress.phase:type_name -> wavewalletrpc.WalletEntryPhase
+	84, // 59: wavewalletrpc.WalletEntryProgress.batch_window:type_name -> wavewalletrpc.ScheduledBatchWindow
+	12, // 60: wavewalletrpc.WalletService.Create:input_type -> wavewalletrpc.CreateRequest
+	14, // 61: wavewalletrpc.WalletService.Unlock:input_type -> wavewalletrpc.UnlockRequest
+	16, // 62: wavewalletrpc.WalletService.PrepareSend:input_type -> wavewalletrpc.PrepareSendRequest
+	18, // 63: wavewalletrpc.WalletService.Send:input_type -> wavewalletrpc.SendRequest
+	20, // 64: wavewalletrpc.WalletService.Recv:input_type -> wavewalletrpc.RecvRequest
+	21, // 65: wavewalletrpc.WalletService.LookupRecv:input_type -> wavewalletrpc.LookupRecvRequest
+	25, // 66: wavewalletrpc.WalletService.List:input_type -> wavewalletrpc.ListRequest
+	37, // 67: wavewalletrpc.WalletService.Deposit:input_type -> wavewalletrpc.DepositRequest
+	39, // 68: wavewalletrpc.WalletService.Balance:input_type -> wavewalletrpc.BalanceRequest
+	41, // 69: wavewalletrpc.WalletService.Status:input_type -> wavewalletrpc.StatusRequest
+	52, // 70: wavewalletrpc.WalletService.Refresh:input_type -> wavewalletrpc.RefreshRequest
+	55, // 71: wavewalletrpc.WalletService.GetExitPlan:input_type -> wavewalletrpc.GetExitPlanRequest
+	55, // 72: wavewalletrpc.WalletService.PreviewUnilateralExit:input_type -> wavewalletrpc.GetExitPlanRequest
+	43, // 73: wavewalletrpc.WalletService.ExportExit:input_type -> wavewalletrpc.ExportExitRequest
+	45, // 74: wavewalletrpc.WalletService.ExportExits:input_type -> wavewalletrpc.ExportExitsRequest
+	60, // 75: wavewalletrpc.WalletService.SweepWallet:input_type -> wavewalletrpc.SweepWalletRequest
+	63, // 76: wavewalletrpc.WalletService.Exit:input_type -> wavewalletrpc.ExitRequest
+	65, // 77: wavewalletrpc.WalletService.ExitBatch:input_type -> wavewalletrpc.ExitBatchRequest
+	68, // 78: wavewalletrpc.WalletService.ExitStatus:input_type -> wavewalletrpc.ExitStatusRequest
+	73, // 79: wavewalletrpc.WalletService.ExitSummary:input_type -> wavewalletrpc.ExitSummaryRequest
+	76, // 80: wavewalletrpc.WalletService.SubscribeWallet:input_type -> wavewalletrpc.SubscribeWalletRequest
+	32, // 81: wavewalletrpc.WalletInspectionService.InspectActivity:input_type -> wavewalletrpc.InspectActivityRequest
+	13, // 82: wavewalletrpc.WalletService.Create:output_type -> wavewalletrpc.CreateResponse
+	15, // 83: wavewalletrpc.WalletService.Unlock:output_type -> wavewalletrpc.UnlockResponse
+	17, // 84: wavewalletrpc.WalletService.PrepareSend:output_type -> wavewalletrpc.PrepareSendResponse
+	19, // 85: wavewalletrpc.WalletService.Send:output_type -> wavewalletrpc.SendResponse
+	22, // 86: wavewalletrpc.WalletService.Recv:output_type -> wavewalletrpc.RecvResponse
+	22, // 87: wavewalletrpc.WalletService.LookupRecv:output_type -> wavewalletrpc.RecvResponse
+	26, // 88: wavewalletrpc.WalletService.List:output_type -> wavewalletrpc.ListResponse
+	38, // 89: wavewalletrpc.WalletService.Deposit:output_type -> wavewalletrpc.DepositResponse
+	40, // 90: wavewalletrpc.WalletService.Balance:output_type -> wavewalletrpc.BalanceResponse
+	42, // 91: wavewalletrpc.WalletService.Status:output_type -> wavewalletrpc.StatusResponse
+	53, // 92: wavewalletrpc.WalletService.Refresh:output_type -> wavewalletrpc.RefreshResponse
+	57, // 93: wavewalletrpc.WalletService.GetExitPlan:output_type -> wavewalletrpc.GetExitPlanResponse
+	58, // 94: wavewalletrpc.WalletService.PreviewUnilateralExit:output_type -> wavewalletrpc.PreviewUnilateralExitResponse
+	44, // 95: wavewalletrpc.WalletService.ExportExit:output_type -> wavewalletrpc.ExportExitResponse
+	46, // 96: wavewalletrpc.WalletService.ExportExits:output_type -> wavewalletrpc.ExportExitsResponse
+	62, // 97: wavewalletrpc.WalletService.SweepWallet:output_type -> wavewalletrpc.SweepWalletResponse
+	64, // 98: wavewalletrpc.WalletService.Exit:output_type -> wavewalletrpc.ExitResponse
+	67, // 99: wavewalletrpc.WalletService.ExitBatch:output_type -> wavewalletrpc.ExitBatchResponse
+	72, // 100: wavewalletrpc.WalletService.ExitStatus:output_type -> wavewalletrpc.ExitStatusResponse
+	75, // 101: wavewalletrpc.WalletService.ExitSummary:output_type -> wavewalletrpc.ExitSummaryResponse
+	77, // 102: wavewalletrpc.WalletService.SubscribeWallet:output_type -> wavewalletrpc.SubscribeWalletResponse
+	33, // 103: wavewalletrpc.WalletInspectionService.InspectActivity:output_type -> wavewalletrpc.InspectActivityResponse
+	82, // [82:104] is the sub-list for method output_type
+	60, // [60:82] is the sub-list for method input_type
+	60, // [60:60] is the sub-list for extension type_name
+	60, // [60:60] is the sub-list for extension extendee
+	0,  // [0:60] is the sub-list for field type_name
 }
 
 func init() { file_wallet_proto_init() }
@@ -8167,6 +8265,7 @@ func file_wallet_proto_init() {
 		(*ListResponse_Onchain)(nil),
 	}
 	file_wallet_proto_msgTypes[42].OneofWrappers = []any{}
+	file_wallet_proto_msgTypes[45].OneofWrappers = []any{}
 	file_wallet_proto_msgTypes[65].OneofWrappers = []any{
 		(*SubscribeWalletResponse_Entry)(nil),
 		(*SubscribeWalletResponse_Gap)(nil),

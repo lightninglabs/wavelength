@@ -19,6 +19,7 @@ import (
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/lightninglabs/wavelength/vtxo"
@@ -209,6 +210,30 @@ func (s *VTXOPersistenceStore) GetVTXO(ctx context.Context,
 		desc, err := s.rowToDescriptor(ctx, q, row, nil)
 		if err != nil {
 			return fmt.Errorf("convert VTXO: %w", err)
+		}
+
+		if desc.Status == vtxo.VTXOStatusUnilateralExit ||
+			desc.Status == vtxo.VTXOStatusSpent {
+
+			options, err := q.GetManualExitOptions(
+				ctx, sqlc.GetManualExitOptionsParams{
+					OutpointHash:  params.OutpointHash,
+					OutpointIndex: params.OutpointIndex,
+				},
+			)
+			switch {
+			case err == nil:
+				rate := options.FeeRateSatPerVbyte
+				opt := &actormsg.ManualExitOptions{
+					SweepScript:        options.SweepScript,
+					FeeRateSatPerVByte: rate,
+				}
+				desc.ManualExitOptions = opt
+
+			case !errors.Is(err, sql.ErrNoRows):
+				return fmt.Errorf("load manual exit "+
+					"options: %w", err)
+			}
 		}
 
 		result = desc
@@ -846,7 +871,77 @@ func (s *VTXOPersistenceStore) UpdateVTXOStatus(
 			LastUpdateTime: s.clock.Now().Unix(),
 		}
 
-		return q.UpdateVTXOStatus(ctx, params)
+		if err := q.UpdateVTXOStatus(ctx, params); err != nil {
+			return err
+		}
+
+		return clearStaleManualExitOptions(ctx, q, status, outpoint)
+	})
+}
+
+// clearStaleManualExitOptions drops an earlier selection when the VTXO
+// reopens or starts a new exit without custom terms.
+func clearStaleManualExitOptions(ctx context.Context, q RoundStore,
+	status vtxo.VTXOStatus, outpoint wire.OutPoint) error {
+
+	switch status {
+	case vtxo.VTXOStatusLive, vtxo.VTXOStatusExpired,
+		vtxo.VTXOStatusUnilateralExit:
+		return q.DeleteManualExitOptions(
+			ctx, sqlc.DeleteManualExitOptionsParams{
+				OutpointHash: outpoint.Hash[:],
+				OutpointIndex: int32(
+					outpoint.Index,
+				),
+			},
+		)
+
+	default:
+		return nil
+	}
+}
+
+// UpdateVTXOStatusWithExitOptions atomically binds customized exit terms to
+// the VTXO lifecycle transition. Orphan recovery can reconstruct the same
+// payout even if the daemon crashes before admitting the job to the registry.
+func (s *VTXOPersistenceStore) UpdateVTXOStatusWithExitOptions(
+	ctx context.Context, outpoint wire.OutPoint,
+	options *actormsg.ManualExitOptions, releaseReservation bool) error {
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
+		params := sqlc.UpdateVTXOStatusParams{
+			OutpointHash: outpoint.Hash[:], OutpointIndex: int32(
+				outpoint.Index,
+			),
+			Status:         int32(vtxo.VTXOStatusUnilateralExit),
+			LastUpdateTime: s.clock.Now().Unix(),
+		}
+		if err := q.UpdateVTXOStatus(ctx, params); err != nil {
+			return err
+		}
+
+		if err := q.PutManualExitOptions(
+			ctx, sqlc.PutManualExitOptionsParams{
+				OutpointHash:  params.OutpointHash,
+				OutpointIndex: params.OutpointIndex,
+				SweepScript: append(
+					[]byte{}, options.SweepScript...,
+				),
+				FeeRateSatPerVbyte: options.FeeRateSatPerVByte,
+			},
+		); err != nil {
+			return err
+		}
+		if !releaseReservation {
+			return nil
+		}
+
+		return q.DeleteSpendingReservation(
+			ctx, sqlc.DeleteSpendingReservationParams{
+				OutpointHash:  params.OutpointHash,
+				OutpointIndex: params.OutpointIndex,
+			},
+		)
 	})
 }
 
@@ -870,6 +965,12 @@ func (s *VTXOPersistenceStore) UpdateVTXOStatusReleasingReservation(
 			LastUpdateTime: s.clock.Now().Unix(),
 		}
 		if err := q.UpdateVTXOStatus(ctx, statusParams); err != nil {
+			return err
+		}
+
+		if err := clearStaleManualExitOptions(
+			ctx, q, status, outpoint,
+		); err != nil {
 			return err
 		}
 

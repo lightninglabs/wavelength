@@ -147,6 +147,11 @@ type EnsureConfirmedReq struct {
 	// agree.
 	RetryUntilAccepted bool
 
+	// InitialFeeRateSatPerVByte sets the first publication rate for an
+	// anchor package. Zero uses the estimator. An existing txid keeps its
+	// rate because the package may already be broadcast for another exit.
+	InitialFeeRateSatPerVByte int64
+
 	// ParentFee is the absolute miner fee, in satoshis, that Tx already
 	// pays. It is used only for a funded-anchor parent so a later CPFP fee
 	// bump subtracts the parent's own fee and lands the combined fee on the

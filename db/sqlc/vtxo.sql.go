@@ -22,6 +22,21 @@ func (q *Queries) CountVTXOsByStatus(ctx context.Context, status int32) (int64, 
 	return count, err
 }
 
+const DeleteManualExitOptions = `-- name: DeleteManualExitOptions :exec
+DELETE FROM vtxo_manual_exit_options
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+`
+
+type DeleteManualExitOptionsParams struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+}
+
+func (q *Queries) DeleteManualExitOptions(ctx context.Context, arg DeleteManualExitOptionsParams) error {
+	_, err := q.db.ExecContext(ctx, DeleteManualExitOptions, arg.OutpointHash, arg.OutpointIndex)
+	return err
+}
+
 const DeleteVTXO = `-- name: DeleteVTXO :exec
 DELETE FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2
@@ -37,6 +52,28 @@ type DeleteVTXOParams struct {
 func (q *Queries) DeleteVTXO(ctx context.Context, arg DeleteVTXOParams) error {
 	_, err := q.db.ExecContext(ctx, DeleteVTXO, arg.OutpointHash, arg.OutpointIndex)
 	return err
+}
+
+const GetManualExitOptions = `-- name: GetManualExitOptions :one
+SELECT sweep_script, fee_rate_sat_per_vbyte FROM vtxo_manual_exit_options
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+`
+
+type GetManualExitOptionsParams struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+}
+
+type GetManualExitOptionsRow struct {
+	SweepScript        []byte
+	FeeRateSatPerVbyte int64
+}
+
+func (q *Queries) GetManualExitOptions(ctx context.Context, arg GetManualExitOptionsParams) (GetManualExitOptionsRow, error) {
+	row := q.db.QueryRowContext(ctx, GetManualExitOptions, arg.OutpointHash, arg.OutpointIndex)
+	var i GetManualExitOptionsRow
+	err := row.Scan(&i.SweepScript, &i.FeeRateSatPerVbyte)
+	return i, err
 }
 
 const GetVTXOForfeitTx = `-- name: GetVTXOForfeitTx :one
@@ -522,6 +559,32 @@ func (q *Queries) MarkVTXOForfeiting(ctx context.Context, arg MarkVTXOForfeiting
 		arg.ForfeitRoundID,
 		arg.ForfeitTx,
 		arg.LastUpdateTime,
+	)
+	return err
+}
+
+const PutManualExitOptions = `-- name: PutManualExitOptions :exec
+INSERT INTO vtxo_manual_exit_options (
+    outpoint_hash, outpoint_index, sweep_script, fee_rate_sat_per_vbyte
+) VALUES ($1, $2, $3, $4)
+ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
+    sweep_script = EXCLUDED.sweep_script,
+    fee_rate_sat_per_vbyte = EXCLUDED.fee_rate_sat_per_vbyte
+`
+
+type PutManualExitOptionsParams struct {
+	OutpointHash       []byte
+	OutpointIndex      int32
+	SweepScript        []byte
+	FeeRateSatPerVbyte int64
+}
+
+func (q *Queries) PutManualExitOptions(ctx context.Context, arg PutManualExitOptionsParams) error {
+	_, err := q.db.ExecContext(ctx, PutManualExitOptions,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.SweepScript,
+		arg.FeeRateSatPerVbyte,
 	)
 	return err
 }
