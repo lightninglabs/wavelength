@@ -49,8 +49,7 @@ application-facing wallet API.
   and returns `Results` / `Destination`. Every result must be inspected even
   on nil error. It uses the daemon lifecycle context, like singular `Exit`;
   unknown outcomes require reconciliation rather than replay or unroll.
-- Asset verbs (`assets.go`: `NewAssetReceiveKeys`,
-  `NewAssetFundingAddress`, `ImportAssetProof`, `ListOwnedAssets`,
+- Asset verbs (`assets.go`: `NewAssetFundingAddress`, `ListOwnedAssets`,
   `NewAssetAddress`, `ListAssetAddresses`, `ListAssetReceives`,
   `SyncAssetReceives`, `DepositAsset`, `ListAssetDeposits`,
   `BoardAssetDeposit`) — the asset wallet, its Taproot Asset addresses and

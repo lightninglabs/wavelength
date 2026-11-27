@@ -52,8 +52,6 @@ const (
 	DaemonService_ListAssetDeposits_FullMethodName                              = "/waverpc.DaemonService/ListAssetDeposits"
 	DaemonService_BoardAssetDeposit_FullMethodName                              = "/waverpc.DaemonService/BoardAssetDeposit"
 	DaemonService_ClaimAssetDeposit_FullMethodName                              = "/waverpc.DaemonService/ClaimAssetDeposit"
-	DaemonService_NewAssetReceiveKeys_FullMethodName                            = "/waverpc.DaemonService/NewAssetReceiveKeys"
-	DaemonService_ImportAssetProof_FullMethodName                               = "/waverpc.DaemonService/ImportAssetProof"
 	DaemonService_ListOwnedAssets_FullMethodName                                = "/waverpc.DaemonService/ListOwnedAssets"
 	DaemonService_NewAssetFundingAddress_FullMethodName                         = "/waverpc.DaemonService/NewAssetFundingAddress"
 	DaemonService_NewAssetAddress_FullMethodName                                = "/waverpc.DaemonService/NewAssetAddress"
@@ -232,17 +230,6 @@ type DaemonServiceClient interface {
 	// claim pays its fee with a CPFP child from the daemon wallet. Retrying
 	// resumes the same claim. Requires an asset backend.
 	ClaimAssetDeposit(ctx context.Context, in *ClaimAssetDepositRequest, opts ...grpc.CallOption) (*AssetDeposit, error)
-	// NewAssetReceiveKeys derives the keys a sender needs to transfer a
-	// Taproot Asset to this daemon's asset wallet on chain: the script key
-	// that will hold the asset and the internal key of its anchor output.
-	// The sender hands over the proof file of the transfer, which
-	// ImportAssetProof adds to the wallet. Requires an asset backend.
-	NewAssetReceiveKeys(ctx context.Context, in *NewAssetReceiveKeysRequest, opts ...grpc.CallOption) (*AssetReceiveKeys, error)
-	// ImportAssetProof verifies the proof file of an asset output sent to
-	// keys from NewAssetReceiveKeys and adds the asset to the daemon's
-	// asset wallet. Importing a known proof returns the same asset.
-	// Requires an asset backend.
-	ImportAssetProof(ctx context.Context, in *ImportAssetProofRequest, opts ...grpc.CallOption) (*OwnedAsset, error)
 	// ListOwnedAssets returns the Taproot Assets the daemon's asset wallet
 	// holds on chain. Assets held in VTXOs are reported by GetBalance.
 	ListOwnedAssets(ctx context.Context, in *ListOwnedAssetsRequest, opts ...grpc.CallOption) (*ListOwnedAssetsResponse, error)
@@ -683,26 +670,6 @@ func (c *daemonServiceClient) ClaimAssetDeposit(ctx context.Context, in *ClaimAs
 	return out, nil
 }
 
-func (c *daemonServiceClient) NewAssetReceiveKeys(ctx context.Context, in *NewAssetReceiveKeysRequest, opts ...grpc.CallOption) (*AssetReceiveKeys, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(AssetReceiveKeys)
-	err := c.cc.Invoke(ctx, DaemonService_NewAssetReceiveKeys_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *daemonServiceClient) ImportAssetProof(ctx context.Context, in *ImportAssetProofRequest, opts ...grpc.CallOption) (*OwnedAsset, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(OwnedAsset)
-	err := c.cc.Invoke(ctx, DaemonService_ImportAssetProof_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *daemonServiceClient) ListOwnedAssets(ctx context.Context, in *ListOwnedAssetsRequest, opts ...grpc.CallOption) (*ListOwnedAssetsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListOwnedAssetsResponse)
@@ -1122,17 +1089,6 @@ type DaemonServiceServer interface {
 	// claim pays its fee with a CPFP child from the daemon wallet. Retrying
 	// resumes the same claim. Requires an asset backend.
 	ClaimAssetDeposit(context.Context, *ClaimAssetDepositRequest) (*AssetDeposit, error)
-	// NewAssetReceiveKeys derives the keys a sender needs to transfer a
-	// Taproot Asset to this daemon's asset wallet on chain: the script key
-	// that will hold the asset and the internal key of its anchor output.
-	// The sender hands over the proof file of the transfer, which
-	// ImportAssetProof adds to the wallet. Requires an asset backend.
-	NewAssetReceiveKeys(context.Context, *NewAssetReceiveKeysRequest) (*AssetReceiveKeys, error)
-	// ImportAssetProof verifies the proof file of an asset output sent to
-	// keys from NewAssetReceiveKeys and adds the asset to the daemon's
-	// asset wallet. Importing a known proof returns the same asset.
-	// Requires an asset backend.
-	ImportAssetProof(context.Context, *ImportAssetProofRequest) (*OwnedAsset, error)
 	// ListOwnedAssets returns the Taproot Assets the daemon's asset wallet
 	// holds on chain. Assets held in VTXOs are reported by GetBalance.
 	ListOwnedAssets(context.Context, *ListOwnedAssetsRequest) (*ListOwnedAssetsResponse, error)
@@ -1341,12 +1297,6 @@ func (UnimplementedDaemonServiceServer) BoardAssetDeposit(context.Context, *Boar
 }
 func (UnimplementedDaemonServiceServer) ClaimAssetDeposit(context.Context, *ClaimAssetDepositRequest) (*AssetDeposit, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ClaimAssetDeposit not implemented")
-}
-func (UnimplementedDaemonServiceServer) NewAssetReceiveKeys(context.Context, *NewAssetReceiveKeysRequest) (*AssetReceiveKeys, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method NewAssetReceiveKeys not implemented")
-}
-func (UnimplementedDaemonServiceServer) ImportAssetProof(context.Context, *ImportAssetProofRequest) (*OwnedAsset, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ImportAssetProof not implemented")
 }
 func (UnimplementedDaemonServiceServer) ListOwnedAssets(context.Context, *ListOwnedAssetsRequest) (*ListOwnedAssetsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListOwnedAssets not implemented")
@@ -2041,42 +1991,6 @@ func _DaemonService_ClaimAssetDeposit_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
-func _DaemonService_NewAssetReceiveKeys_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(NewAssetReceiveKeysRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(DaemonServiceServer).NewAssetReceiveKeys(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: DaemonService_NewAssetReceiveKeys_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DaemonServiceServer).NewAssetReceiveKeys(ctx, req.(*NewAssetReceiveKeysRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _DaemonService_ImportAssetProof_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ImportAssetProofRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(DaemonServiceServer).ImportAssetProof(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: DaemonService_ImportAssetProof_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DaemonServiceServer).ImportAssetProof(ctx, req.(*ImportAssetProofRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _DaemonService_ListOwnedAssets_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListOwnedAssetsRequest)
 	if err := dec(in); err != nil {
@@ -2676,14 +2590,6 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ClaimAssetDeposit",
 			Handler:    _DaemonService_ClaimAssetDeposit_Handler,
-		},
-		{
-			MethodName: "NewAssetReceiveKeys",
-			Handler:    _DaemonService_NewAssetReceiveKeys_Handler,
-		},
-		{
-			MethodName: "ImportAssetProof",
-			Handler:    _DaemonService_ImportAssetProof_Handler,
 		},
 		{
 			MethodName: "ListOwnedAssets",

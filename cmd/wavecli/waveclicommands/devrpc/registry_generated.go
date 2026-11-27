@@ -248,20 +248,6 @@ func generatedRegistry() []serviceSpec {
 					Comments: "ClaimAssetDeposit spends a confirmed asset deposit that no round\nholds through the owner's exit path, once the exit delay has passed,\nand returns the asset to the asset wallet of the asset backend. The\nclaim pays its fee with a CPFP child from the daemon wallet. Retrying\nresumes the same claim. Requires an asset backend.",
 				},
 				{
-					Name:     "NewAssetReceiveKeys",
-					Aliases:  []string{"new-asset-receive-keys"},
-					Input:    "waverpc.NewAssetReceiveKeysRequest",
-					Output:   "waverpc.AssetReceiveKeys",
-					Comments: "NewAssetReceiveKeys derives the keys a sender needs to transfer a\nTaproot Asset to this daemon's asset wallet on chain: the script key\nthat will hold the asset and the internal key of its anchor output.\nThe sender hands over the proof file of the transfer, which\nImportAssetProof adds to the wallet. Requires an asset backend.",
-				},
-				{
-					Name:     "ImportAssetProof",
-					Aliases:  []string{"import-asset-proof"},
-					Input:    "waverpc.ImportAssetProofRequest",
-					Output:   "waverpc.OwnedAsset",
-					Comments: "ImportAssetProof verifies the proof file of an asset output sent to\nkeys from NewAssetReceiveKeys and adds the asset to the daemon's\nasset wallet. Importing a known proof returns the same asset.\nRequires an asset backend.",
-				},
-				{
 					Name:     "ListOwnedAssets",
 					Aliases:  []string{"list-owned-assets"},
 					Input:    "waverpc.ListOwnedAssetsRequest",

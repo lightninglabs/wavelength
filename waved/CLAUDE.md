@@ -160,16 +160,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   reads headers from a backend that implements
   `chainsource.BlockHeaderSource`, or from lnd's chain kit.
 - A proof of a grouped asset verifies on the asset engine only for a
-  trusted group. Trust comes from `assets.groupkeys`, from the asset a
-  caller names (`groupTrustingVerifier` for a round's asset VTXO,
-  `ImportAssetProof` for a received asset), and from the assets the wallet
-  holds.
-- `NewAssetReceiveKeys`, `ImportAssetProof` and `ListOwnedAssets` are the
-  asset wallet through tap-sdk: keys a sender transfers an asset to, the
-  import of that transfer's proof, and the on-chain holdings.
-  `ImportAssetProof` checks that the proof is of the asset the caller
-  names, and verifies the file, before it stores anything: the engine holds
-  the proofs of a file before it verifies them.
+  trusted group. Trust comes from `assets.groupkeys`, from the asset of a
+  round's asset VTXO (`groupTrustingVerifier`), and from the assets the
+  wallet holds.
+- `ListOwnedAssets` lists the asset wallet's on-chain holdings through
+  tap-sdk.
 - `NewAssetFundingAddress` hands out a backing-wallet address through
   `NewWalletAddress`. A deposit spends the daemon wallet's coins, and a
   wallet SDK host has no other way to learn an address of that wallet.

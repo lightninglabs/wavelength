@@ -90,10 +90,6 @@ type DaemonServiceMailboxServer interface {
 	BoardAssetDeposit(ctx context.Context, req *BoardAssetDepositRequest) (*AssetDeposit, error)
 	// ClaimAssetDeposit handles ClaimAssetDeposit.
 	ClaimAssetDeposit(ctx context.Context, req *ClaimAssetDepositRequest) (*AssetDeposit, error)
-	// NewAssetReceiveKeys handles NewAssetReceiveKeys.
-	NewAssetReceiveKeys(ctx context.Context, req *NewAssetReceiveKeysRequest) (*AssetReceiveKeys, error)
-	// ImportAssetProof handles ImportAssetProof.
-	ImportAssetProof(ctx context.Context, req *ImportAssetProofRequest) (*OwnedAsset, error)
 	// ListOwnedAssets handles ListOwnedAssets.
 	ListOwnedAssets(ctx context.Context, req *ListOwnedAssetsRequest) (*ListOwnedAssetsResponse, error)
 	// NewAssetFundingAddress handles NewAssetFundingAddress.
@@ -479,26 +475,6 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.ClaimAssetDeposit(ctx, req)
-	})
-	r.Handle("waverpc.DaemonService", "NewAssetReceiveKeys", func() proto.Message {
-		return &NewAssetReceiveKeysRequest{}
-	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
-		req, ok := msg.(*NewAssetReceiveKeysRequest)
-		if !ok {
-			return nil, fmt.Errorf("unexpected request type: %T", msg)
-		}
-
-		return impl.NewAssetReceiveKeys(ctx, req)
-	})
-	r.Handle("waverpc.DaemonService", "ImportAssetProof", func() proto.Message {
-		return &ImportAssetProofRequest{}
-	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
-		req, ok := msg.(*ImportAssetProofRequest)
-		if !ok {
-			return nil, fmt.Errorf("unexpected request type: %T", msg)
-		}
-
-		return impl.ImportAssetProof(ctx, req)
 	})
 	r.Handle("waverpc.DaemonService", "ListOwnedAssets", func() proto.Message {
 		return &ListOwnedAssetsRequest{}
@@ -1514,52 +1490,6 @@ func (c *DaemonServiceMailboxClient) ClaimAssetDeposit(ctx context.Context, req 
 	}
 
 	resp := new(AssetDeposit)
-	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
-		return nil, err
-	}
-
-	return resp, nil
-}
-
-// NewAssetReceiveKeys calls the NewAssetReceiveKeys RPC.
-func (c *DaemonServiceMailboxClient) NewAssetReceiveKeys(ctx context.Context, req *NewAssetReceiveKeysRequest, opts ...rpc.RPCOptions) (*AssetReceiveKeys, error) {
-	var opt rpc.RPCOptions
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
-	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
-		Service: "waverpc.DaemonService",
-		Method:  "NewAssetReceiveKeys",
-	}, req, opt)
-	if err != nil {
-		return nil, err
-	}
-
-	resp := new(AssetReceiveKeys)
-	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
-		return nil, err
-	}
-
-	return resp, nil
-}
-
-// ImportAssetProof calls the ImportAssetProof RPC.
-func (c *DaemonServiceMailboxClient) ImportAssetProof(ctx context.Context, req *ImportAssetProofRequest, opts ...rpc.RPCOptions) (*OwnedAsset, error) {
-	var opt rpc.RPCOptions
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
-	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
-		Service: "waverpc.DaemonService",
-		Method:  "ImportAssetProof",
-	}, req, opt)
-	if err != nil {
-		return nil, err
-	}
-
-	resp := new(OwnedAsset)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

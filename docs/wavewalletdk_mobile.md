@@ -34,7 +34,7 @@ The package is gated behind three build tags — `mobile`, `wavewalletrpc`, and
 
 | Shape | Convention | Verbs |
 |-------|-----------|-------|
-| RPC verbs | **JSON `[]byte` in / out** (throwing) | `GetInfo`, `GenerateSeed`, `CreateWallet`, `UnlockWallet`, `OpenWalletFromPasskey`, `Balance`, `Deposit`, `Receive`, `PrepareSend`, `SendPrepared`, `List`, `Exit`, `ExitStatus`, `ExitSummary`, `GetExitPlan`, `SweepWallet`, `Status`, `NewAssetReceiveKeys`, `NewAssetFundingAddress`, `ImportAssetProof`, `ListOwnedAssets`, `NewAssetAddress`, `ListAssetAddresses`, `ListAssetReceives`, `DepositAsset`, `ListAssetDeposits`, `BoardAssetDeposit` |
+| RPC verbs | **JSON `[]byte` in / out** (throwing) | `GetInfo`, `GenerateSeed`, `CreateWallet`, `UnlockWallet`, `OpenWalletFromPasskey`, `Balance`, `Deposit`, `Receive`, `PrepareSend`, `SendPrepared`, `List`, `Exit`, `ExitStatus`, `ExitSummary`, `GetExitPlan`, `SweepWallet`, `Status`, `NewAssetFundingAddress`, `ListOwnedAssets`, `NewAssetAddress`, `ListAssetAddresses`, `ListAssetReceives`, `DepositAsset`, `ListAssetDeposits`, `BoardAssetDeposit` |
 | Lifecycle JSON | **JSON `[]byte` in / out** (throwing) | `StartExternalSeedWallet` |
 | Streaming | **pull handle** `Subscription{ next() []byte; close() }` | `Subscribe` |
 | Hot-path scalars | **plain `int64`/`bool`** | `ConfirmedBalanceSat`, `PendingInboundSat`, `WalletReady`, `IsRunning` |
@@ -219,9 +219,8 @@ the wallet's seed and database, so a phone or a browser tab holds assets with
 no other daemon beside it. `asset_group_keys` lists the asset groups it trusts
 as hex compressed public keys. Omitting `assets_enabled` keeps assets disabled.
 The asset verbs take and return the `wavewalletdk` asset types
-(`AssetReceiveKeys`, `AssetFundingAddress`, `ImportAssetProofRequest`,
-`OwnedAsset`, `DepositAssetRequest`, `BoardAssetDepositRequest`,
-`AssetDeposit`); keys are hex strings and `ProofFile` is base64. Asset
+(`AssetFundingAddress`, `OwnedAsset`, `DepositAssetRequest`,
+`BoardAssetDepositRequest`, `AssetDeposit`); keys are hex strings. Asset
 amounts (`Amount`, `AssetAmount`) are decimal strings, because an asset
 amount can exceed the largest integer JavaScript reads exactly from a JSON
 number; Bitcoin amounts stay numbers. A deposit spends the wallet's own

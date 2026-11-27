@@ -38,34 +38,10 @@ func (u *AssetUnits) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// AssetReceiveKeys are the keys a sender transfers a Taproot Asset to on
-// chain. All keys are hex compressed public keys.
-type AssetReceiveKeys struct {
-	// ScriptKey is the Taproot output key the asset is sent to.
-	ScriptKey string
-
-	// RawScriptKey is the key ScriptKey is the BIP-86 output key of.
-	RawScriptKey string
-
-	// AnchorInternalKey is the internal key of the anchor output that
-	// carries the asset.
-	AnchorInternalKey string
-}
-
 // AssetFundingAddress is a backing-wallet address. Bitcoin sent to it pays
 // for asset deposits.
 type AssetFundingAddress struct {
 	Address string
-}
-
-// ImportAssetProofRequest adds a received asset to the asset wallet.
-type ImportAssetProofRequest struct {
-	// ProofFile is the proof file of the asset output.
-	ProofFile []byte
-
-	// AssetRef is the asset the caller expects: the asset ID, or the
-	// group key of a grouped asset.
-	AssetRef string
 }
 
 // OwnedAsset is one asset output the asset wallet holds on chain.
@@ -200,26 +176,6 @@ type AssetDeposit struct {
 	Claimed bool
 }
 
-// NewAssetReceiveKeys derives the keys a sender transfers an asset to.
-func (c *Client) NewAssetReceiveKeys(ctx context.Context) (*AssetReceiveKeys,
-	error) {
-
-	resp, err := c.daemon.NewAssetReceiveKeys(
-		ctx, &waverpc.NewAssetReceiveKeysRequest{},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("derive asset receive keys: %w", err)
-	}
-
-	return &AssetReceiveKeys{
-		ScriptKey:    hex.EncodeToString(resp.GetScriptKey()),
-		RawScriptKey: hex.EncodeToString(resp.GetRawScriptKey()),
-		AnchorInternalKey: hex.EncodeToString(
-			resp.GetAnchorInternalKey(),
-		),
-	}, nil
-}
-
 // NewAssetFundingAddress returns a new backing-wallet address. Bitcoin sent
 // to it pays for asset deposits: the deposit output's value and the miner
 // fee.
@@ -234,24 +190,6 @@ func (c *Client) NewAssetFundingAddress(ctx context.Context) (
 	}
 
 	return &AssetFundingAddress{Address: resp.GetAddress()}, nil
-}
-
-// ImportAssetProof verifies a received asset's proof file and adds the asset
-// to the asset wallet.
-func (c *Client) ImportAssetProof(ctx context.Context,
-	req ImportAssetProofRequest) (*OwnedAsset, error) {
-
-	resp, err := c.daemon.ImportAssetProof(
-		ctx, &waverpc.ImportAssetProofRequest{
-			ProofFile: req.ProofFile,
-			AssetRef:  req.AssetRef,
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("import asset proof: %w", err)
-	}
-
-	return ownedAssetFromProto(resp), nil
 }
 
 // ListOwnedAssets returns the assets the asset wallet holds on chain.

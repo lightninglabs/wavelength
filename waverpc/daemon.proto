@@ -200,20 +200,6 @@ service DaemonService {
     // resumes the same claim. Requires an asset backend.
     rpc ClaimAssetDeposit (ClaimAssetDepositRequest) returns (AssetDeposit);
 
-    // NewAssetReceiveKeys derives the keys a sender needs to transfer a
-    // Taproot Asset to this daemon's asset wallet on chain: the script key
-    // that will hold the asset and the internal key of its anchor output.
-    // The sender hands over the proof file of the transfer, which
-    // ImportAssetProof adds to the wallet. Requires an asset backend.
-    rpc NewAssetReceiveKeys (NewAssetReceiveKeysRequest)
-        returns (AssetReceiveKeys);
-
-    // ImportAssetProof verifies the proof file of an asset output sent to
-    // keys from NewAssetReceiveKeys and adds the asset to the daemon's
-    // asset wallet. Importing a known proof returns the same asset.
-    // Requires an asset backend.
-    rpc ImportAssetProof (ImportAssetProofRequest) returns (OwnedAsset);
-
     // ListOwnedAssets returns the Taproot Assets the daemon's asset wallet
     // holds on chain. Assets held in VTXOs are reported by GetBalance.
     rpc ListOwnedAssets (ListOwnedAssetsRequest)
@@ -2024,34 +2010,6 @@ message AssetDeposit {
     // claimed is true once the asset backend records the claim six blocks
     // deep.
     bool claimed = 12;
-}
-
-message NewAssetReceiveKeysRequest {
-}
-
-message AssetReceiveKeys {
-    // script_key is the compressed Taproot output key the asset is sent
-    // to.
-    bytes script_key = 1;
-
-    // raw_script_key is the compressed key that script_key is the BIP-86
-    // output key of.
-    bytes raw_script_key = 2;
-
-    // anchor_internal_key is the compressed internal key of the anchor
-    // output that carries the asset.
-    bytes anchor_internal_key = 3;
-}
-
-message ImportAssetProofRequest {
-    // proof_file is the proof file of the asset output, from its issuance
-    // to the transfer into the wallet's keys.
-    bytes proof_file = 1;
-
-    // asset_ref is the asset the caller expects to receive: the asset ID,
-    // or the group key of a grouped asset. A proof of another asset is
-    // refused.
-    string asset_ref = 2;
 }
 
 message NewAssetFundingAddressRequest {

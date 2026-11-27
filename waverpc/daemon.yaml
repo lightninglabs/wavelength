@@ -113,12 +113,6 @@ http:
     - selector: waverpc.DaemonService.ClaimAssetDeposit
       post: /v1/daemon/claim-asset-deposit
       body: "*"
-    - selector: waverpc.DaemonService.NewAssetReceiveKeys
-      post: /v1/daemon/new-asset-receive-keys
-      body: "*"
-    - selector: waverpc.DaemonService.ImportAssetProof
-      post: /v1/daemon/import-asset-proof
-      body: "*"
     - selector: waverpc.DaemonService.ListOwnedAssets
       post: /v1/daemon/list-owned-assets
       body: "*"
