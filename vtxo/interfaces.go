@@ -350,6 +350,18 @@ func (s VTXOStatus) String() string {
 	}
 }
 
+// IsTerminal reports whether the VTXO status is a terminal lifecycle state
+// that must never be resurrected as live.
+func (s VTXOStatus) IsTerminal() bool {
+	switch s {
+	case VTXOStatusForfeited, VTXOStatusSpent, VTXOStatusFailed:
+		return true
+
+	default:
+		return false
+	}
+}
+
 // Ancestry describes one rooted commitment-tree fragment that contributes
 // ancestry to a VTXO. The canonical type lives in lib/types so that both
 // round.ClientVTXO and vtxo.Descriptor can carry the same multi-fragment

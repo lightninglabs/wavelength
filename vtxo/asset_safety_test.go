@@ -74,6 +74,54 @@ func TestAssetVTXOSkipsAutomaticRefresh(t *testing.T) {
 	require.ErrorIs(t, err, ErrAssetVTXORequiresTransition)
 }
 
+// TestAssetRefSelectionCaseInsensitive verifies that asset selection matches
+// asset references regardless of hex casing.
+func TestAssetRefSelectionCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	root := chainhash.Hash{2}
+	descs := []*Descriptor{{
+		Amount:                    1_000,
+		Status:                    VTXOStatusLive,
+		TaprootAssetRoot:          &root,
+		TaprootAssetRef:           "AABBCC",
+		TaprootAssetAmount:        500,
+		TaprootAssetSealedPackage: []byte("sealed-pkg"),
+	}}
+
+	selected, total, err := SelectAssetVTXOCandidates(
+		descs, "aabbcc", 250, 4,
+	)
+	require.NoError(t, err)
+	require.Len(t, selected, 1)
+	require.EqualValues(t, 500, total)
+}
+
+// TestMaterializedNotificationSkipsTerminalStoredVTXO verifies that
+// handleVTXOsMaterialized refuses to resurrect a VTXO whose stored row is
+// already terminal (e.g. VTXOStatusSpent).
+func TestMaterializedNotificationSkipsTerminalStoredVTXO(t *testing.T) {
+	t.Parallel()
+
+	desc := makeDescriptor(t, 1_000, 0)
+	spentDesc := *desc
+	spentDesc.Status = VTXOStatusSpent
+
+	mgr, store := newTestManager(t, nil)
+	store.On("GetVTXO", t.Context(), desc.Outpoint).Return(
+		&spentDesc, nil,
+	).Once()
+
+	res := mgr.handleVTXOsMaterialized(
+		t.Context(), &VTXOsMaterializedNotification{
+			VTXOs: []*Descriptor{desc},
+		},
+	)
+	require.NoError(t, res.Err())
+	require.Empty(t, mgr.actors)
+	store.AssertExpectations(t)
+}
+
 // TestAssetVTXOCarrierBalance reports asset carriers in total holdings while
 // excluding them from the Bitcoin spendable balance.
 func TestAssetVTXOCarrierBalance(t *testing.T) {

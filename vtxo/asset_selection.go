@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"strings"
 
 	"github.com/btcsuite/btcd/wire/v2"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -95,7 +96,7 @@ func isSpendableAssetDescriptor(desc *Descriptor, assetRef string) bool {
 	}
 
 	return desc.TaprootAssetRoot != nil &&
-		desc.TaprootAssetRef == assetRef &&
+		strings.EqualFold(desc.TaprootAssetRef, assetRef) &&
 		desc.TaprootAssetAmount > 0 &&
 		len(desc.TaprootAssetSealedPackage) > 0
 }

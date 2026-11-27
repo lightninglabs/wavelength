@@ -1066,6 +1066,9 @@ func (m *Manager) handleVTXOsMaterialized(ctx context.Context,
 		if descriptor == nil {
 			continue
 		}
+		if descriptor.Status.IsTerminal() {
+			continue
+		}
 
 		outpoint := descriptor.Outpoint
 		if _, exists := m.actors[outpoint]; exists {
@@ -1074,6 +1077,30 @@ func (m *Manager) handleVTXOsMaterialized(ctx context.Context,
 			)
 
 			continue
+		}
+
+		// Re-check the authoritative store before spawning a live
+		// actor so a replayed materialization notification can never
+		// resurrect an already-spent or otherwise terminal VTXO.
+		if m.cfg.Store != nil {
+			stored, getErr := m.cfg.Store.GetVTXO(ctx, outpoint)
+			if getErr == nil && stored != nil &&
+				stored.Status.IsTerminal() {
+
+				m.logger(ctx).DebugS(
+					ctx, "Skipping terminal VTXO "+
+						"materialization notification",
+					slog.String(
+						"outpoint", outpoint.String(),
+					),
+					slog.String(
+						"status",
+						stored.Status.String(),
+					),
+				)
+
+				continue
+			}
 		}
 
 		ref, err := m.spawnVTXOActor(ctx, descriptor)
@@ -2763,7 +2790,8 @@ func (m *Manager) sweepOrphanedReservations(ctx context.Context) {
 		// refuse".
 		m.markReservedUnknown(op)
 
-		if err := ref.Tell(ctx, &SpendReserveEvent{}); err != nil {
+		reserveEvt := &SpendReserveEvent{AllowAssetTransition: true}
+		if err := ref.Tell(ctx, reserveEvt); err != nil {
 			m.logger(ctx).WarnS(
 				ctx,
 				"Reservation sweep: re-drive reserve failed",
