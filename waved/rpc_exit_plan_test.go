@@ -6,9 +6,12 @@ import (
 	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/unroll"
 	"github.com/lightninglabs/wavelength/vtxo"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -313,6 +316,20 @@ func exitPlanCommittedFixture(t *testing.T, store *db.VTXOPersistenceStore,
 	return desc
 }
 
+// TestPreviewUnilateralExitCommittedTarget verifies a pending round
+// gets an advisory while the coin remains eligible for manual recovery.
+func TestPreviewUnilateralExitCommittedTarget(t *testing.T) {
+	t.Parallel()
+	_, store := newLeaveAdmissionServer(t)
+	desc := exitPlanCommittedFixture(
+		t, store, 0x61, vtxo.VTXOStatusPendingForfeit,
+	)
+	var entry WalletExitPreviewEntry
+	entry.setFundingEligibility(desc, nil, 1)
+	require.Empty(t, entry.AdmissionError)
+	require.ErrorIs(t, entry.RoundCommitment, vtxo.ErrForfeitInFlight)
+}
+
 // TestExitPlanEntryWarnsCommittedVTXO asserts the exit preview reports a VTXO
 // committed to a cooperative round as an advisory alongside a full pricing,
 // rather than failing the entry.
@@ -467,4 +484,37 @@ func TestExitPlanRoundCommitmentScope(t *testing.T) {
 			require.ErrorIs(t, err, vtxo.ErrForfeitInFlight)
 		})
 	}
+}
+
+// TestPreviewUnilateralExitUnknownTargets retains refused entries in request
+// order and avoids consulting the wallet when none can contribute a proof.
+func TestPreviewUnilateralExitUnknownTargets(t *testing.T) {
+	t.Parallel()
+
+	r := newReadyExitPlanRPCServer()
+	store := db.NewTestDB(t)
+	r.server.vtxoStore = db.
+		NewStore(
+			store.DB,
+			store.Queries,
+			store.Backend(),
+			btclog.Disabled,
+		).
+		NewVTXOStore(clock.NewDefaultClock())
+
+	first, second := wire.OutPoint{Index: 7}, wire.OutPoint{Index: 8}
+	outpoints := []string{first.String(), second.String()}
+	preview, err := r.PreviewUnilateralExit(
+		t.Context(), &ExitPlanRequest{
+			Outpoints: outpoints,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, preview.Entries, len(outpoints))
+	for i, entry := range preview.Entries {
+		require.Equal(t, outpoints[i], entry.Outpoint)
+		require.NotEmpty(t, entry.AdmissionError)
+	}
+	require.Zero(t, preview.AmountSat)
+	require.Zero(t, preview.Quote)
 }

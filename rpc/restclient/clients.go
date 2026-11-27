@@ -1352,6 +1352,17 @@ func (c *WalletServiceClient) GetExitPlan(ctx context.Context,
 	return out, err
 }
 
+// PreviewUnilateralExit quotes the full selection without wallet side effects.
+func (c *WalletServiceClient) PreviewUnilateralExit(ctx context.Context,
+	in *wavewalletrpc.GetExitPlanRequest, _ ...grpc.CallOption) (
+	*wavewalletrpc.PreviewUnilateralExitResponse, error) {
+
+	out := new(wavewalletrpc.PreviewUnilateralExitResponse)
+	err := c.client.Post(ctx, "/v1/wallet/unilateral-exit/preview", in, out)
+
+	return out, err
+}
+
 // ExportExits exports a shared ancestry graph for several targets.
 func (c *WalletServiceClient) ExportExits(ctx context.Context,
 	in *wavewalletrpc.ExportExitsRequest, _ ...grpc.CallOption) (

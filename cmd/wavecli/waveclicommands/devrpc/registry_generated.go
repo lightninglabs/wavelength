@@ -614,6 +614,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "",
 				},
 				{
+					Name:     "PreviewUnilateralExit",
+					Aliases:  []string{"preview-unilateral-exit"},
+					Input:    "wavewalletrpc.GetExitPlanRequest",
+					Output:   "wavewalletrpc.PreviewUnilateralExitResponse",
+					Comments: "",
+				},
+				{
 					Name:     "ExportExit",
 					Aliases:  []string{"export-exit"},
 					Input:    "wavewalletrpc.ExportExitRequest",

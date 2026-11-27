@@ -448,6 +448,28 @@ func GetExitPlan(reqJSON []byte) ([]byte, error) {
 	return marshal(res)
 }
 
+// PreviewUnilateralExit quotes the selected targets without wallet writes.
+func PreviewUnilateralExit(reqJSON []byte) ([]byte, error) {
+	client, parentCtx, err := activeClient()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := readContext(parentCtx)
+	defer cancel()
+
+	var req wavewalletdk.GetExitPlanRequest
+	if err := decode(reqJSON, &req); err != nil {
+		return nil, err
+	}
+
+	res, err := client.PreviewUnilateralExit(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return marshal(res)
+}
+
 // SweepWallet previews or broadcasts a backing-wallet sweep. reqJSON decodes to
 // wavewalletdk.SweepWalletRequest; the response is
 // wavewalletdk.SweepWalletResult.

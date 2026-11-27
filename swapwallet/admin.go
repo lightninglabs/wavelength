@@ -348,6 +348,67 @@ func (s *Service) getExitPlan(ctx context.Context,
 	}, nil
 }
 
+// PreviewUnilateralExit exposes the daemon's shared-ancestry quote to mobile.
+func (s *Service) PreviewUnilateralExit(ctx context.Context,
+	req *wavewalletrpc.GetExitPlanRequest) (
+	*wavewalletrpc.PreviewUnilateralExitResponse, error) {
+
+	if s.deps == nil || s.deps.RPCServer == nil {
+		return nil, statusSwapBackendUnavailable()
+	}
+	preview, err := s.deps.RPCServer.PreviewUnilateralExit(
+		ctx, &waved.ExitPlanRequest{
+			Outpoints:  req.GetOutpoints(),
+			ConfTarget: req.GetConfTarget(),
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	result := &wavewalletrpc.PreviewUnilateralExitResponse{
+		SelectedAmountSat:      preview.AmountSat,
+		FeeRateSatPerVbyte:     preview.FeeRate,
+		EstimatedTransactions:  preview.Quote.Transactions,
+		EstimatedNetworkFeeSat: int64(preview.Quote.NetworkFee),
+		WalletFeeSat:           int64(preview.Quote.WalletFee),
+		AdditionalFundingSat:   int64(preview.Quote.Deposit),
+	}
+	switch {
+	case preview.Quote.Transactions == 0:
+		// No viable unfinished target contributed a fee requirement.
+		break
+
+	case preview.Quote.Deposit > 0:
+		result.FundingAction = wavewalletrpc.UnilateralExitFundingAction_UNILATERAL_EXIT_FUNDING_ACTION_DEPOSIT
+
+	case preview.Quote.ReuseChange:
+		result.FundingAction = wavewalletrpc.UnilateralExitFundingAction_UNILATERAL_EXIT_FUNDING_ACTION_REUSE_CONFIRMED_CHANGE
+
+	default:
+		result.FundingAction = wavewalletrpc.UnilateralExitFundingAction_UNILATERAL_EXIT_FUNDING_ACTION_USE_CONFIRMED_INPUTS
+	}
+	for _, entry := range preview.Entries {
+		result.Entries = append(
+			result.Entries, &wavewalletrpc.UnilateralExitTarget{
+				Outpoint:          entry.Outpoint,
+				AmountSat:         entry.AmountSat,
+				BatchExpiryHeight: entry.BatchExpiry,
+				ExitStatus: exitStatusFromDaemon(
+					entry.Status.GetStatus(),
+				),
+				SweepTxid:      entry.Status.GetSweepTxid(),
+				LastError:      entry.Status.GetLastError(),
+				AdmissionError: entry.AdmissionError,
+				RoundCommitment: errorString(
+					entry.RoundCommitment,
+				),
+			},
+		)
+	}
+
+	return result, nil
+}
+
 // sweepWallet projects a backing-wallet sweep preview or broadcast onto the
 // wallet-facing RPC response.
 func (s *Service) sweepWallet(ctx context.Context,

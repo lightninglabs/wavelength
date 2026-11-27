@@ -320,6 +320,13 @@ func (f *fakeRPCServer) ExitSummary(_ context.Context) (
 	return f.exitSummaryResp, f.exitSummaryErr
 }
 
+// PreviewUnilateralExit supplies the read-only preview fixture.
+func (f *fakeRPCServer) PreviewUnilateralExit(_ context.Context,
+	_ *waved.ExitPlanRequest) (*waved.WalletExitPreview, error) {
+
+	return &waved.WalletExitPreview{}, nil
+}
+
 func (f *fakeRPCServer) GetExitPlan(_ context.Context,
 	req *waved.ExitPlanRequest) (*waved.ExitPlanResponse, error) {
 
