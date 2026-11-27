@@ -444,14 +444,10 @@ wavecli recv --offchain --amt 5000 --memo coffee
 wavecli dev daemon NewAddress
 ```
 
-### `dev daemon NewAssetReceiveKeys` / `ImportAssetProof` / `ListOwnedAssets`
+### `dev daemon ListOwnedAssets` / `NewAssetFundingAddress`
 
-Receive a Taproot Asset on chain into the daemon's asset wallet and list what
-it holds. `NewAssetReceiveKeys` returns the script key and the
-anchor internal key a sender transfers the asset to. The sender hands over
-the proof file of that transfer, and `ImportAssetProof` verifies it, checks
-that it is of the asset named in `asset_ref`, and adds the asset to the
-wallet.
+`ListOwnedAssets` lists the Taproot Assets the daemon's asset wallet holds on
+chain. The wallet receives assets at an address, described below.
 
 An asset deposit spends the daemon wallet's Bitcoin.
 `NewAssetFundingAddress` returns a backing-wallet address to send that
@@ -459,9 +455,6 @@ Bitcoin to.
 
 ```bash
 wavecli dev daemon NewAssetFundingAddress
-wavecli dev daemon NewAssetReceiveKeys
-wavecli dev daemon ImportAssetProof --proof_file <base64 proof file> \
-    --asset_ref <asset id or group key>
 wavecli dev daemon ListOwnedAssets
 ```
 
