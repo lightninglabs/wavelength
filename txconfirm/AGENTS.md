@@ -130,6 +130,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfir
   may already be mined while its notification is still queued. Pending
   fee-input fanouts likewise retain their candidate/watch on these errors;
   they must not rebuild merely because a confirmed rebroadcast was ambiguous.
+  A lost first split receipt retains the signed bytes, watches their local
+  txid and excludes the original split inputs from other fee children.
   Pending fanouts also retain their reservations on transport or unclassified
   rebroadcast failures. The operational error stays visible, and retries
   remain block-paced; only an explicit rejection uses the rebuild path.

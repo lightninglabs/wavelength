@@ -389,6 +389,10 @@ type CPFPBroadcaster struct {
 	// has terminally confirmed or failed.
 	parentStates map[chainhash.Hash]*parentBumpState
 
+	// fanoutInputs belong to the pending split, including when its
+	// broadcast receipt was lost and the wallet still lists the inputs.
+	fanoutInputs []*wire.TxIn
+
 	// changeScripts owns one destination per tracked parent, including when
 	// no fee input or accepted package exists yet. Keep it separate from
 	// parentStates: allocating an address is not replacement-fee history,
@@ -674,6 +678,10 @@ func (b *CPFPBroadcaster) excludedOutpointsForOtherParents(
 	parentTxid chainhash.Hash) map[wire.OutPoint]struct{} {
 
 	excluded := make(map[wire.OutPoint]struct{})
+	// The wallet may still list inputs spent by an unconfirmed split.
+	for _, input := range b.fanoutInputs {
+		excluded[input.PreviousOutPoint] = struct{}{}
+	}
 	for otherTxid, state := range b.parentStates {
 		if otherTxid == parentTxid {
 			continue

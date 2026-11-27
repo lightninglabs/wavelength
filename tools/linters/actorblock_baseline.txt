@@ -36,8 +36,6 @@ github.com/lightninglabs/wavelength/txconfirm.TxBroadcasterActor.registerConfWat
 github.com/lightninglabs/wavelength/txconfirm.TxBroadcasterActor.registerFanoutConfWatch await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
 github.com/lightninglabs/wavelength/txconfirm.TxBroadcasterActor.unregisterConfWatch await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
 github.com/lightninglabs/wavelength/txconfirm.TxBroadcasterActor.unregisterFanoutConfWatch await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
-github.com/lightninglabs/wavelength/txconfirm.feeBumpStateFanoutPending.processDemands await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
-github.com/lightninglabs/wavelength/txconfirm.feeBumpStateIdle.processDemands await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
 github.com/lightninglabs/wavelength/unroll.behavior.driveEvent await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
 github.com/lightninglabs/wavelength/unroll.behavior.ensureBlockSubscription await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
 github.com/lightninglabs/wavelength/unroll.behavior.ensureNodeConfirmed await=1 # legacy Await in a turn, migrate to AskThen or DetachAskPromise
