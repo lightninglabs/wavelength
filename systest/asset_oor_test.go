@@ -372,12 +372,12 @@ type assetOORTestOperator struct {
 	mailboxAddr string
 	mailbox     *fakeMailboxServer
 
-	mu              sync.Mutex
-	fixture         *assetOORRoundFixture
-	registeredByHex map[string]string
-	submittedByID   map[chainhash.Hash]*submittedOORSession
-	indexedOutputs  []indexedOOROutput
-	nextEventID     uint64
+	mu                  sync.Mutex
+	fixture             *assetOORRoundFixture
+	registeredByHex     map[string]string
+	submittedByID       map[chainhash.Hash]*submittedOORSession
+	indexedOutputs      []indexedOOROutput
+	nextEventIDByScript map[string]uint64
 }
 
 // newAssetOORTestOperator starts a fake operator configured for asset OOR
@@ -811,8 +811,15 @@ func (o *assetOORTestOperator) handleFinalizePackage(
 			}
 		}
 
-		o.nextEventID++
-		eventID := o.nextEventID
+		// Number recipient events per routing script starting at 1 so
+		// fresh scripts in the same OOR session collide on event_id=1,
+		// matching real operator numbering.
+		if o.nextEventIDByScript == nil {
+			o.nextEventIDByScript = make(map[string]uint64)
+		}
+		scriptKey := string(routingScript)
+		o.nextEventIDByScript[scriptKey]++
+		eventID := o.nextEventIDByScript[scriptKey]
 
 		var assetTransfer []byte
 		if len(rec.TaprootAssetRoot) > 0 {
