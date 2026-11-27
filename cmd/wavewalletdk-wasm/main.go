@@ -95,9 +95,6 @@ func walletCall(_ js.Value, args []js.Value) any {
 	case "status":
 		return promise(jsonNoArg(mobile.Status))
 
-	case "newAssetReceiveKeys":
-		return promise(jsonNoArg(mobile.NewAssetReceiveKeys))
-
 	case "newAssetFundingAddress":
 		return promise(jsonNoArg(mobile.NewAssetFundingAddress))
 
@@ -119,9 +116,6 @@ func walletCall(_ js.Value, args []js.Value) any {
 
 	case "deposit":
 		return promise(jsonVerb(req, mobile.Deposit))
-
-	case "importAssetProof":
-		return promise(jsonVerb(req, mobile.ImportAssetProof))
 
 	case "depositAsset":
 		return promise(jsonVerb(req, mobile.DepositAsset))
