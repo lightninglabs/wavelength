@@ -644,6 +644,11 @@ type VtxoAncestryPath struct {
 	CommitmentHeight  int32
 }
 
+type WalletFeeSplit struct {
+	Singleton int64
+	Candidate []byte
+}
+
 type WalletUtxoLog struct {
 	EntryID       int64
 	OutpointHash  []byte

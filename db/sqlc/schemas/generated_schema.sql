@@ -2051,6 +2051,11 @@ CREATE TABLE vtxos (
     FOREIGN KEY (round_id) REFERENCES rounds(round_id)
 );
 
+CREATE TABLE wallet_fee_split (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    candidate BLOB NOT NULL
+);
+
 CREATE TABLE wallet_utxo_log (
     entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
 

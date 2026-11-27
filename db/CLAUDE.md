@@ -165,7 +165,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   have several rows. `UpdateReceive` writes the proofs in the transaction
   that moves the receive, so the wallet holds a receive's assets exactly
   when the receive reads confirmed.
-- `LatestMigrationVersion = 32` — current schema version.
+- `LatestMigrationVersion = 33` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -554,6 +554,9 @@ when adding one.
   the transfers announced to them. Both carry an auto-increment key that
   orders rows of the same creation time. The receive state has no upper
   bound in the schema, because the engine defines the states.
+
+- `000033_fee_input_split` stores the signed wallet split and its output
+  assignments until the broadcaster reconciles it.
 
 ## Deep Docs
 

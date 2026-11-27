@@ -73,6 +73,7 @@ type feeBumpOutboxEvent interface {
 // accounting stays consistent with the CPFP-child build path, exactly as the
 // old controller did.
 type feeBumpEnvironment struct {
+	journal FeeSplitJournal
 	// transitionTimeout bounds wallet and chainsource IO while the actor
 	// joins a transition. Tests may shorten it before the first event.
 	transitionTimeout time.Duration
@@ -143,6 +144,19 @@ type feeInputDemand struct {
 // broadcast and awaiting confirmation. It is the payload carried by the
 // fanout-pending FSM state.
 type pendingFeeInputFanout struct {
+	// journalEntry retains the exact database record for compare-and-clear.
+	journalEntry []byte
+
+	// saved records whether the journal acknowledged the candidate.
+	saved bool
+
+	// heightHint anchors the confirmation watch across restart.
+	heightHint int32
+
+	// confirmedSpender retains a one-shot spend or confirmation callback
+	// while retrying a failed journal clear.
+	confirmedSpender *chainhash.Hash
+
 	// txid is the fanout transaction hash used to match the confirmation
 	// callback and the rebroadcast response.
 	txid chainhash.Hash
@@ -188,17 +202,18 @@ type feeBumpDemandsObserved struct {
 // feeBumpEventSealed marks feeBumpDemandsObserved as a fanout event.
 func (e *feeBumpDemandsObserved) feeBumpEventSealed() {}
 
-// feeBumpFanoutConfirmedEvent is fed to the FSM when a confirmation callback is
-// observed. If the txid matches the in-flight fanout, the fanout-pending state
-// promotes its predicted outputs into used fee inputs and returns to idle;
-// otherwise it is a no-op self-loop.
-type feeBumpFanoutConfirmedEvent struct {
-	// txid identifies the transaction whose confirmation was observed.
+// feeBumpFanoutResolved identifies the confirmed spender of a candidate
+// input. A confirmation of the split itself provides the same evidence.
+type feeBumpFanoutResolved struct {
+	// txid identifies the watched candidate, excluding stale callbacks.
 	txid chainhash.Hash
+
+	// spender is the confirmed transaction consuming the input.
+	spender chainhash.Hash
 }
 
-// feeBumpEventSealed marks feeBumpFanoutConfirmedEvent as a fanout event.
-func (e *feeBumpFanoutConfirmedEvent) feeBumpEventSealed() {}
+// feeBumpEventSealed marks feeBumpFanoutResolved as a fanout event.
+func (e *feeBumpFanoutResolved) feeBumpEventSealed() {}
 
 // feeBumpParentEvicted is fed to the FSM when a tracked parent reaches a
 // terminal state or is otherwise evicted. The fanout-pending state drops that
@@ -267,8 +282,9 @@ func (r *feeBumpErrorReporter) ReportError(err error) {
 // The environment is returned alongside the machine so the actor can read back
 // the per-turn operational error (env.takeLastErr) that transitions stash
 // rather than return.
-func newFeeBumpStateMachine(broadcaster *CPFPBroadcaster,
-	log btclog.Logger) (*feeBumpStateMachine, *feeBumpEnvironment) {
+func newFeeBumpStateMachine(broadcaster *CPFPBroadcaster, log btclog.Logger,
+	pending *pendingFeeInputFanout) (*feeBumpStateMachine,
+	*feeBumpEnvironment) {
 
 	env := &feeBumpEnvironment{
 		transitionTimeout: 30 * time.Second,
@@ -276,6 +292,10 @@ func newFeeBumpStateMachine(broadcaster *CPFPBroadcaster,
 		log:               log,
 	}
 
+	var initial feeBumpState = &feeBumpStateIdle{}
+	if pending != nil {
+		initial = &feeBumpStateFanoutPending{pending: pending}
+	}
 	cfg := protofsm.StateMachineCfg[
 		feeBumpEvent, feeBumpOutboxEvent, *feeBumpEnvironment,
 	]{
@@ -283,7 +303,7 @@ func newFeeBumpStateMachine(broadcaster *CPFPBroadcaster,
 		ErrorReporter: &feeBumpErrorReporter{
 			log: log,
 		},
-		InitialState: &feeBumpStateIdle{},
+		InitialState: initial,
 		Env:          env,
 	}
 

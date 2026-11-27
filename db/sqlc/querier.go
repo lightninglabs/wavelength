@@ -24,6 +24,7 @@ type Querier interface {
 	BackfillLedgerRoundUuid(ctx context.Context, arg BackfillLedgerRoundUuidParams) error
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
 	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
+	ClearWalletFeeSplit(ctx context.Context, candidate []byte) error
 	CloseRoundAdmissionDeadline(ctx context.Context, roundID string) error
 	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error)
 	ConstrainRoundAdmissionDeadline(ctx context.Context, arg ConstrainRoundAdmissionDeadlineParams) error
@@ -537,6 +538,7 @@ type Querier interface {
 	// the classifications that are supposed to book a leg; audit-only
 	// classifications legitimately appear here.
 	ListWalletUTXOLogWithoutLedgerLeg(ctx context.Context) ([]WalletUtxoLog, error)
+	LoadWalletFeeSplit(ctx context.Context) ([]byte, error)
 	// Status 2 = Failed (anchored to Go iota in db/credit_operation_store.go
 	// CreditOpStatus). Failed operations never dedup a keyed retry, so the lookup
 	// skips them: only a pending or completed operation answers for an op_key.
@@ -606,6 +608,7 @@ type Querier interface {
 	// round actually adopted, so a round can never release a deposit another round
 	// has since taken.
 	RevertRoundAdoptedBoardingIntents(ctx context.Context, arg RevertRoundAdoptedBoardingIntentsParams) error
+	SaveWalletFeeSplit(ctx context.Context, candidate []byte) (int64, error)
 	// SetAssetDepositError records the latest failure of a deposit that has not
 	// confirmed.
 	SetAssetDepositError(ctx context.Context, arg SetAssetDepositErrorParams) error
