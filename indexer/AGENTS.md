@@ -28,9 +28,9 @@ proofs for proof-of-control.
   under the explicit `policy_script_scope` type. It creates no registration.
   Legacy `script_scope` proofs keep their original wire format.
   `TaprootScriptScope.SignerScript` is a local-only script key lookup override
-  for composed asset outputs: the query and signed proof still cover the
-  composed `PkScript`, while the signer key is resolved via the uncomposed
-  `SignerScript`.
+  for composed asset outputs: the RPC request queries the composed `PkScript`,
+  while `SignerScript` resolves the local uncomposed receive key that signs
+  the `script_scope` proof.
 - `BuildListVTXOsByScriptsTaprootRequest(ctx, scopes, afterCursor []byte, limit, statusFilter)` / `ListVTXOsByScriptsTaproot(ctx, scopes, afterCursor []byte, limit, statusFilter)` — Build and execute taproot-scope-proofed `ListVTXOsByScripts` queries. `afterCursor` is an opaque `[]byte` keyset cursor passed through unchanged. The proof covers each pkScript using owner-key signatures gated on script scope.
 - `BuildGetOORSessionByTxidTaprootRequest` / `GetOORSessionByTxidTaproot` — Build and execute a taproot-proofed OOR session lookup by Ark txid.
 - `BuildListOORRecipientEventsByScriptTaprootRequest` / `ListOORRecipientEventsByScriptTaproot` — Build and execute a taproot-proofed listing of OOR receive events for a given pkScript.
