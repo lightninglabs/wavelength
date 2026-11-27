@@ -134,7 +134,10 @@ func WalletInputOutpoints(inputs []TransferInput) []wire.OutPoint {
 
 // Validate performs basic structural validation. For custom spend
 // paths, the TapScript and ClientKey requirements are relaxed since
-// the spend path carries its own signing context. For operator-funded
+// the spend path carries its own signing context. For asset-bearing
+// VTXOs, TapScript stays nil (the store omits plain uncomposed tapscripts
+// for composed outputs) and EffectiveSpendPath derives the composed spend
+// path from VTXOPolicyTemplate and TaprootAssetRoot. For operator-funded
 // float inputs, no local key material is carried and the lease must supply
 // the policy template, owner leaf policy, and operator key explicitly.
 func (i *TransferInput) Validate() error {
@@ -152,7 +155,7 @@ func (i *TransferInput) Validate() error {
 		return fmt.Errorf("vtxo pkScript must be provided")
 
 	case !i.IsCustomSpend() && !i.OperatorFunded &&
-		i.VTXO.TapScript == nil:
+		i.VTXO.TaprootAssetRoot == nil && i.VTXO.TapScript == nil:
 		return fmt.Errorf("vtxo tapscript must be provided")
 
 	case !i.IsCustomSpend() && !i.OperatorFunded &&

@@ -74,14 +74,14 @@ type fakeMailboxServer struct {
 	operatorMailbox  string
 	operatorInfoResp *arkrpc.GetInfoResponse
 
-	mu              sync.Mutex
-	mailboxes       map[string][]*mailboxpb.Envelope
-	nextEventSeq    map[string]uint64
-	joinRoundReqs   []*roundpb.JoinRoundRequest
-	joinRoundEnvs   []*mailboxpb.Envelope
-	oorSubmitReqs   []*oorpb.SubmitPackageRequest
-	oorSubmitEnvs   []*mailboxpb.Envelope
-	inboxSignalChan chan struct{}
+	mu            sync.Mutex
+	mailboxes     map[string][]*mailboxpb.Envelope
+	nextEventSeq  map[string]uint64
+	joinRoundReqs []*roundpb.JoinRoundRequest
+	joinRoundEnvs []*mailboxpb.Envelope
+	oorSubmitReqs []*oorpb.SubmitPackageRequest
+	oorSubmitEnvs []*mailboxpb.Envelope
+	inboxSignal   chan struct{}
 
 	// failRoundOnJoin, when set, makes the operator push this
 	// ClientRoundFailedResp back to the client immediately on every
@@ -92,6 +92,11 @@ type fakeMailboxServer struct {
 	// feeQuote, when set, answers EstimateFee. Unset leaves the RPC
 	// unimplemented, so daemons fall back to the operator's minimum fee.
 	feeQuote *arkrpc.EstimateFeeResponse
+
+	// envelopeHandler, when set, intercepts inbound envelopes addressed
+	// to the operator or indexer before the default switch. Returning
+	// handled=true suppresses the default handler.
+	envelopeHandler func(context.Context, *mailboxpb.Envelope) (bool, error)
 }
 
 // newFakeMailboxServer constructs a fake mailbox edge with the given operator
@@ -107,7 +112,7 @@ func newFakeMailboxServer(t *testing.T, operatorMailbox string,
 		operatorInfoResp: operatorInfoResp,
 		mailboxes:        make(map[string][]*mailboxpb.Envelope),
 		nextEventSeq:     make(map[string]uint64),
-		inboxSignalChan:  make(chan struct{}, 1),
+		inboxSignal:      make(chan struct{}),
 	}
 }
 
@@ -168,7 +173,9 @@ func (s *fakeMailboxServer) Send(ctx context.Context,
 	expectedCompound := serverconn.CompoundMailboxID(
 		s.operatorMailbox, env.Sender,
 	)
-	if env.Recipient == expectedCompound {
+	if env.Recipient == expectedCompound ||
+		env.Recipient == serverconn.IndexerMailboxID {
+
 		if err := s.handleOperatorEnvelope(ctx, env); err != nil {
 			return nil, err
 		}
@@ -194,7 +201,7 @@ func (s *fakeMailboxServer) Pull(ctx context.Context,
 	waitTimeout := time.Duration(req.WaitTimeoutMs) * time.Millisecond
 
 	for {
-		envelopes, nextCursor := s.pullBatch(
+		envelopes, nextCursor, sig := s.pullBatch(
 			req.MailboxId, req.Cursor, req.MaxEnvelopes,
 		)
 		if len(envelopes) > 0 {
@@ -223,7 +230,7 @@ func (s *fakeMailboxServer) Pull(ctx context.Context,
 
 			return nil, ctx.Err()
 
-		case <-s.inboxSignalChan:
+		case <-sig:
 			if !timer.Stop() {
 				<-timer.C
 			}
@@ -275,6 +282,19 @@ func (s *fakeMailboxServer) handleOperatorEnvelope(ctx context.Context,
 
 	if env.Rpc == nil {
 		return nil
+	}
+
+	s.mu.Lock()
+	handler := s.envelopeHandler
+	s.mu.Unlock()
+	if handler != nil {
+		handled, err := handler(ctx, env)
+		if err != nil {
+			return err
+		}
+		if handled {
+			return nil
+		}
 	}
 
 	switch {
@@ -448,16 +468,15 @@ func (s *fakeMailboxServer) enqueueEnvelope(env *mailboxpb.Envelope) {
 
 	s.mailboxes[env.Recipient] = append(s.mailboxes[env.Recipient], env)
 
-	select {
-	case s.inboxSignalChan <- struct{}{}:
-	default:
-	}
+	close(s.inboxSignal)
+	s.inboxSignal = make(chan struct{})
 }
 
 // pullBatch returns the available envelopes for a mailbox starting at the
-// requested cursor along with the exclusive next cursor.
+// requested cursor along with the exclusive next cursor and a broadcast
+// channel closed when any new envelope arrives.
 func (s *fakeMailboxServer) pullBatch(mailboxID string, cursor uint64,
-	maxEnvelopes uint32) ([]*mailboxpb.Envelope, uint64) {
+	maxEnvelopes uint32) ([]*mailboxpb.Envelope, uint64, <-chan struct{}) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -490,7 +509,7 @@ func (s *fakeMailboxServer) pullBatch(mailboxID string, cursor uint64,
 		}
 	}
 
-	return batch, nextCursor
+	return batch, nextCursor, s.inboxSignal
 }
 
 // oorSubmitPackages returns a cloned snapshot of recorded OOR submit requests.

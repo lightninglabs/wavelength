@@ -639,6 +639,70 @@ func (m *SelectAndLockVTXOsResponse) MessageType() string {
 // walletRespSealed implements the sealed WalletResp interface.
 func (m *SelectAndLockVTXOsResponse) walletRespSealed() {}
 
+// SelectAndLockAssetVTXOsRequest asks the wallet actor to select live Taproot
+// Asset VTXOs of one asset reference covering a target unit amount and lock
+// them for an out-of-round asset transfer.
+type SelectAndLockAssetVTXOsRequest struct {
+	actor.BaseMessage
+
+	// AssetRef is the canonical SDK asset reference to select.
+	AssetRef string
+
+	// TargetAmount is the minimum asset units the selected VTXOs must
+	// cover.
+	TargetAmount uint64
+
+	// MaxInputs bounds how many asset VTXOs may be merged in one transfer.
+	MaxInputs int
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *SelectAndLockAssetVTXOsRequest) MessageType() string {
+	return "SelectAndLockAssetVTXOsRequest"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *SelectAndLockAssetVTXOsRequest) walletMsgSealed() {}
+
+// SelectedAssetVTXO describes an asset-bearing VTXO selected and locked for an
+// out-of-round asset transfer.
+type SelectedAssetVTXO struct {
+	// Outpoint is the selected VTXO's outpoint.
+	Outpoint wire.OutPoint
+
+	// ReserveEpoch is the manager reservation epoch for this VTXO.
+	ReserveEpoch uint64
+
+	// Amount is the Bitcoin carrier value of this VTXO in satoshis.
+	Amount btcutil.Amount
+
+	// AssetAmount is the Taproot Asset unit balance carried by this VTXO.
+	AssetAmount uint64
+
+	// PkScript is the composed taproot output script for this VTXO.
+	PkScript []byte
+}
+
+// SelectAndLockAssetVTXOsResponse returns the asset VTXOs selected and locked
+// for an out-of-round asset transfer.
+type SelectAndLockAssetVTXOsResponse struct {
+	actor.BaseMessage
+
+	// SelectedVTXOs is the set of asset VTXOs locked for this operation.
+	SelectedVTXOs []SelectedAssetVTXO
+
+	// TotalAssetSelected is the sum of asset units across SelectedVTXOs.
+	TotalAssetSelected uint64
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *SelectAndLockAssetVTXOsResponse) MessageType() string {
+	return "SelectAndLockAssetVTXOsResponse"
+}
+
+// walletRespSealed implements the sealed WalletResp interface.
+func (m *SelectAndLockAssetVTXOsResponse) walletRespSealed() {}
+
 // UnlockVTXOsRequest releases locks on VTXOs that were previously selected
 // via SelectAndLockVTXOsRequest. This is used when an OOR transfer fails
 // or is cancelled, allowing the VTXOs to be used in future operations.

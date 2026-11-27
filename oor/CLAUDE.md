@@ -110,17 +110,41 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 - Incoming receive never performs a synchronous unary RPC inside the durable
   actor's DB transaction; both phase-1 hint resolution and phase-2
   authoritative metadata lookup go through durable `serverconn` query
-  messages and return as fresh events.
-- Incoming batch expiry is authenticated by
+  messages and return as fresh events. Multi-output transfers owned by the
+  same wallet (such as asset change plus Bitcoin carrier return in one OOR
+  session) serialize distinct per-script `IncomingHintKey{ScriptHash, EventID}`
+  hints per session (because operators number `recipient_event_id` per
+  `pk_script` starting at 1): concurrent distinct hints park in FIFO order on
+  `parkedSelfHints` and redrive at terminal reap, `ReceiveCompleted.CompletedHints`
+  (TLV `27`), `ActiveScriptHash` (TLV `29`), and `MaterializedPlainScripts`
+  (TLV `31`) keep already-materialized plain Bitcoin scripts dormant without
+  reopening while letting distinct unmaterialized hints run fresh passes
+  (preserving prior `ReceiveCompleted` if a follow-up pass fails).
+- Incoming batch expiry and Taproot Asset packages are authenticated by
   `AuthenticateIncomingMetadataRequest` before materialization opens its DB
   transaction. Indexer expiry and creation-height scalars are replaced by
   the earliest sweep maturity and confirmation height from the same local
-  evidence. Chain failures retry the outbox; invalid sweep/tree evidence
-  fails terminally. Contradictory authenticated heights also fail terminally
-  before persistence, including on replay and synchronous recovery. The
+  evidence. For asset-bearing incoming outputs, `VerifyIncomingAssetPackage`
+  verifies the sealed Ark package against the asset backend and authenticated
+  lineage synchronously outside the actor's SQLite write lock (marking
+  `AssetVerified = true`); per-output asset verification failures or a nil
+  verifier (assets disabled) are isolated to the affected asset output so
+  sibling plain Bitcoin outputs still materialize. `handleMaterializeIncoming`
+  refuses to store unverified asset outputs, skips persisting/notifying
+  already-terminal stored VTXO rows, persists `TaprootAssetRoot`/`Ref`/`Amount`/
+  `TaprootAssetSealedPackage` (with canonical lowercased `Ref`) on the
+  materialized `vtxo.Descriptor`, and checks asset equality on duplicate-VTXO
+  idempotency. `QueryIncomingMetadataRequest` passes each asset recipient's
+  uncomposed `RoutingPkScript()` in `SignerScripts` parallel to its composed
+  `PkScript`. Proof-backend and chain failures retry with bounded backoff;
+  structural/malformed asset errors (`ErrInvalidIncomingAssetPackage`) and
+  contradictory authenticated heights fail terminally before persistence. The
   descriptor's relative expiry comes from its matching policy template,
   not from operator configuration. Custom policies consider only canonical
   block-mode CSV sequences; CLTV non-final sentinels are not block delays.
+- `StartTransferRequest.PreparedSubmit` (optional odd TLV type `11`) forwards a
+  pre-built `*PreparedSubmitPackage` through `OORRegistryActor` into
+  `StartTransferEvent.PreparedSubmit` for asset OOR transfers.
 - Snapshots are versioned per direction (`OutgoingSnapshot.Version = 7`,
   `IncomingSnapshot.Version = 1`); restore rejects a zero or unknown future
   version and `encodeOutgoingSnapshot` enforces `maxOORMessageSize` (16 MiB)
@@ -150,11 +174,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   `prePONRReserveEpochs`), ledger accounting (`queueVTXOSent`), outgoing
   session summaries (`FillOutgoingSummary`), and consumed-input package
   bindings (`persistOutgoingPackage`, which preserves original input indices).
-- Standard (non-custom-spend) asset-bearing `TransferInput` spends derive
-  composed control blocks through `arkscript.ComposeWithSiblingRoot` in
-  `EffectiveSpendPath`, used uniformly by checkpoint signing and
-  operator-signature verification. Custom-spend paths supply their own
-  explicit `SpendPath`.
+- Standard (non-custom-spend) asset-bearing `TransferInput` spends keep
+  `VTXO.TapScript` nil (matching `db.VTXOStore` and incoming asset
+  materialization) and derive composed control blocks through
+  `arkscript.ComposeWithSiblingRoot` in `EffectiveSpendPath`, used uniformly
+  by checkpoint signing and operator-signature verification. Custom-spend
+  paths supply their own explicit `SpendPath`.
 - `Failed.PrePONR` is true only when an outgoing session failed from Idle,
   `AwaitingArkSignatures`, or `AwaitingSubmitAccepted`, before the operator
   co-signed a spend. A failure from `AwaitingCheckpointSignatures`,

@@ -249,6 +249,35 @@ func TestOperatorTermsAssets(t *testing.T) {
 	require.Empty(t, terms.AssetRefs)
 }
 
+// TestOperatorTermsOORCarrierPubKey verifies parsing of the optional
+// oor_carrier_pubkey field on GetInfo responses.
+func TestOperatorTermsOORCarrierPubKey(t *testing.T) {
+	t.Parallel()
+
+	carrierPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	terms, err := operatorTermsFromResponse(&arkrpc.GetInfoResponse{
+		Pubkey:           testOperatorPubKeyBytes(t),
+		OorCarrierPubkey: carrierPriv.PubKey().SerializeCompressed(),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, terms.OORCarrierPubKey)
+	require.Equal(
+		t, carrierPriv.PubKey().SerializeCompressed(),
+		terms.OORCarrierPubKey.SerializeCompressed(),
+	)
+
+	// Malformed carrier pubkey is dropped leniently so Bitcoin-only
+	// bootstrap never breaks; SendAssetOOR rejects nil OORCarrierPubKey.
+	terms, err = operatorTermsFromResponse(&arkrpc.GetInfoResponse{
+		Pubkey:           testOperatorPubKeyBytes(t),
+		OorCarrierPubkey: []byte{0x01, 0x02},
+	})
+	require.NoError(t, err)
+	require.Nil(t, terms.OORCarrierPubKey)
+}
+
 // TestNegotiateArkBootstrapZeroSelection proves the client refuses to bootstrap
 // when the operator returns a zero selection (no common version, or a
 // pre-versioning server). There is no legacy fallback.

@@ -25,6 +25,9 @@ preserves its existing codec API through wrappers around this package.
 - Child serialization is deterministic.
 - The complete representation retains cached final signing keys.
 - Asset context is validated before encoding and after restoration.
+- Optional `BatchAssetRoot` (TLV type 7) is emitted only when non-empty and
+  must be exactly 32 bytes when present, keeping Bitcoin-only tree blobs
+  byte-identical.
 
 ## Deep Docs
 

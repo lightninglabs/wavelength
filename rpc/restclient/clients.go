@@ -581,6 +581,17 @@ func (c *DaemonServiceClient) SendOOR(ctx context.Context,
 	return out, err
 }
 
+// SendAssetOOR initiates an out-of-round Taproot Asset VTXO transfer.
+func (c *DaemonServiceClient) SendAssetOOR(ctx context.Context,
+	in *waverpc.SendAssetOORRequest, _ ...grpc.CallOption) (
+	*waverpc.SendAssetOORResponse, error) {
+
+	out := new(waverpc.SendAssetOORResponse)
+	err := c.client.Post(ctx, "/v1/daemon/send-asset-oor", in, out)
+
+	return out, err
+}
+
 // PrepareOOR builds an out-of-round transfer package without submitting it.
 func (c *DaemonServiceClient) PrepareOOR(ctx context.Context,
 	in *waverpc.PrepareOORRequest, _ ...grpc.CallOption) (

@@ -9,10 +9,14 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/indexer"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightninglabs/wavelength/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -463,4 +467,78 @@ func TestFallbackSchnorrSignerPreservesPrimaryError(t *testing.T) {
 		t, err, fallbackErr,
 		"fallback error must be reported alongside primary",
 	)
+}
+
+// TestResolveOwnedReceiveScriptKeyAssetComposed verifies that an incoming
+// asset-bearing recipient output resolves its owning receive key via the
+// uncomposed policy routing script after verifying the composed pkScript.
+func TestResolveOwnedReceiveScriptKeyAssetComposed(t *testing.T) {
+	t.Parallel()
+
+	clientKey := testKeyDescriptor(t, 4)
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policyBytes, err := arkscript.EncodeStandardVTXOTemplate(
+		clientKey.PubKey, operatorPriv.PubKey(), 144,
+	)
+	require.NoError(t, err)
+	template, err := arkscript.DecodePolicyTemplate(policyBytes)
+	require.NoError(t, err)
+	compiled, err := template.Compile()
+	require.NoError(t, err)
+	uncomposedScript, err := txscript.PayToTaprootScript(
+		compiled.OutputKey(),
+	)
+	require.NoError(t, err)
+
+	assetRoot := chainhash.Hash{0xaa, 0xbb}
+	composed, err := arkscript.ComposeWithSiblingRoot(compiled, assetRoot)
+	require.NoError(t, err)
+	composedScript, err := txscript.PayToTaprootScript(
+		composed.OutputKey(),
+	)
+	require.NoError(t, err)
+
+	store := &testReceiveScriptStore{
+		records: []db.OwnedReceiveScriptRecord{{
+			PkScript:  uncomposedScript,
+			ClientKey: clientKey,
+			Source:    db.OwnedReceiveScriptSourceWallet,
+		}},
+	}
+
+	gotKey, err := ResolveOwnedReceiveScriptKey(
+		t.Context(), store, oor.ArkRecipientOutput{
+			OutputIndex:        0,
+			Value:              1_000,
+			PkScript:           composedScript,
+			VTXOPolicyTemplate: policyBytes,
+			Asset: &oortx.RecipientAsset{
+				Root:   assetRoot,
+				Ref:    "asset-usd",
+				Amount: 500,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, clientKey, gotKey)
+
+	// A tampered asset root must fail rather than fall back to uncomposed
+	// ownership lookup.
+	badRoot := chainhash.Hash{0xcc}
+	_, err = ResolveOwnedReceiveScriptKey(
+		t.Context(), store, oor.ArkRecipientOutput{
+			OutputIndex:        0,
+			Value:              1_000,
+			PkScript:           composedScript,
+			VTXOPolicyTemplate: policyBytes,
+			Asset: &oortx.RecipientAsset{
+				Root:   badRoot,
+				Ref:    "asset-usd",
+				Amount: 500,
+			},
+		},
+	)
+	require.ErrorContains(t, err, "does not match pkscript")
 }

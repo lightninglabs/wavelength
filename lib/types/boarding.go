@@ -101,6 +101,11 @@ type OperatorTerms struct {
 	// AssetRefs are the Taproot Assets the operator admits into rounds,
 	// in tap-sdk's asset reference format. Empty means none.
 	AssetRefs []string
+
+	// OORCarrierPubKey is the operator's carrier-float owner public key
+	// advertised in GetInfo for out-of-round Taproot Asset transfers. Nil
+	// means the operator does not advertise an OOR carrier float.
+	OORCarrierPubKey *btcec.PublicKey
 }
 
 // MinVTXOAmountFloor returns the effective minimum for a VTXO output. The

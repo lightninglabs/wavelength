@@ -38,6 +38,7 @@ const (
 	DaemonService_GetIndexedOORSessionByTxid_FullMethodName                     = "/waverpc.DaemonService/GetIndexedOORSessionByTxid"
 	DaemonService_SendVTXO_FullMethodName                                       = "/waverpc.DaemonService/SendVTXO"
 	DaemonService_SendOOR_FullMethodName                                        = "/waverpc.DaemonService/SendOOR"
+	DaemonService_SendAssetOOR_FullMethodName                                   = "/waverpc.DaemonService/SendAssetOOR"
 	DaemonService_PrepareOOR_FullMethodName                                     = "/waverpc.DaemonService/PrepareOOR"
 	DaemonService_SignOORCustomInput_FullMethodName                             = "/waverpc.DaemonService/SignOORCustomInput"
 	DaemonService_SignVTXOForfeit_FullMethodName                                = "/waverpc.DaemonService/SignVTXOForfeit"
@@ -153,6 +154,10 @@ type DaemonServiceClient interface {
 	// SendOOR initiates an out-of-round transfer directly between the
 	// client and operator, without waiting for a round.
 	SendOOR(ctx context.Context, in *SendOORRequest, opts ...grpc.CallOption) (*SendOORResponse, error)
+	// SendAssetOOR initiates an out-of-round Taproot Asset transfer directly
+	// between the client and operator, merging up to eight live asset VTXOs
+	// and leasing an operator carrier float for the new asset leaves.
+	SendAssetOOR(ctx context.Context, in *SendAssetOORRequest, opts ...grpc.CallOption) (*SendAssetOORResponse, error)
 	// PrepareOOR builds the deterministic OOR package without submitting it.
 	// This lets callers collect signatures from external custom-input
 	// participants before calling SendOOR with the same parameters.
@@ -537,6 +542,16 @@ func (c *daemonServiceClient) SendOOR(ctx context.Context, in *SendOORRequest, o
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SendOORResponse)
 	err := c.cc.Invoke(ctx, DaemonService_SendOOR_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SendAssetOOR(ctx context.Context, in *SendAssetOORRequest, opts ...grpc.CallOption) (*SendAssetOORResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SendAssetOORResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SendAssetOOR_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1043,6 +1058,10 @@ type DaemonServiceServer interface {
 	// SendOOR initiates an out-of-round transfer directly between the
 	// client and operator, without waiting for a round.
 	SendOOR(context.Context, *SendOORRequest) (*SendOORResponse, error)
+	// SendAssetOOR initiates an out-of-round Taproot Asset transfer directly
+	// between the client and operator, merging up to eight live asset VTXOs
+	// and leasing an operator carrier float for the new asset leaves.
+	SendAssetOOR(context.Context, *SendAssetOORRequest) (*SendAssetOORResponse, error)
 	// PrepareOOR builds the deterministic OOR package without submitting it.
 	// This lets callers collect signatures from external custom-input
 	// participants before calling SendOOR with the same parameters.
@@ -1299,6 +1318,9 @@ func (UnimplementedDaemonServiceServer) SendVTXO(context.Context, *SendVTXOReque
 }
 func (UnimplementedDaemonServiceServer) SendOOR(context.Context, *SendOORRequest) (*SendOORResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SendOOR not implemented")
+}
+func (UnimplementedDaemonServiceServer) SendAssetOOR(context.Context, *SendAssetOORRequest) (*SendAssetOORResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SendAssetOOR not implemented")
 }
 func (UnimplementedDaemonServiceServer) PrepareOOR(context.Context, *PrepareOORRequest) (*PrepareOORResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PrepareOOR not implemented")
@@ -1785,6 +1807,24 @@ func _DaemonService_SendOOR_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).SendOOR(ctx, req.(*SendOORRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SendAssetOOR_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SendAssetOORRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SendAssetOOR(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SendAssetOOR_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SendAssetOOR(ctx, req.(*SendAssetOORRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2620,6 +2660,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SendOOR",
 			Handler:    _DaemonService_SendOOR_Handler,
+		},
+		{
+			MethodName: "SendAssetOOR",
+			Handler:    _DaemonService_SendAssetOOR_Handler,
 		},
 		{
 			MethodName: "PrepareOOR",

@@ -107,6 +107,10 @@ type StartTransferRequest struct {
 	// Recipients are the Ark tx output scripts/amounts.
 	Recipients []oortx.RecipientOutput
 
+	// PreparedSubmit is an optional pre-committed OOR package whose
+	// Taproot Asset commitments were already built outside the FSM.
+	PreparedSubmit *PreparedSubmitPackage
+
 	// IdempotencyKey identifies this caller intent across crashes and
 	// retries. Empty preserves the historical deterministic-session
 	// behavior.
@@ -142,6 +146,7 @@ func (m *StartTransferRequest) Encode(w io.Writer) error {
 		IdempotencyKey:             m.IdempotencyKey,
 		DispatchRequestData:        m.DispatchRequestData,
 		AdmissionDeadlineUnixNanos: m.AdmissionDeadlineUnixNanos,
+		PreparedSubmit:             m.PreparedSubmit,
 		Recipients: make(
 			[]recipientPayload, 0, len(m.Recipients),
 		),
@@ -212,6 +217,7 @@ func (m *StartTransferRequest) Decode(r io.Reader) error {
 	m.IdempotencyKey = payload.IdempotencyKey
 	m.DispatchRequestData = payload.DispatchRequestData
 	m.AdmissionDeadlineUnixNanos = payload.AdmissionDeadlineUnixNanos
+	m.PreparedSubmit = payload.PreparedSubmit
 
 	m.Inputs = make([]TransferInput, 0, len(payload.Inputs))
 	for i := range payload.Inputs {

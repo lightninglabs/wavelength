@@ -42,6 +42,11 @@ type Tree struct {
 	// For connector trees, this is nil (no sweep script).
 	SweepTapscriptRoot []byte
 
+	// BatchAssetRoot is the optional 32-byte Taproot Asset commitment leaf
+	// hash composed beside SweepTapscriptRoot in BatchOutput. Empty for
+	// Bitcoin-only trees.
+	BatchAssetRoot []byte
+
 	// SweepKey and SweepDelay retain the public operator policy needed to
 	// prove the commitment's expiry offline. They are advisory until bound
 	// to SweepTapscriptRoot and BatchOutput; zero values mean unavailable.
@@ -142,6 +147,7 @@ func (t *Tree) ExtractPathForCoSigners(targetKeys ...*btcec.PublicKey) (*Tree,
 		BatchOutpoint:      t.BatchOutpoint,
 		BatchOutput:        t.BatchOutput,
 		SweepTapscriptRoot: t.SweepTapscriptRoot,
+		BatchAssetRoot:     bytes.Clone(t.BatchAssetRoot),
 		SweepKey:           t.SweepKey,
 		SweepDelay:         t.SweepDelay,
 		AssetContext:       t.AssetContext.cloneForRoot(extractedRoot),
@@ -177,6 +183,7 @@ func (t *Tree) ExtractPathForIndices(leafIndices ...int) (*Tree, error) {
 		BatchOutpoint:      t.BatchOutpoint,
 		BatchOutput:        t.BatchOutput,
 		SweepTapscriptRoot: t.SweepTapscriptRoot,
+		BatchAssetRoot:     bytes.Clone(t.BatchAssetRoot),
 		SweepKey:           t.SweepKey,
 		SweepDelay:         t.SweepDelay,
 		AssetContext:       t.AssetContext.cloneForRoot(extractedRoot),

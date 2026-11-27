@@ -235,46 +235,9 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 	}
 
 	if !snap.OperatorFunded {
-		clientPub, err := btcec.ParsePubKey(snap.ClientPubKey)
+		err := populateClientSnapshotDescriptor(desc, snap, operatorPub)
 		if err != nil {
-			return TransferInput{}, fmt.Errorf("parse client "+
-				"pubkey: %w", err)
-		}
-
-		tapScript, err := arkscript.VTXOTapScript(
-			clientPub, operatorPub, snap.ExitDelay,
-		)
-		if err != nil {
-			return TransferInput{}, fmt.Errorf("rebuild vtxo "+
-				"tapscript: %w", err)
-		}
-
-		tapKey, err := arkscript.VTXOTapKey(
-			clientPub, operatorPub, snap.ExitDelay,
-		)
-		if err != nil {
-			return TransferInput{}, fmt.Errorf("rebuild vtxo "+
-				"tapkey: %w", err)
-		}
-
-		pkScript, err := txscript.PayToTaprootScript(tapKey)
-		if err != nil {
-			return TransferInput{}, fmt.Errorf("build vtxo "+
-				"pkscript: %w", err)
-		}
-
-		desc.ClientKey = keychain.KeyDescriptor{
-			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamily(
-					snap.ClientKeyFamily,
-				),
-				Index: snap.ClientKeyIndex,
-			},
-			PubKey: clientPub,
-		}
-		desc.TapScript = tapScript
-		if len(desc.PkScript) == 0 {
-			desc.PkScript = pkScript
+			return TransferInput{}, err
 		}
 	}
 
@@ -311,6 +274,57 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 	}
 
 	return result, nil
+}
+
+// populateClientSnapshotDescriptor restores the client key descriptor and,
+// for non-asset inputs, the standard VTXO tapscript and fallback pkScript.
+// Asset-bearing VTXOs intentionally keep TapScript nil so plain Bitcoin spend
+// paths cannot derive an uncomposed control block.
+func populateClientSnapshotDescriptor(desc *vtxo.Descriptor,
+	snap *TransferInputSnapshot, operatorPub *btcec.PublicKey) error {
+
+	clientPub, err := btcec.ParsePubKey(snap.ClientPubKey)
+	if err != nil {
+		return fmt.Errorf("parse client pubkey: %w", err)
+	}
+
+	desc.ClientKey = keychain.KeyDescriptor{
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamily(snap.ClientKeyFamily),
+			Index:  snap.ClientKeyIndex,
+		},
+		PubKey: clientPub,
+	}
+
+	if snap.TaprootAssetRoot != nil {
+		return nil
+	}
+
+	tapScript, err := arkscript.VTXOTapScript(
+		clientPub, operatorPub, snap.ExitDelay,
+	)
+	if err != nil {
+		return fmt.Errorf("rebuild vtxo tapscript: %w", err)
+	}
+
+	tapKey, err := arkscript.VTXOTapKey(
+		clientPub, operatorPub, snap.ExitDelay,
+	)
+	if err != nil {
+		return fmt.Errorf("rebuild vtxo tapkey: %w", err)
+	}
+
+	pkScript, err := txscript.PayToTaprootScript(tapKey)
+	if err != nil {
+		return fmt.Errorf("build vtxo pkscript: %w", err)
+	}
+
+	desc.TapScript = tapScript
+	if len(desc.PkScript) == 0 {
+		desc.PkScript = pkScript
+	}
+
+	return nil
 }
 
 // cloneExternalSignatures deep-copies custom input external signatures.

@@ -206,6 +206,7 @@ func TestWavedRPCPermissionsEntityMapping(t *testing.T) {
 		fullDaemonMethod("Board"):            entityOnChain,
 		fullDaemonMethod("SendOnChain"):      entityOnChain,
 		fullDaemonMethod("SendOOR"):          entityOOR,
+		fullDaemonMethod("SendAssetOOR"):     entityOOR,
 		fullDaemonMethod("JoinNextRound"):    entityRound,
 		fullDaemonMethod("EstimateFee"):      entityFees,
 		fullDaemonMethod("ArmVHTLCRecovery"): entityRecovery,

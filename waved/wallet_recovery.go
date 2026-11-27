@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -757,6 +758,7 @@ func (r *RPCServer) recoveryOORHandler(
 		OperatorKey:                terms.PubKey,
 		ExitDelay:                  terms.VTXOExitDelay,
 		AuthenticateIncomingExpiry: r.server.expiryAuthenticator,
+		VerifyIncomingAssetPackage: r.server.incomingAssetVerifier(),
 
 		// Recovery materializes receives without going through the
 		// session actor, so the ledger emission the session behaviour
@@ -831,6 +833,24 @@ func (r *RPCServer) recoverOOREventsForScript(ctx context.Context,
 				ctx, idx, event, handler,
 			)
 			if err != nil {
+				if errors.Is(
+					err, oor.ErrInvalidIncomingAssetPackage,
+				) {
+
+					r.server.log.WarnS(
+						ctx, "Skipping unverifiable "+
+							"asset OOR event "+
+							"during recovery",
+						err,
+						slog.Uint64(
+							"event_id",
+							event.GetEventId(),
+						),
+					)
+
+					continue
+				}
+
 				return err
 			}
 			result.OOREvents++
@@ -870,9 +890,12 @@ func (r *RPCServer) materializeRecoveredOOREvent(ctx context.Context,
 		return fmt.Errorf("decode incoming event: %w", err)
 	}
 
-	recipients, err := oor.ExtractArkRecipients(incoming.ArkPSBT)
-	if err != nil {
-		return fmt.Errorf("extract recipients: %w", err)
+	recipients := oor.CloneArkRecipients(incoming.Recipients)
+	if len(recipients) == 0 {
+		recipients, err = oor.ExtractArkRecipients(incoming.ArkPSBT)
+		if err != nil {
+			return fmt.Errorf("extract recipients: %w", err)
+		}
 	}
 
 	metadataMatches := make(
@@ -939,6 +962,7 @@ func (r *RPCServer) materializeRecoveredOOREvent(ctx context.Context,
 			Recipients:           recipients,
 			MetadataMatches:      metadataMatches,
 			AncestorPackages:     incoming.AncestorPackages,
+			TaprootAssetTransfer: incoming.TaprootAssetTransfer,
 		},
 	)
 	if err != nil {

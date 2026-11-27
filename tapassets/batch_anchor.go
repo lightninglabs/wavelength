@@ -1129,9 +1129,10 @@ func batchRootSource(req *BatchAnchorRequest, outputs []commitOutput,
 	TreeRootAssetSource, error) {
 
 	root := TreeRootAssetSource{
-		Inputs:        make([]TreeRootAssetInput, 0, len(outputs)),
-		SigningTweak:  append([]byte(nil), derived.SigningTweak...),
-		BatchPkScript: append([]byte(nil), derived.PkScript...),
+		Inputs:         make([]TreeRootAssetInput, 0, len(outputs)),
+		SigningTweak:   append([]byte(nil), derived.SigningTweak...),
+		BatchAssetRoot: append([]byte(nil), derived.AssetRoot[:]...),
+		BatchPkScript:  append([]byte(nil), derived.PkScript...),
 	}
 	anchorOutpoint := wire.OutPoint{
 		Hash:  finalTx.TxHash(),

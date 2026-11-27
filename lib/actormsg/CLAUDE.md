@@ -13,6 +13,10 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
 - `VTXOManagerMsg` / `VTXOManagerResp` — Marker interfaces for VTXO manager messages and responses.
 - `VTXOActorMsg` / `VTXOActorResp` — Marker interfaces for per-VTXO actor messages and responses.
 - `SelectAndReserveSpendRequest` / `SelectAndReserveSpendResponse` — Ask-message to select and lock VTXOs for OOR spend.
+- `SelectAndReserveAssetSpendRequest` / `SelectedAssetVTXO` /
+  `SelectAndReserveAssetSpendResponse` — Ask-message to atomically select and
+  reserve live asset VTXOs matching one canonical `AssetRef` (up to `MaxInputs`)
+  for an OOR asset spend, carrying `ReserveEpoch` for epoch-fenced release.
 - `SelectAndReserveForfeitRequest` / `SelectAndReserveForfeitResponse` — Ask-message to atomically select and reserve VTXOs for cooperative forfeit (directed sends). Combines coin selection and PendingForfeit reservation in one step to close a race window.
 - `ReserveForfeitRequest` / `ReleaseForfeitRequest` — Forfeit reservation
   admission messages. `ReleaseForfeitRequest.RoundID` identifies the round

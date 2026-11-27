@@ -97,7 +97,7 @@ func (s *LiveState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		return s.handleCohortRefresh(evt, env)
 
 	case *SpendReserveEvent:
-		return s.handleSpendReserve(ctx, env)
+		return s.handleSpendReserve(ctx, evt, env)
 
 	case *PendingForfeitEvent:
 		return s.handlePendingForfeit(ctx, env)
@@ -226,10 +226,11 @@ func (s *LiveState) handlePendingForfeit(_ context.Context,
 // handleSpendReserve claims this VTXO for an out-of-round (OOR) spend. The
 // VTXO enters SpendingState and becomes unavailable for cooperative forfeit
 // until the spend completes or is released.
-func (s *LiveState) handleSpendReserve(_ context.Context, _ *VTXOEnvironment) (
-	*VTXOStateTransition, error) {
+func (s *LiveState) handleSpendReserve(_ context.Context,
+	evt *SpendReserveEvent, _ *VTXOEnvironment) (*VTXOStateTransition,
+	error) {
 
-	if s.VTXO.TaprootAssetRoot != nil {
+	if s.VTXO.TaprootAssetRoot != nil && !evt.AllowAssetTransition {
 		return nil, ErrAssetVTXORequiresTransition
 	}
 

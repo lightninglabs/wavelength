@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 )
 
@@ -179,7 +180,10 @@ func IncomingTransferEventFromResponseWithLimits(sessionID SessionID,
 		return nil, err
 	}
 
-	recipients, err := incomingRecipientsFromEvent(arkPSBT, recipientEvt)
+	recipients, assetTransfer, routingScript, err :=
+		incomingRecipientsFromEvent(
+			arkPSBT, recipientEvt, len(checkpoints),
+		)
 	if err != nil {
 		return nil, err
 	}
@@ -196,21 +200,34 @@ func IncomingTransferEventFromResponseWithLimits(sessionID SessionID,
 		FinalCheckpointPSBTs: checkpoints,
 		AncestorPackages:     ancestors,
 		Recipients:           recipients,
+		TaprootAssetTransfer: assetTransfer,
+		RecipientEventID:     recipientEventID,
+		RecipientPkScript:    routingScript,
 	}, nil
 }
 
-// incomingRecipientsFromEvent overlays the policy metadata carried by the
-// recipient event onto the structurally extracted Ark outputs.
+// incomingRecipientsFromEvent overlays the policy and optional Taproot Asset
+// metadata carried by the recipient event onto the structurally extracted Ark
+// outputs and returns the matched recipient's uncomposed routing script.
 func incomingRecipientsFromEvent(ark *psbt.Packet,
-	evt *arkrpc.OORRecipientEvent) ([]ArkRecipientOutput, error) {
+	evt *arkrpc.OORRecipientEvent, checkpointCount int) (
+	[]ArkRecipientOutput, *oortx.TaprootAssetTransfer, []byte, error) {
 
 	recipients, err := ExtractArkRecipients(ark)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 
 	if evt.GetValue() > uint64(math.MaxInt64) {
-		return nil, fmt.Errorf("recipient event value overflows int64")
+		return nil, nil, nil, fmt.Errorf("recipient event value " +
+			"overflows int64")
+	}
+
+	asset, assetTransfer, err := parseIncomingEventAsset(
+		evt, checkpointCount,
+	)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
 	value := btcutil.Amount(evt.GetValue())
@@ -220,25 +237,90 @@ func incomingRecipientsFromEvent(ark *psbt.Packet,
 		}
 
 		if recipients[i].Value != value {
-			return nil, fmt.Errorf("recipient event value mismatch")
+			return nil, nil, nil, fmt.Errorf("recipient event " +
+				"value mismatch")
 		}
 
 		if !bytes.Equal(
 			recipients[i].PkScript, evt.GetRecipientPkScript(),
 		) {
-			return nil, fmt.Errorf("recipient event pkscript " +
-				"mismatch")
+			return nil, nil, nil, fmt.Errorf("recipient event " +
+				"pkscript mismatch")
 		}
 
 		recipients[i].VTXOPolicyTemplate = append(
 			[]byte(nil), evt.GetVtxoPolicyTemplate()...,
 		)
+		recipients[i].Asset = asset
+		routingScript, err := recipients[i].RoutingPkScript()
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("recipient event "+
+				"asset script binding: %w", err)
+		}
 
-		return recipients, nil
+		return recipients, assetTransfer, routingScript, nil
 	}
 
-	return nil, fmt.Errorf("recipient event output %d not found",
+	return nil, nil, nil, fmt.Errorf("recipient event output %d not found",
 		evt.GetOutputIndex())
+}
+
+// parseIncomingEventAsset extracts and validates optional Taproot Asset
+// metadata and the sealed asset transfer container from one recipient event,
+// enforcing all-or-none consistency.
+func parseIncomingEventAsset(evt *arkrpc.OORRecipientEvent,
+	checkpointCount int) (*oortx.RecipientAsset,
+	*oortx.TaprootAssetTransfer, error) {
+
+	rootRaw := evt.GetTaprootAssetRoot()
+	ref := strings.ToLower(strings.TrimSpace(evt.GetTaprootAssetRef()))
+	amount := evt.GetTaprootAssetAmount()
+	transferRaw := evt.GetTaprootAssetTransfer()
+
+	hasAny := len(rootRaw) > 0 || ref != "" || amount > 0 ||
+		len(transferRaw) > 0
+	if !hasAny {
+		return nil, nil, nil
+	}
+
+	if len(rootRaw) != chainhash.HashSize {
+		return nil, nil, fmt.Errorf("recipient event taproot asset "+
+			"root must be %d bytes, got %d", chainhash.HashSize,
+			len(rootRaw))
+	}
+	if len(transferRaw) == 0 {
+		return nil, nil, fmt.Errorf("recipient event missing taproot " +
+			"asset transfer package")
+	}
+	if len(transferRaw) > maxOORMessageSize {
+		return nil, nil, fmt.Errorf("recipient event taproot asset "+
+			"transfer %d bytes exceeds max %d", len(transferRaw),
+			maxOORMessageSize)
+	}
+
+	var root chainhash.Hash
+	copy(root[:], rootRaw)
+
+	asset := &oortx.RecipientAsset{
+		Root:   root,
+		Ref:    ref,
+		Amount: amount,
+	}
+	if err := asset.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("recipient event asset: %w", err)
+	}
+
+	var transfer oortx.TaprootAssetTransfer
+	if err := transfer.UnmarshalBinary(transferRaw); err != nil {
+		return nil, nil, fmt.Errorf("decode recipient event taproot "+
+			"asset transfer: %w", err)
+	}
+	if err := transfer.Validate(checkpointCount); err != nil {
+		return nil, nil, fmt.Errorf("validate recipient event taproot "+
+			"asset transfer: %w", err)
+	}
+
+	return asset, &transfer, nil
 }
 
 // packageArtifactsFromRPC converts RPC package artifacts into domain

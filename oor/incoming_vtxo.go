@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"strings"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -17,6 +18,7 @@ import (
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/tx/arktx"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -46,6 +48,12 @@ type IncomingVTXOMetadata struct {
 	// the ancestry trees. It is transient receive-state, not persisted
 	// VTXO data.
 	ExpiryAuthenticated bool
+
+	// AssetVerified records that the incoming Taproot Asset package for
+	// this output was verified against the asset backend and authenticated
+	// lineage before entering the materialization DB transaction. It is
+	// transient receive-state, not persisted VTXO data.
+	AssetVerified bool
 
 	// ChainDepth is the number of OOR checkpoint hops between this
 	// VTXO and the last on-chain commitment. This is distinct from
@@ -99,6 +107,15 @@ type IncomingVTXOConfig struct {
 	// derives the standard VTXO policy from ClientKey, OperatorKey, and
 	// ExitDelay for compatibility with older servers.
 	PolicyTemplate []byte
+
+	// Asset carries the optional Taproot Asset commitment metadata for an
+	// asset-bearing incoming output. When set, TaprootAssetSealedPackage
+	// and PolicyTemplate must also be supplied.
+	Asset *oortx.RecipientAsset
+
+	// TaprootAssetSealedPackage is the verified sealed Ark transition
+	// package persisted on the materialized asset VTXO descriptor.
+	TaprootAssetSealedPackage []byte
 }
 
 // BuildIncomingVTXODescriptor constructs a VTXO descriptor for a recipient
@@ -130,6 +147,23 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 
 	if cfg.Metadata.CommitmentTxID == (chainhash.Hash{}) {
 		return nil, fmt.Errorf("commitment tx id must be provided")
+	}
+
+	if cfg.Asset != nil {
+		if err := cfg.Asset.Validate(); err != nil {
+			return nil, fmt.Errorf("incoming VTXO asset: %w", err)
+		}
+		if len(cfg.TaprootAssetSealedPackage) == 0 {
+			return nil, fmt.Errorf("incoming asset VTXO requires " +
+				"sealed asset package")
+		}
+		if len(cfg.PolicyTemplate) == 0 {
+			return nil, fmt.Errorf("incoming asset VTXO requires " +
+				"vtxo policy template")
+		}
+	} else if len(cfg.TaprootAssetSealedPackage) > 0 {
+		return nil, fmt.Errorf("sealed asset package supplied " +
+			"without asset metadata")
 	}
 
 	err := arktx.ValidateCanonicalPSBT(ark)
@@ -172,7 +206,7 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 
 	ancestry := normalizeIncomingAncestry(cfg.Metadata)
 
-	return &vtxo.Descriptor{
+	desc := &vtxo.Descriptor{
 		Outpoint: wire.OutPoint{
 			Hash:  arkTxid,
 			Index: cfg.OutputIndex,
@@ -191,7 +225,21 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 		ChainDepth:     cfg.Metadata.ChainDepth,
 		CreatedHeight:  cfg.Metadata.CreatedHeight,
 		Status:         vtxo.VTXOStatusLive,
-	}, nil
+	}
+	if cfg.Asset != nil {
+		root := cfg.Asset.Root
+		desc.TapScript = nil
+		desc.TaprootAssetRoot = &root
+		desc.TaprootAssetRef = strings.ToLower(
+			strings.TrimSpace(cfg.Asset.Ref),
+		)
+		desc.TaprootAssetAmount = cfg.Asset.Amount
+		desc.TaprootAssetSealedPackage = bytes.Clone(
+			cfg.TaprootAssetSealedPackage,
+		)
+	}
+
+	return desc, nil
 }
 
 // incomingOutputPolicy authenticates and returns the incoming output policy,
@@ -208,9 +256,11 @@ func incomingOutputPolicy(pkScript []byte, cfg IncomingVTXOConfig) ([]byte,
 				"policy: %w", err)
 		}
 
-		if !template.MatchesPkScript(pkScript) {
-			return nil, nil, 0, fmt.Errorf("incoming VTXO policy " +
-				"does not match ark output pkscript")
+		err = verifyIncomingPolicyPkScript(
+			template, pkScript, cfg.Asset,
+		)
+		if err != nil {
+			return nil, nil, 0, err
 		}
 
 		tapscript, relativeExpiry, err := incomingPolicyExitDelay(
@@ -258,6 +308,43 @@ func incomingOutputPolicy(pkScript []byte, cfg IncomingVTXOConfig) ([]byte,
 	}
 
 	return policyTemplate, tapscript, cfg.ExitDelay, nil
+}
+
+// verifyIncomingPolicyPkScript checks that template produces pkScript,
+// composing asset.Root as a sibling taproot branch when asset is non-nil.
+func verifyIncomingPolicyPkScript(template *arkscript.PolicyTemplate,
+	pkScript []byte, asset *oortx.RecipientAsset) error {
+
+	if asset == nil {
+		if !template.MatchesPkScript(pkScript) {
+			return fmt.Errorf("incoming VTXO policy does not " +
+				"match ark output pkscript")
+		}
+
+		return nil
+	}
+
+	compiled, err := template.Compile()
+	if err != nil {
+		return fmt.Errorf("compile incoming asset VTXO policy: %w", err)
+	}
+	composed, err := arkscript.ComposeWithSiblingRoot(compiled, asset.Root)
+	if err != nil {
+		return fmt.Errorf("compose incoming asset VTXO policy: %w", err)
+	}
+	composedPkScript, err := txscript.PayToTaprootScript(
+		composed.OutputKey(),
+	)
+	if err != nil {
+		return fmt.Errorf("derive composed incoming asset VTXO "+
+			"pkscript: %w", err)
+	}
+	if !bytes.Equal(composedPkScript, pkScript) {
+		return fmt.Errorf("incoming asset VTXO policy does not match " +
+			"composed ark output pkscript")
+	}
+
+	return nil
 }
 
 // incomingPolicyExitDelay derives the earliest authenticated owner exit delay

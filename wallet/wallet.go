@@ -905,6 +905,9 @@ func (a *Ark) Receive(ctx context.Context,
 	case *SelectAndLockVTXOsRequest:
 		return a.handleSelectAndLockVTXOs(ctx, m)
 
+	case *SelectAndLockAssetVTXOsRequest:
+		return a.handleSelectAndLockAssetVTXOs(ctx, m)
+
 	case *UnlockVTXOsRequest:
 		return a.handleUnlockVTXOs(ctx, m)
 
@@ -2846,6 +2849,56 @@ func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 	return fn.Ok[WalletResp](&SelectAndLockVTXOsResponse{
 		SelectedVTXOs: selected,
 		TotalSelected: mgrResp.TotalSelected,
+	})
+}
+
+// handleSelectAndLockAssetVTXOs forwards an asset spend selection request to
+// the VTXO manager, which reserves the inputs in SpendingState.
+func (a *Ark) handleSelectAndLockAssetVTXOs(ctx context.Context,
+	req *SelectAndLockAssetVTXOsRequest) fn.Result[WalletResp] {
+
+	a.logger(ctx).TraceS(ctx, "Selecting and locking asset VTXOs for spend",
+		slog.String("asset_ref", req.AssetRef),
+		slog.Uint64("target_asset", req.TargetAmount),
+		slog.Int("max_inputs", req.MaxInputs),
+	)
+
+	resp, err := a.askManager(
+		ctx, &actormsg.SelectAndReserveAssetSpendRequest{
+			AssetRef:     req.AssetRef,
+			TargetAmount: req.TargetAmount,
+			MaxInputs:    req.MaxInputs,
+		},
+	)
+	if err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("select and reserve asset VTXOs: %w", err),
+		)
+	}
+
+	//nolint:forcetypeassert
+	mgrResp := resp.(*actormsg.SelectAndReserveAssetSpendResponse)
+
+	selected := make([]SelectedAssetVTXO, len(mgrResp.SelectedVTXOs))
+	for i, v := range mgrResp.SelectedVTXOs {
+		selected[i] = SelectedAssetVTXO{
+			Outpoint:     v.Outpoint,
+			ReserveEpoch: v.ReserveEpoch,
+			Amount:       v.Amount,
+			AssetAmount:  v.AssetAmount,
+			PkScript:     v.PkScript,
+		}
+	}
+
+	a.logger(ctx).InfoS(ctx, "Asset VTXOs selected and locked",
+		slog.String("asset_ref", req.AssetRef),
+		slog.Int("count", len(selected)),
+		slog.Uint64("total_asset", mgrResp.TotalAssetSelected),
+	)
+
+	return fn.Ok[WalletResp](&SelectAndLockAssetVTXOsResponse{
+		SelectedVTXOs:      selected,
+		TotalAssetSelected: mgrResp.TotalAssetSelected,
 	})
 }
 

@@ -62,6 +62,8 @@ type DaemonServiceMailboxServer interface {
 	SendVTXO(ctx context.Context, req *SendVTXORequest) (*SendVTXOResponse, error)
 	// SendOOR handles SendOOR.
 	SendOOR(ctx context.Context, req *SendOORRequest) (*SendOORResponse, error)
+	// SendAssetOOR handles SendAssetOOR.
+	SendAssetOOR(ctx context.Context, req *SendAssetOORRequest) (*SendAssetOORResponse, error)
 	// PrepareOOR handles PrepareOOR.
 	PrepareOOR(ctx context.Context, req *PrepareOORRequest) (*PrepareOORResponse, error)
 	// SignOORCustomInput handles SignOORCustomInput.
@@ -339,6 +341,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.SendOOR(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "SendAssetOOR", func() proto.Message {
+		return &SendAssetOORRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SendAssetOORRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SendAssetOOR(ctx, req)
 	})
 	r.Handle("waverpc.DaemonService", "PrepareOOR", func() proto.Message {
 		return &PrepareOORRequest{}
@@ -1192,6 +1204,29 @@ func (c *DaemonServiceMailboxClient) SendOOR(ctx context.Context, req *SendOORRe
 	}
 
 	resp := new(SendOORResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SendAssetOOR calls the SendAssetOOR RPC.
+func (c *DaemonServiceMailboxClient) SendAssetOOR(ctx context.Context, req *SendAssetOORRequest, opts ...rpc.RPCOptions) (*SendAssetOORResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "SendAssetOOR",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SendAssetOORResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

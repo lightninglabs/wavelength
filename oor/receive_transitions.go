@@ -1,7 +1,9 @@
 package oor
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"time"
@@ -55,6 +57,25 @@ func unexpectedReceiveEvent(state ReceiveState, event Event) *StateTransition {
 	}
 }
 
+// receiveFailTransition returns the terminal transition for a receive failure.
+// When an earlier pass on this session already completed, it preserves the
+// prior ReceiveCompleted state instead of overwriting Completed with Failed.
+func receiveFailTransition(state SessionState, reason string) *StateTransition {
+	if prior := priorCompletedReceiveState(state); prior != nil {
+		return &StateTransition{
+			NextState: prior,
+			NewEvents: fn.None[EmittedEvent](),
+		}
+	}
+
+	return &StateTransition{
+		NextState: &Failed{
+			Reason: reason,
+		},
+		NewEvents: fn.None[EmittedEvent](),
+	}
+}
+
 // handleReceiveOutboxError derives the receive-FSM retry/fail transition for
 // one outbox execution error.
 func handleReceiveOutboxError(state ReceiveState,
@@ -65,12 +86,7 @@ func handleReceiveOutboxError(state ReceiveState,
 	}
 
 	if !evt.Retryable {
-		return &StateTransition{
-			NextState: &Failed{
-				Reason: evt.ErrorReason,
-			},
-			NewEvents: fn.None[EmittedEvent](),
-		}, nil
+		return receiveFailTransition(state, evt.ErrorReason), nil
 	}
 
 	// The notified state retries the authoritative metadata resolution.
@@ -109,14 +125,11 @@ func notifiedGiveUp(state *ReceiveNotified,
 	reason string) (*ReceiveNotified, *StateTransition) {
 
 	if state.MetadataAttempts >= maxMetadataRetries {
-		return nil, &StateTransition{
-			NextState: &Failed{
-				Reason: fmt.Sprintf("incoming metadata "+
-					"unresolved after %d retries: %s",
-					maxMetadataRetries, reason),
-			},
-			NewEvents: fn.None[EmittedEvent](),
-		}
+		return nil, receiveFailTransition(
+			state, fmt.Sprintf("incoming metadata unresolved "+
+				"after %d retries: %s", maxMetadataRetries,
+				reason),
+		)
 	}
 
 	next := *state
@@ -166,25 +179,30 @@ func handleNotifiedTimerRetry(state *ReceiveNotified) *StateTransition {
 		return giveUp
 	}
 
-	// Re-extract recipients to rebuild the query. The Ark PSBT was already
-	// validated on entry to ReceiveNotified, so this cannot fail here; on
-	// the off chance it does, still re-arm the give-up timer so the session
-	// keeps moving toward the terminal give-up.
-	recipients, err := ExtractArkRecipients(state.ArkPSBT)
-	if err != nil {
-		return &StateTransition{
-			NextState: next,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					&ScheduleRetryRequest{
-						After: metadataRetryBackoff(
-							next.MetadataAttempts,
-						),
-						Reason: notifiedGiveUpReason,
-					},
-				},
-			}),
+	// Preserve the policy and optional asset metadata stored on state; fall
+	// back to structural extraction only for legacy snapshots without
+	// persisted recipients.
+	recipients := CloneArkRecipients(state.Recipients)
+	if len(recipients) == 0 {
+		extracted, err := ExtractArkRecipients(state.ArkPSBT)
+		if err != nil {
+			retryAfter := metadataRetryBackoff(
+				next.MetadataAttempts,
+			)
+			retryReq := &ScheduleRetryRequest{
+				After:  retryAfter,
+				Reason: notifiedGiveUpReason,
+			}
+
+			return &StateTransition{
+				NextState: next,
+				NewEvents: fn.Some(EmittedEvent{
+					Outbox: []OutboxEvent{retryReq},
+				}),
+			}
 		}
+
+		recipients = extracted
 	}
 
 	return &StateTransition{
@@ -239,8 +257,9 @@ func waitsOnGiveUpTimer(state SessionState) bool {
 
 // transitionIncomingTransfer validates and applies a fully resolved incoming
 // transfer event, moving the receive FSM into the notified/materialize phase.
-func transitionIncomingTransfer(evt *IncomingTransferEvent) (*StateTransition,
-	error) {
+func transitionIncomingTransfer(evt *IncomingTransferEvent,
+	activeHint IncomingHintKey, completedHints []IncomingHintKey,
+	plainScripts [][sha256.Size]byte) (*StateTransition, error) {
 
 	if evt.ArkPSBT == nil || evt.ArkPSBT.UnsignedTx == nil {
 		return nil, fmt.Errorf("ark psbt must be provided")
@@ -278,6 +297,14 @@ func transitionIncomingTransfer(evt *IncomingTransferEvent) (*StateTransition,
 		FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
 		AncestorPackages:     evt.AncestorPackages,
 		Recipients:           recipients,
+		TaprootAssetTransfer: evt.TaprootAssetTransfer.Clone(),
+		ActiveHint:           activeHint,
+		CompletedHints: append(
+			[]IncomingHintKey(nil), completedHints...,
+		),
+		MaterializedPlainScripts: append(
+			[][sha256.Size]byte(nil), plainScripts...,
+		),
 	}
 
 	// The metadata query (like the phase-1 hint query) has no failure
@@ -312,7 +339,9 @@ func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *IncomingTransferEvent:
-		return transitionIncomingTransfer(evt)
+		return transitionIncomingTransfer(
+			evt, IncomingHintKey{}, nil, nil,
+		)
 
 	case *FailEvent:
 		return &StateTransition{
@@ -341,18 +370,30 @@ func (s *ReceiveResolving) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *IncomingTransferEvent:
-		return transitionIncomingTransfer(evt)
+		// Ignore stale phase-1 responses from a different script or
+		// event pass on this same session.
+		if evt.RecipientEventID > 0 && s.RecipientEventID > 0 &&
+			evt.RecipientEventID != s.RecipientEventID {
+			return unexpectedReceiveEvent(s, event), nil
+		}
+		if len(evt.RecipientPkScript) > 0 &&
+			len(s.RecipientPkScript) > 0 &&
+			!bytes.Equal(
+				evt.RecipientPkScript, s.RecipientPkScript,
+			) {
+			return unexpectedReceiveEvent(s, event), nil
+		}
+
+		return transitionIncomingTransfer(
+			evt, s.HintKey(), s.CompletedHints,
+			s.MaterializedPlainScripts,
+		)
 
 	case *RetryDueEvent:
 		return handleResolveRetry(s), nil
 
 	case *FailEvent:
-		return &StateTransition{
-			NextState: &Failed{
-				Reason: evt.Reason,
-			},
-			NewEvents: fn.None[EmittedEvent](),
-		}, nil
+		return receiveFailTransition(s, evt.Reason), nil
 
 	default:
 		logger(ctx).WarnS(ctx, "Unexpected event in receive FSM",
@@ -375,14 +416,11 @@ func handleResolveRetry(state *ReceiveResolving) *StateTransition {
 	// persisted counter before incrementing so a corrupted snapshot at
 	// math.MaxUint32 cannot wrap past the limit and bypass the give-up.
 	if state.ResolveAttempts >= maxResolveRetries {
-		return &StateTransition{
-			NextState: &Failed{
-				Reason: fmt.Sprintf("incoming transfer hint "+
-					"unresolved after %d retries",
-					maxResolveRetries),
-			},
-			NewEvents: fn.None[EmittedEvent](),
-		}
+		return receiveFailTransition(
+			state, fmt.Sprintf("incoming transfer hint "+
+				"unresolved after %d retries",
+				maxResolveRetries),
+		)
 	}
 
 	attempts := state.ResolveAttempts + 1
@@ -462,9 +500,26 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *IncomingMetadataResolvedEvent:
+		recipients := CloneArkRecipients(s.Recipients)
+		if len(recipients) == 0 {
+			extracted, err := ExtractArkRecipients(s.ArkPSBT)
+			if err != nil {
+				return nil, err
+			}
+
+			recipients = extracted
+		}
+
 		if !evt.ExpiryAuthenticated {
 			authenticate := &AuthenticateIncomingMetadataRequest{
-				Matches: evt.Matches,
+				SessionID:            s.SessionID,
+				Matches:              evt.Matches,
+				ArkPSBT:              s.ArkPSBT,
+				FinalCheckpointPSBTs: s.FinalCheckpointPSBTs,
+				AncestorPackages:     s.AncestorPackages,
+				Recipients:           recipients,
+				TaprootAssetTransfer: s.TaprootAssetTransfer.
+					Clone(),
 			}
 
 			return &StateTransition{
@@ -475,16 +530,6 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 					},
 				}),
 			}, nil
-		}
-
-		recipients := CloneArkRecipients(s.Recipients)
-		if len(recipients) == 0 {
-			extracted, err := ExtractArkRecipients(s.ArkPSBT)
-			if err != nil {
-				return nil, err
-			}
-
-			recipients = extracted
 		}
 
 		return &StateTransition{
@@ -500,6 +545,9 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 						MetadataMatches: evt.Matches,
 						AncestorPackages: s.
 							AncestorPackages,
+						TaprootAssetTransfer: s.
+							TaprootAssetTransfer.
+							Clone(),
 					},
 				},
 			}),
@@ -509,12 +557,35 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 		// The application signals it has processed the
 		// notification. Wallet state has been updated
 		// (materialization complete), so we can now ack to the
-		// server.
-		_ = evt
+		// server. Record plain (non-asset) script hashes materialized
+		// in this pass so follow-up hints for those scripts remain
+		// idempotent no-ops without reopening the session.
+		plainScripts := append(
+			[][sha256.Size]byte(nil), s.MaterializedPlainScripts...,
+		)
+		for _, h := range evt.MaterializedPlainScripts {
+			plainScripts = appendUniqueScriptHash(plainScripts, h)
+		}
+		for _, desc := range evt.MaterializedVTXOs {
+			if desc != nil && desc.TaprootAssetRoot == nil &&
+				len(desc.PkScript) > 0 {
+
+				plainScripts = appendUniqueScriptHash(
+					plainScripts,
+					sha256.Sum256(desc.PkScript),
+				)
+			}
+		}
 
 		return &StateTransition{
 			NextState: &ReceiveAwaitingAck{
-				SessionID: s.SessionID,
+				SessionID:  s.SessionID,
+				ActiveHint: s.ActiveHint,
+				CompletedHints: append(
+					[]IncomingHintKey(nil),
+					s.CompletedHints...,
+				),
+				MaterializedPlainScripts: plainScripts,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -536,12 +607,7 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 		return handleNotifiedTimerRetry(s), nil
 
 	case *FailEvent:
-		return &StateTransition{
-			NextState: &Failed{
-				Reason: evt.Reason,
-			},
-			NewEvents: fn.None[EmittedEvent](),
-		}, nil
+		return receiveFailTransition(s, evt.Reason), nil
 
 	default:
 		logger(ctx).WarnS(ctx, "Unexpected event in receive FSM",
@@ -580,25 +646,23 @@ func (s *ReceiveAwaitingAck) ProcessEvent(ctx context.Context, event Event,
 		_ = evt
 
 		return &StateTransition{
-			NextState: &ReceiveCompleted{},
+			NextState: &ReceiveCompleted{
+				CompletedHints: appendCompletedHint(
+					s.CompletedHints, s.ActiveHint,
+				),
+				MaterializedPlainScripts: append(
+					[][sha256.Size]byte(nil),
+					s.MaterializedPlainScripts...,
+				),
+			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
 	case *OutboxErrorEvent:
-		return &StateTransition{
-			NextState: &Failed{
-				Reason: evt.ErrorReason,
-			},
-			NewEvents: fn.None[EmittedEvent](),
-		}, nil
+		return receiveFailTransition(s, evt.ErrorReason), nil
 
 	case *FailEvent:
-		return &StateTransition{
-			NextState: &Failed{
-				Reason: evt.Reason,
-			},
-			NewEvents: fn.None[EmittedEvent](),
-		}, nil
+		return receiveFailTransition(s, evt.Reason), nil
 
 	default:
 		logger(ctx).WarnS(ctx, "Unexpected event in receive FSM",

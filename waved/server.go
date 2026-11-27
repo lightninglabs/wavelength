@@ -4512,6 +4512,8 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 // The boarding backend is selected based on the wallet type: in lnd
 // mode it uses lndbackend.BoardingBackend, in lwwallet mode it uses
 // the lwwallet's BoardingBackendAdapter.
+//
+//nolint:contextcheck // wallet actor owns lifecycle after registration
 func (s *Server) initWalletActor(ctx context.Context,
 	chainSourceRef actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
@@ -5103,6 +5105,7 @@ func (s *Server) initOORActor(ctx context.Context,
 		OperatorKey:                operatorTerms.PubKey,
 		ExitDelay:                  operatorTerms.VTXOExitDelay,
 		AuthenticateIncomingExpiry: s.expiryAuthenticator,
+		VerifyIncomingAssetPackage: s.incomingAssetVerifier(),
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 

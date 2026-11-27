@@ -8,7 +8,7 @@ descriptors through branch nodes to the batch output.
 
 ## Key Types
 
-- `Tree` — Complete VTXO or connector tree: root outpoint, root output, node hierarchy, and traversal helpers. `Verify` checks structure plus value flow; `ValidateValueConservation` exposes the funding check separately for callers that have already bound `BatchOutput` to an authoritative prevout. Built via `BuildVTXOTree` or `BuildConnectorTree`.
+- `Tree` — Complete VTXO or connector tree: root outpoint, root output, optional 32-byte `BatchAssetRoot` (Taproot Asset commitment sibling composed beside `SweepTapscriptRoot` in `BatchOutput` for asset trees), node hierarchy, and traversal helpers. `Verify` checks structure plus value flow; `ValidateValueConservation` exposes the funding check separately for callers that have already bound `BatchOutput` to an authoritative prevout. Built via `BuildVTXOTree` or `BuildConnectorTree`.
 - `Node` — Single tree node representing a transaction in the tree (branch or leaf).
 - `LeafDescriptor` — Describes a single VTXO leaf: amount, owner pubkeys, cosigner keys, CSV delay.
 - `VTXODescriptor` — Interface for VTXO metadata needed by tree construction (amount, cosigners, owner key).

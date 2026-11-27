@@ -303,3 +303,54 @@ func TestTreePathTxOutRoundTrip(t *testing.T) {
 		require.Equal(t, out.PkScript, got.PkScript)
 	})
 }
+
+// TestTreePathBatchAssetRootRoundTrip checks that an optional 32-byte
+// BatchAssetRoot round-trips through proto conversion and that non-32-byte
+// roots are rejected on both directions.
+func TestTreePathBatchAssetRootRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	rootHash := make([]byte, chainhash.HashSize)
+	for i := range rootHash {
+		rootHash[i] = byte(i + 1)
+	}
+
+	orig := &tree.Tree{
+		Root: &tree.Node{
+			Input: wire.OutPoint{
+				Hash: chainhash.Hash{
+					0x01,
+				},
+			},
+		},
+		BatchOutpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0x01,
+			},
+		},
+		BatchOutput: &wire.TxOut{
+			Value: 1_000,
+			PkScript: []byte{
+				0x51,
+			},
+		},
+		SweepTapscriptRoot: make([]byte, chainhash.HashSize),
+		BatchAssetRoot:     rootHash,
+	}
+
+	pb, err := TreePathFromTree(orig)
+	require.NoError(t, err)
+	require.Equal(t, rootHash, pb.BatchAssetRoot)
+
+	got, err := TreePathToTree(pb)
+	require.NoError(t, err)
+	require.Equal(t, rootHash, got.BatchAssetRoot)
+
+	orig.BatchAssetRoot = []byte{0x01, 0x02}
+	_, err = TreePathFromTree(orig)
+	require.ErrorContains(t, err, "batch asset root must be 32")
+
+	pb.BatchAssetRoot = []byte{0x01, 0x02}
+	_, err = TreePathToTree(pb)
+	require.ErrorContains(t, err, "batch asset root must be 32")
+}

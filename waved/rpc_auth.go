@@ -138,8 +138,8 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 		"ListOORSessions", "GetOORSession",
 	)
 	grant(
-		daemon, entityOOR, "write", "SendOOR", "PrepareOOR",
-		"SignOORCustomInput",
+		daemon, entityOOR, "write", "SendOOR", "SendAssetOOR",
+		"PrepareOOR", "SignOORCustomInput",
 	)
 	grant(
 		daemon, entityOnChain, "read", "ListBoardingSweeps",

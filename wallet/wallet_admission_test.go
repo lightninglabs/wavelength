@@ -36,6 +36,17 @@ type mockVTXOManagerBehavior struct {
 	// selectErr when set causes SelectAndReserveSpendRequest to fail.
 	selectErr error
 
+	// selectAssetReq is the last SelectAndReserveAssetSpendRequest
+	// received.
+	selectAssetReq *actormsg.SelectAndReserveAssetSpendRequest
+
+	// selectAssetResp is returned for SelectAndReserveAssetSpendRequest.
+	selectAssetResp *actormsg.SelectAndReserveAssetSpendResponse
+
+	// selectAssetErr when set causes SelectAndReserveAssetSpendRequest to
+	// fail.
+	selectAssetErr error
+
 	// releaseResp is returned for ReleaseSpendRequest.
 	releaseResp *actormsg.ReleaseSpendResponse
 
@@ -113,6 +124,17 @@ func (m *mockVTXOManagerBehavior) Receive(_ context.Context,
 		}
 
 		return fn.Ok[actormsg.VTXOManagerResp](m.selectResp)
+
+	case *actormsg.SelectAndReserveAssetSpendRequest:
+		m.selectAssetReq = msg
+
+		if m.selectAssetErr != nil {
+			return fn.Err[actormsg.VTXOManagerResp](
+				m.selectAssetErr,
+			)
+		}
+
+		return fn.Ok[actormsg.VTXOManagerResp](m.selectAssetResp)
 
 	case *actormsg.ReleaseSpendRequest:
 		if m.releaseErr != nil {
@@ -313,6 +335,62 @@ func TestSelectAndLockVTXOsInsufficientFunds(t *testing.T) {
 	result := w.Receive(t.Context(), req)
 	require.True(t, result.IsErr())
 	require.ErrorContains(t, result.Err(), "insufficient funds")
+}
+
+// TestSelectAndLockAssetVTXOs verifies that the wallet forwards asset VTXO
+// selection to the manager and translates the selected asset descriptors.
+func TestSelectAndLockAssetVTXOs(t *testing.T) {
+	t.Parallel()
+
+	mgr := &mockVTXOManagerBehavior{
+		selectAssetResp: &actormsg.SelectAndReserveAssetSpendResponse{
+			SelectedVTXOs: []actormsg.SelectedAssetVTXO{
+				{
+					Outpoint:     testOutpoint(0),
+					ReserveEpoch: 7,
+					Amount:       1_000,
+					AssetAmount:  600,
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x01,
+					},
+				},
+				{
+					Outpoint:     testOutpoint(1),
+					ReserveEpoch: 8,
+					Amount:       1_000,
+					AssetAmount:  400,
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x02,
+					},
+				},
+			},
+			TotalAssetSelected: 1_000,
+		},
+	}
+	w := newTestWalletWithManager(t, mgr)
+
+	req := &SelectAndLockAssetVTXOsRequest{
+		AssetRef:     "asset-usd",
+		TargetAmount: 850,
+		MaxInputs:    8,
+	}
+	result := w.Receive(t.Context(), req)
+	require.True(t, result.IsOk(), "expected ok, got: %v", result.Err())
+
+	respVal, _ := result.Unpack()
+	resp, ok := respVal.(*SelectAndLockAssetVTXOsResponse)
+	require.True(t, ok)
+	require.EqualValues(t, 1_000, resp.TotalAssetSelected)
+	require.Len(t, resp.SelectedVTXOs, 2)
+	require.Equal(t, uint64(7), resp.SelectedVTXOs[0].ReserveEpoch)
+	require.Equal(t, uint64(600), resp.SelectedVTXOs[0].AssetAmount)
+	require.Equal(t, "asset-usd", mgr.selectAssetReq.AssetRef)
+	require.EqualValues(t, 850, mgr.selectAssetReq.TargetAmount)
+	require.Equal(t, 8, mgr.selectAssetReq.MaxInputs)
 }
 
 // TestUnlockVTXOs verifies that the wallet forwards a spend release request

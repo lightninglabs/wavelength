@@ -2,10 +2,13 @@ package oor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/lightninglabs/wavelength/baselib/tlvutil"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -23,6 +26,10 @@ const (
 	incomingSnapshotMetadataAttemptsType      tlv.Type = 19
 	incomingSnapshotResolveAttemptsType       tlv.Type = 21
 	incomingSnapshotRecipientsType            tlv.Type = 23
+	incomingSnapshotTaprootAssetTransferType  tlv.Type = 25
+	incomingSnapshotCompletedHintsType        tlv.Type = 27
+	incomingSnapshotActiveScriptHashType      tlv.Type = 29
+	incomingSnapshotPlainScriptHashesType     tlv.Type = 31
 )
 
 // IncomingPhase identifies the coarse stage of an incoming OOR receive
@@ -81,6 +88,10 @@ type IncomingSnapshot struct {
 	// metadata needed to materialize custom incoming VTXOs.
 	Recipients []ArkRecipientOutput
 
+	// TaprootAssetTransfer carries the sealed Taproot Asset packages for an
+	// incoming asset OOR transfer while materialization is pending.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
+
 	// FailReason is the terminal failure reason, when Phase is Failed.
 	FailReason string
 
@@ -89,8 +100,21 @@ type IncomingSnapshot struct {
 	RecipientPkScript []byte
 
 	// RecipientEventID is the per-script cursor hint paired with
-	// RecipientPkScript during resolve-pending restart.
+	// RecipientPkScript or ActiveScriptHash until ReceiveCompleted records
+	// the completed hint.
 	RecipientEventID uint64
+
+	// ActiveScriptHash is the SHA-256 hash of the active hint's routing
+	// pkScript during materialize-pending and ack-pending phases.
+	ActiveScriptHash [sha256.Size]byte
+
+	// CompletedHints records per-script recipient hints already processed
+	// by this session across sequential receive passes.
+	CompletedHints []IncomingHintKey
+
+	// MaterializedPlainScripts records SHA-256 hashes of non-asset scripts
+	// already materialized on this session.
+	MaterializedPlainScripts [][sha256.Size]byte
 
 	// MetadataAttempts is the persisted retry count for the authoritative
 	// metadata resolution, used to bound backoff and the terminal give-up
@@ -128,6 +152,12 @@ func NewIncomingSnapshot(sessionID SessionID,
 			[]byte(nil), s.RecipientPkScript...,
 		)
 		snap.RecipientEventID = s.RecipientEventID
+		snap.CompletedHints = append(
+			[]IncomingHintKey(nil), s.CompletedHints...,
+		)
+		snap.MaterializedPlainScripts = append(
+			[][sha256.Size]byte(nil), s.MaterializedPlainScripts...,
+		)
 		snap.ResolveAttempts = s.ResolveAttempts
 
 	case *ReceiveNotified:
@@ -150,13 +180,36 @@ func NewIncomingSnapshot(sessionID SessionID,
 			[]PackageArtifact(nil), s.AncestorPackages...,
 		)
 		snap.Recipients = CloneArkRecipients(s.Recipients)
+		snap.TaprootAssetTransfer = s.TaprootAssetTransfer.Clone()
+		snap.RecipientEventID = s.ActiveHint.EventID
+		snap.ActiveScriptHash = s.ActiveHint.ScriptHash
+		snap.CompletedHints = append(
+			[]IncomingHintKey(nil), s.CompletedHints...,
+		)
+		snap.MaterializedPlainScripts = append(
+			[][sha256.Size]byte(nil), s.MaterializedPlainScripts...,
+		)
 		snap.MetadataAttempts = s.MetadataAttempts
 
 	case *ReceiveAwaitingAck:
 		snap.Phase = IncomingPhaseAckPending
+		snap.RecipientEventID = s.ActiveHint.EventID
+		snap.ActiveScriptHash = s.ActiveHint.ScriptHash
+		snap.CompletedHints = append(
+			[]IncomingHintKey(nil), s.CompletedHints...,
+		)
+		snap.MaterializedPlainScripts = append(
+			[][sha256.Size]byte(nil), s.MaterializedPlainScripts...,
+		)
 
 	case *ReceiveCompleted:
 		snap.Phase = IncomingPhaseCompleted
+		snap.CompletedHints = append(
+			[]IncomingHintKey(nil), s.CompletedHints...,
+		)
+		snap.MaterializedPlainScripts = append(
+			[][sha256.Size]byte(nil), s.MaterializedPlainScripts...,
+		)
 
 	case *Failed:
 		snap.Phase = IncomingPhaseFailed
@@ -190,6 +243,28 @@ func NewReceiveSessionFromSnapshot(ctx context.Context,
 	)
 }
 
+// ActiveHintKey returns the active per-script hint tracked by this snapshot
+// for non-terminal incoming phases, or the zero key when unset.
+func (s *IncomingSnapshot) ActiveHintKey() IncomingHintKey {
+	if s == nil {
+		return IncomingHintKey{}
+	}
+	if s.Phase == IncomingPhaseResolvePending {
+		return NewIncomingHintKey(
+			s.RecipientPkScript, s.RecipientEventID,
+		)
+	}
+	if s.RecipientEventID == 0 ||
+		s.ActiveScriptHash == ([sha256.Size]byte{}) {
+		return IncomingHintKey{}
+	}
+
+	return IncomingHintKey{
+		ScriptHash: s.ActiveScriptHash,
+		EventID:    s.RecipientEventID,
+	}
+}
+
 // IncomingStateFromSnapshot converts an incoming receive snapshot into the
 // corresponding concrete state.
 func IncomingStateFromSnapshot(snapshot *IncomingSnapshot) (SessionState,
@@ -215,7 +290,15 @@ func IncomingStateFromSnapshot(snapshot *IncomingSnapshot) (SessionState,
 				[]byte(nil), snapshot.RecipientPkScript...,
 			),
 			RecipientEventID: snapshot.RecipientEventID,
-			ResolveAttempts:  snapshot.ResolveAttempts,
+			CompletedHints: append(
+				[]IncomingHintKey(nil),
+				snapshot.CompletedHints...,
+			),
+			MaterializedPlainScripts: append(
+				[][sha256.Size]byte(nil),
+				snapshot.MaterializedPlainScripts...,
+			),
+			ResolveAttempts: snapshot.ResolveAttempts,
 		}, nil
 
 	case IncomingPhaseMaterializePending:
@@ -242,16 +325,45 @@ func IncomingStateFromSnapshot(snapshot *IncomingSnapshot) (SessionState,
 			Recipients: CloneArkRecipients(
 				snapshot.Recipients,
 			),
+			TaprootAssetTransfer: snapshot.TaprootAssetTransfer.
+				Clone(),
+			ActiveHint: snapshot.ActiveHintKey(),
+			CompletedHints: append(
+				[]IncomingHintKey(nil),
+				snapshot.CompletedHints...,
+			),
+			MaterializedPlainScripts: append(
+				[][sha256.Size]byte(nil),
+				snapshot.MaterializedPlainScripts...,
+			),
 			MetadataAttempts: snapshot.MetadataAttempts,
 		}, nil
 
 	case IncomingPhaseAckPending:
 		return &ReceiveAwaitingAck{
-			SessionID: snapshot.SessionID,
+			SessionID:  snapshot.SessionID,
+			ActiveHint: snapshot.ActiveHintKey(),
+			CompletedHints: append(
+				[]IncomingHintKey(nil),
+				snapshot.CompletedHints...,
+			),
+			MaterializedPlainScripts: append(
+				[][sha256.Size]byte(nil),
+				snapshot.MaterializedPlainScripts...,
+			),
 		}, nil
 
 	case IncomingPhaseCompleted:
-		return &ReceiveCompleted{}, nil
+		return &ReceiveCompleted{
+			CompletedHints: append(
+				[]IncomingHintKey(nil),
+				snapshot.CompletedHints...,
+			),
+			MaterializedPlainScripts: append(
+				[][sha256.Size]byte(nil),
+				snapshot.MaterializedPlainScripts...,
+			),
+		}, nil
 
 	case IncomingPhaseFailed:
 		return &Failed{Reason: snapshot.FailReason}, nil
@@ -291,6 +403,16 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 	recipients, err := encodeIncomingRecipients(snapshot.Recipients)
 	if err != nil {
 		return nil, err
+	}
+
+	var assetTransferRaw []byte
+	if snapshot.TaprootAssetTransfer != nil {
+		assetTransferRaw, err = snapshot.TaprootAssetTransfer.
+			MarshalBinary()
+		if err != nil {
+			return nil, fmt.Errorf("encode incoming snapshot "+
+				"taproot asset transfer: %w", err)
+		}
 	}
 
 	metadataAttempts := uint64(snapshot.MetadataAttempts)
@@ -336,6 +458,45 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 			incomingSnapshotRecipientsType, &recipients,
 		),
 	}
+	if len(assetTransferRaw) > 0 {
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				incomingSnapshotTaprootAssetTransferType,
+				&assetTransferRaw,
+			),
+		)
+	}
+	if len(snapshot.CompletedHints) > 0 {
+		completedHintsRaw := encodeIncomingHintKeys(
+			snapshot.CompletedHints,
+		)
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				incomingSnapshotCompletedHintsType,
+				&completedHintsRaw,
+			),
+		)
+	}
+	if snapshot.ActiveScriptHash != ([sha256.Size]byte{}) {
+		activeHashRaw := snapshot.ActiveScriptHash[:]
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				incomingSnapshotActiveScriptHashType,
+				&activeHashRaw,
+			),
+		)
+	}
+	if len(snapshot.MaterializedPlainScripts) > 0 {
+		plainScriptsRaw := encodeScriptHashes(
+			snapshot.MaterializedPlainScripts,
+		)
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				incomingSnapshotPlainScriptHashesType,
+				&plainScriptsRaw,
+			),
+		)
+	}
 
 	return tlvutil.EncodeRecordsToBytes(records...)
 }
@@ -346,18 +507,22 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 	limits ReceiveLimits) (*IncomingSnapshot, error) {
 
 	var (
-		version           uint64
-		sessionBytes      []byte
-		phaseBytes        []byte
-		arkPSBT           []byte
-		checkpointsRaw    []byte
-		failReasonRaw     []byte
-		recipientPkScript []byte
-		recipientEventID  uint64
-		ancestorPackages  []byte
-		metadataAttempts  uint64
-		resolveAttempts   uint64
-		recipientsRaw     []byte
+		version            uint64
+		sessionBytes       []byte
+		phaseBytes         []byte
+		arkPSBT            []byte
+		checkpointsRaw     []byte
+		failReasonRaw      []byte
+		recipientPkScript  []byte
+		recipientEventID   uint64
+		ancestorPackages   []byte
+		metadataAttempts   uint64
+		resolveAttempts    uint64
+		recipientsRaw      []byte
+		assetTransferRaw   []byte
+		completedHintsRaw  []byte
+		activeScriptHash   []byte
+		plainScriptHashRaw []byte
 	)
 
 	records := []tlv.Record{
@@ -398,6 +563,20 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			incomingSnapshotRecipientsType, &recipientsRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotTaprootAssetTransferType,
+			&assetTransferRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotCompletedHintsType, &completedHintsRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotActiveScriptHashType, &activeScriptHash,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotPlainScriptHashesType,
+			&plainScriptHashRaw,
 		),
 	}
 
@@ -440,6 +619,48 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		return nil, err
 	}
 
+	var decodedAssetTransfer *oortx.TaprootAssetTransfer
+	if len(assetTransferRaw) > 0 {
+		var transfer oortx.TaprootAssetTransfer
+		if err := transfer.UnmarshalBinary(
+			assetTransferRaw,
+		); err != nil {
+			return nil, fmt.Errorf("decode incoming snapshot "+
+				"taproot asset transfer: %w", err)
+		}
+		if err := transfer.Validate(len(checkpoints)); err != nil {
+			return nil, fmt.Errorf("validate incoming snapshot "+
+				"taproot asset transfer: %w", err)
+		}
+		decodedAssetTransfer = &transfer
+	}
+
+	completedHints, err := decodeIncomingHintKeys(
+		completedHintsRaw, maxCompletedIncomingEventIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decode incoming snapshot completed "+
+			"hints: %w", err)
+	}
+
+	var decodedActiveHash [sha256.Size]byte
+	if len(activeScriptHash) > 0 {
+		if len(activeScriptHash) != sha256.Size {
+			return nil, fmt.Errorf("incoming snapshot active "+
+				"script hash must be %d bytes, got %d",
+				sha256.Size, len(activeScriptHash))
+		}
+		copy(decodedActiveHash[:], activeScriptHash)
+	}
+
+	plainScripts, err := decodeScriptHashes(
+		plainScriptHashRaw, maxCompletedIncomingEventIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decode incoming snapshot plain script "+
+			"hashes: %w", err)
+	}
+
 	decodedVersion, err := decodeUint64ToUint8(
 		version, "incoming snapshot version",
 	)
@@ -456,15 +677,96 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		AncestorPackages: append(
 			[]PackageArtifact(nil), decodedPackages...,
 		),
-		Recipients: CloneArkRecipients(decodedRecipients),
-		FailReason: string(failReasonRaw),
+		Recipients:           CloneArkRecipients(decodedRecipients),
+		TaprootAssetTransfer: decodedAssetTransfer,
+		FailReason:           string(failReasonRaw),
 		RecipientPkScript: append(
 			[]byte(nil), recipientPkScript...,
 		),
-		RecipientEventID: recipientEventID,
-		MetadataAttempts: uint32(metadataAttempts),
-		ResolveAttempts:  uint32(resolveAttempts),
+		RecipientEventID:         recipientEventID,
+		ActiveScriptHash:         decodedActiveHash,
+		CompletedHints:           completedHints,
+		MaterializedPlainScripts: plainScripts,
+		MetadataAttempts:         uint32(metadataAttempts),
+		ResolveAttempts:          uint32(resolveAttempts),
 	}, nil
+}
+
+const incomingHintKeySize = sha256.Size + 8
+
+// encodeIncomingHintKeys encodes per-script hint keys as fixed 40-byte entries
+// (32-byte ScriptHash || 8-byte big-endian EventID).
+func encodeIncomingHintKeys(hints []IncomingHintKey) []byte {
+	out := make([]byte, len(hints)*incomingHintKeySize)
+	for i, h := range hints {
+		off := i * incomingHintKeySize
+		copy(out[off:off+sha256.Size], h.ScriptHash[:])
+		binary.BigEndian.PutUint64(
+			out[off+sha256.Size:off+incomingHintKeySize], h.EventID,
+		)
+	}
+
+	return out
+}
+
+// decodeIncomingHintKeys decodes fixed 40-byte hint-key entries.
+func decodeIncomingHintKeys(raw []byte,
+	maxCount int) ([]IncomingHintKey, error) {
+
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if len(raw)%incomingHintKeySize != 0 {
+		return nil, fmt.Errorf("byte length %d is not a multiple of %d",
+			len(raw), incomingHintKeySize)
+	}
+	count := len(raw) / incomingHintKeySize
+	if maxCount > 0 && count > maxCount {
+		return nil, fmt.Errorf("count %d exceeds limit %d", count,
+			maxCount)
+	}
+	out := make([]IncomingHintKey, count)
+	for i := range count {
+		off := i * incomingHintKeySize
+		copy(out[i].ScriptHash[:], raw[off:off+sha256.Size])
+		out[i].EventID = binary.BigEndian.Uint64(
+			raw[off+sha256.Size : off+incomingHintKeySize],
+		)
+	}
+
+	return out, nil
+}
+
+// encodeScriptHashes encodes SHA-256 script hashes as contiguous 32-byte words.
+func encodeScriptHashes(hashes [][sha256.Size]byte) []byte {
+	out := make([]byte, len(hashes)*sha256.Size)
+	for i, h := range hashes {
+		copy(out[i*sha256.Size:(i+1)*sha256.Size], h[:])
+	}
+
+	return out
+}
+
+// decodeScriptHashes decodes contiguous 32-byte SHA-256 script hashes.
+func decodeScriptHashes(raw []byte, maxCount int) ([][sha256.Size]byte, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if len(raw)%sha256.Size != 0 {
+		return nil, fmt.Errorf("byte length %d is not a multiple of %d",
+			len(raw), sha256.Size)
+	}
+	count := len(raw) / sha256.Size
+	if maxCount > 0 && count > maxCount {
+		return nil, fmt.Errorf("count %d exceeds limit %d", count,
+			maxCount)
+	}
+	out := make([][sha256.Size]byte, count)
+	for i := range count {
+		copy(out[i][:], raw[i*sha256.Size:(i+1)*sha256.Size])
+	}
+
+	return out, nil
 }
 
 // parseIncomingPSBTs parses the Ark and checkpoint PSBTs stored in an incoming

@@ -13,6 +13,7 @@ import (
 	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightningnetwork/lnd/tlv"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
@@ -43,6 +44,7 @@ type (
 	listVTXOsMsgIDRecordTLV           = tlv.TlvType5
 	listVTXOsIdempotencyRecordTLV     = tlv.TlvType6
 	listVTXOsAfterCursorRecordTLV     = tlv.TlvType7
+	listVTXOsSignerScriptsRecordTLV   = tlv.TlvType9
 )
 
 // SendListOORRecipientEventsByScriptRequest describes a durable proof-gated
@@ -246,6 +248,13 @@ type SendListVTXOsByScriptsRequest struct {
 	// PkScripts are the taproot output scripts to query.
 	PkScripts [][]byte
 
+	// SignerScripts optionally names, parallel to PkScripts, the local
+	// receive script used to look up the proof signing key for each query
+	// scope (for example, an uncomposed Ark policy script for a composed
+	// Taproot Asset output). Empty entries fall back to the corresponding
+	// PkScript.
+	SignerScripts [][]byte
+
 	// AfterCursor is the exclusive lower bound for the VTXO query cursor.
 	AfterCursor []byte
 
@@ -287,9 +296,34 @@ func (m *SendListVTXOsByScriptsRequest) ServiceMethod() mailboxrpc.ServiceMethod
 func (m *SendListVTXOsByScriptsRequest) BuildBody(ctx context.Context,
 	builder DurableUnaryRequestBuilder) (*anypb.Any, []byte, error) {
 
-	protoReq, err := builder.BuildListVTXOsByScriptsRequest(
-		ctx, m.PkScripts, m.AfterCursor, m.Limit,
+	if len(m.SignerScripts) > 0 &&
+		len(m.SignerScripts) != len(m.PkScripts) {
+		return nil, nil, fmt.Errorf("signer scripts count %d does not "+
+			"match pk scripts count %d", len(m.SignerScripts),
+			len(m.PkScripts))
+	}
+
+	var (
+		protoReq proto.Message
+		err      error
 	)
+	if len(m.SignerScripts) > 0 {
+		scopedBuilder, ok := builder.(ScopedVTXOQueryBuilder)
+		if !ok {
+			return nil, nil, fmt.Errorf("durable unary builder " +
+				"does not support scoped signer scripts")
+		}
+
+		protoReq, err = scopedBuilder.
+			BuildListVTXOsByScopedScriptsRequest(
+				ctx, m.PkScripts, m.SignerScripts,
+				m.AfterCursor, m.Limit,
+			)
+	} else {
+		protoReq, err = builder.BuildListVTXOsByScriptsRequest(
+			ctx, m.PkScripts, m.AfterCursor, m.Limit,
+		)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("build vtxo query: %w", err)
 	}
@@ -353,6 +387,13 @@ func (m *SendListVTXOsByScriptsRequest) Encode(w io.Writer) error {
 			)
 	}
 
+	if len(m.SignerScripts) > 0 &&
+		len(m.SignerScripts) != len(m.PkScripts) {
+		return fmt.Errorf("signer scripts count %d does not match pk "+
+			"scripts count %d", len(m.SignerScripts),
+			len(m.PkScripts))
+	}
+
 	pkScriptsRaw, err := encodeLengthPrefixedBlobList(m.PkScripts)
 	if err != nil {
 		return err
@@ -380,11 +421,25 @@ func (m *SendListVTXOsByScriptsRequest) Encode(w io.Writer) error {
 		),
 	)
 
-	return tlvutil.EncodeRecords(
-		w, pkScriptsRec.Record(), limitRec.Record(),
+	records := []tlv.Record{
+		pkScriptsRec.Record(), limitRec.Record(),
 		correlationRec.Record(), msgIDRec.Record(),
 		idempotencyRec.Record(), afterCursorRec.Record(),
-	)
+	}
+	if len(m.SignerScripts) > 0 {
+		signerScriptsRaw, err := encodeLengthPrefixedBlobList(
+			m.SignerScripts,
+		)
+		if err != nil {
+			return err
+		}
+		rec := tlv.NewPrimitiveRecord[listVTXOsSignerScriptsRecordTLV](
+			signerScriptsRaw,
+		)
+		records = append(records, rec.Record())
+	}
+
+	return tlvutil.EncodeRecords(w, records...)
 }
 
 // Decode deserializes the message from the provided reader.
@@ -408,6 +463,10 @@ func (m *SendListVTXOsByScriptsRequest) Decode(r io.Reader) error {
 		listVTXOsIdempotencyRecordTLV,
 		[]byte,
 	]()
+	signerScriptsRec := tlv.ZeroRecordT[
+		listVTXOsSignerScriptsRecordTLV,
+		[]byte,
+	]()
 
 	// Bound the untrusted payload before decode so a crafted record
 	// length cannot drive an unbounded make() in the tlv library.
@@ -420,6 +479,7 @@ func (m *SendListVTXOsByScriptsRequest) Decode(r io.Reader) error {
 		safe, pkScriptsRec.Record(), legacyCursorRec.Record(),
 		limitRec.Record(), correlationRec.Record(), msgIDRec.Record(),
 		idempotencyRec.Record(), afterCursorRec.Record(),
+		signerScriptsRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -428,6 +488,22 @@ func (m *SendListVTXOsByScriptsRequest) Decode(r io.Reader) error {
 	pkScripts, err := decodeLengthPrefixedBlobList(pkScriptsRec.Val)
 	if err != nil {
 		return err
+	}
+
+	var signerScripts [][]byte
+	if _, ok := parsed[signerScriptsRec.TlvType()]; ok {
+		signerScripts, err = decodeLengthPrefixedBlobList(
+			signerScriptsRec.Val,
+		)
+		if err != nil {
+			return err
+		}
+		if len(signerScripts) > 0 &&
+			len(signerScripts) != len(pkScripts) {
+			return fmt.Errorf("signer scripts count %d does not "+
+				"match pk scripts count %d", len(signerScripts),
+				len(pkScripts))
+		}
 	}
 
 	if limitRec.Val > uint64(^uint32(0)) {
@@ -447,6 +523,7 @@ func (m *SendListVTXOsByScriptsRequest) Decode(r io.Reader) error {
 	}
 
 	m.PkScripts = pkScripts
+	m.SignerScripts = signerScripts
 	m.AfterCursor = afterCursor
 	m.Limit = uint32(limitRec.Val)
 	m.CorrelationID = string(correlationRec.Val)
@@ -580,6 +657,14 @@ func decodeLengthPrefixedBlobList(raw []byte) ([][]byte, error) {
 		return nil, err
 	}
 
+	// Each blob entry consumes at least a 4-byte length prefix, so any
+	// count larger than remaining/4 is malformed and must fail before
+	// allocating.
+	if uint64(count) > uint64(reader.Len()/4) {
+		return nil, fmt.Errorf("blob list count %d exceeds payload",
+			count)
+	}
+
 	blobs := make([][]byte, 0, count)
 	for i := uint32(0); i < count; i++ {
 		blob, err := readLengthPrefixedBlob(reader)
@@ -614,6 +699,11 @@ func readLengthPrefixedBlob(r *bytes.Reader) ([]byte, error) {
 	var size uint32
 	if err := binary.Read(r, binary.BigEndian, &size); err != nil {
 		return nil, err
+	}
+
+	if uint64(size) > uint64(r.Len()) {
+		return nil, fmt.Errorf("blob length %d exceeds remaining %d",
+			size, r.Len())
 	}
 
 	blob := make([]byte, size)

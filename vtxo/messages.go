@@ -304,6 +304,17 @@ type SelectedVTXO = actormsg.SelectedVTXO
 // actormsg.
 type SelectAndReserveSpendResponse = actormsg.SelectAndReserveSpendResponse
 
+// SelectAndReserveAssetSpendRequest is an alias for the canonical type in
+// actormsg.
+type SelectAndReserveAssetSpendRequest = actormsg.SelectAndReserveAssetSpendRequest //nolint:ll
+
+// SelectedAssetVTXO is an alias for the canonical type in actormsg.
+type SelectedAssetVTXO = actormsg.SelectedAssetVTXO
+
+// SelectAndReserveAssetSpendResponse is an alias for the canonical type in
+// actormsg.
+type SelectAndReserveAssetSpendResponse = actormsg.SelectAndReserveAssetSpendResponse //nolint:ll
+
 // ReleaseSpendRequest is an alias for the canonical type in actormsg.
 type ReleaseSpendRequest = actormsg.ReleaseSpendRequest
 

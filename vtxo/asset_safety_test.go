@@ -74,6 +74,54 @@ func TestAssetVTXOSkipsAutomaticRefresh(t *testing.T) {
 	require.ErrorIs(t, err, ErrAssetVTXORequiresTransition)
 }
 
+// TestAssetRefSelectionCaseInsensitive verifies that asset selection matches
+// asset references regardless of hex casing.
+func TestAssetRefSelectionCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	root := chainhash.Hash{2}
+	descs := []*Descriptor{{
+		Amount:                    1_000,
+		Status:                    VTXOStatusLive,
+		TaprootAssetRoot:          &root,
+		TaprootAssetRef:           "AABBCC",
+		TaprootAssetAmount:        500,
+		TaprootAssetSealedPackage: []byte("sealed-pkg"),
+	}}
+
+	selected, total, err := SelectAssetVTXOCandidates(
+		descs, "aabbcc", 250, 4,
+	)
+	require.NoError(t, err)
+	require.Len(t, selected, 1)
+	require.EqualValues(t, 500, total)
+}
+
+// TestMaterializedNotificationSkipsTerminalStoredVTXO verifies that
+// handleVTXOsMaterialized refuses to resurrect a VTXO whose stored row is
+// already terminal (e.g. VTXOStatusSpent).
+func TestMaterializedNotificationSkipsTerminalStoredVTXO(t *testing.T) {
+	t.Parallel()
+
+	desc := makeDescriptor(t, 1_000, 0)
+	spentDesc := *desc
+	spentDesc.Status = VTXOStatusSpent
+
+	mgr, store := newTestManager(t, nil)
+	store.On("GetVTXO", t.Context(), desc.Outpoint).Return(
+		&spentDesc, nil,
+	).Once()
+
+	res := mgr.handleVTXOsMaterialized(
+		t.Context(), &VTXOsMaterializedNotification{
+			VTXOs: []*Descriptor{desc},
+		},
+	)
+	require.NoError(t, res.Err())
+	require.Empty(t, mgr.actors)
+	store.AssertExpectations(t)
+}
+
 // TestAssetVTXOCarrierBalance reports asset carriers in total holdings while
 // excluding them from the Bitcoin spendable balance.
 func TestAssetVTXOCarrierBalance(t *testing.T) {
@@ -117,6 +165,39 @@ func TestAssetCriticalExpiryBypassesBitcoinFeeAssessment(t *testing.T) {
 	}
 	event := &BlockEpochEvent{Height: desc.BatchExpiry - 1}
 	require.Same(t, event, a.preflightCriticalExit(h.ctx, event))
+}
+
+// TestAssetVTXOAllowsExplicitAssetSpendReserve verifies that an asset-aware
+// OOR spend reservation transitions a live asset VTXO into SpendingState, and
+// that the resulting SpendingState can complete or release normally.
+func TestAssetVTXOAllowsExplicitAssetSpendReserve(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	desc := h.newTestDescriptor()
+	root := chainhash.Hash{1}
+	desc.TaprootAssetRoot = &root
+	h.withState(&LiveState{VTXO: desc})
+
+	_, err := h.sendEvent(&SpendReserveEvent{AllowAssetTransition: true})
+	require.NoError(t, err)
+	assertState[*SpendingState](h)
+	require.Len(t, h.outboxMessages, 1)
+	statusUpdate, ok := h.outboxMessages[0].(*VTXOStatusUpdate)
+	require.True(t, ok)
+	require.Equal(t, VTXOStatusSpending, statusUpdate.NewStatus)
+
+	_, err = h.sendEvent(&SpendReleasedEvent{})
+	require.NoError(t, err)
+	assertState[*LiveState](h)
+
+	_, err = h.sendEvent(&SpendReserveEvent{AllowAssetTransition: true})
+	require.NoError(t, err)
+	assertState[*SpendingState](h)
+
+	_, err = h.sendEvent(&SpendCompletedEvent{})
+	require.NoError(t, err)
+	assertState[*SpentState](h)
 }
 
 // TestPendingAssetVTXORejectsForfeit protects recovered pending descriptors

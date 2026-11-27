@@ -42,6 +42,10 @@ refresh, leave, OOR spend, and directed send flows.
   fees. `DropCustomRefreshVTXOsRequest` releases the temporary signer actors
   when round registration never starts.
 - `SelectAndLockVTXOsRequest` — Ask-request to select and lock VTXOs for OOR spend. `MinChangeAmount`, when positive, asks selection to avoid a non-zero residual below that amount (exact spends still valid).
+- `SelectAndLockAssetVTXOsRequest` / `SelectedAssetVTXO` /
+  `SelectAndLockAssetVTXOsResponse` — Ask-request forwarding to the VTXO
+  manager's `SelectAndReserveAssetSpendRequest` to select and reserve live
+  asset VTXOs matching one canonical `AssetRef` for an OOR asset send.
 - `LeaveVTXOsRequest` — Ask-request to select VTXOs for cooperative leave. Carries a singular `DestOutput *wire.TxOut` plus a per-outpoint `DestOutputs map[wire.OutPoint]*wire.TxOut` override map; the handler picks `DestOutputs[op]` when set and falls back to `DestOutput`. Per-input operator fees are no longer pre-quoted on the client — under the #270 seal-time fee handshake the server stamps the residual onto the IsChange=true leave output at seal time, so the wallet ships the full forfeited amount on each leave output.
 - `CompleteSpendVTXOsRequest` — Tell-message to finalize spend and release locks.
 - `UnlockVTXOsRequest` — Tell-message to release locked VTXOs on failure.

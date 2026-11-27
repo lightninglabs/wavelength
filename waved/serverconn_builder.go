@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/lightninglabs/wavelength/indexer"
+	"github.com/lightninglabs/wavelength/serverconn"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -51,3 +52,39 @@ func (b *serverDurableUnaryBuilder) BuildListVTXOsByScriptsRequest(
 		ctx, scopes, afterCursor, limit, nil,
 	)
 }
+
+// BuildListVTXOsByScopedScriptsRequest builds the proof-gated indexer request
+// body for one or more taproot VTXO scopes whose local proof signing key is
+// resolved through an optional uncomposed signerScript.
+func (b *serverDurableUnaryBuilder) BuildListVTXOsByScopedScriptsRequest(
+	ctx context.Context, pkScripts, signerScripts [][]byte,
+	afterCursor []byte, limit uint32) (proto.Message, error) {
+
+	if b == nil || b.server == nil || b.server.indexer == nil {
+		return nil, fmt.Errorf("indexer client not initialized")
+	}
+	if len(signerScripts) > 0 && len(signerScripts) != len(pkScripts) {
+		return nil, fmt.Errorf("signer scripts count %d does not "+
+			"match pk scripts count %d", len(signerScripts),
+			len(pkScripts))
+	}
+
+	scopes := make([]indexer.TaprootScriptScope, 0, len(pkScripts))
+	for i := range pkScripts {
+		scope := indexer.TaprootScriptScope{
+			PkScript: append([]byte(nil), pkScripts[i]...),
+		}
+		if i < len(signerScripts) && len(signerScripts[i]) > 0 {
+			scope.SignerScript = append(
+				[]byte(nil), signerScripts[i]...,
+			)
+		}
+		scopes = append(scopes, scope)
+	}
+
+	return b.server.indexer.BuildListVTXOsByScriptsTaprootRequest(
+		ctx, scopes, afterCursor, limit, nil,
+	)
+}
+
+var _ serverconn.ScopedVTXOQueryBuilder = (*serverDurableUnaryBuilder)(nil)

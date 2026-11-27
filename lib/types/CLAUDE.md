@@ -44,6 +44,8 @@ server during round participation. These types are used across `round`, `vtxo`,
   cap on the cumulative on-chain vbytes a recipient must publish to claim a
   VTXO produced by an OOR submit unilaterally. Zero means no cap enforced
   server-side (clients fall back to a conservative local default).
+  `OORCarrierPubKey *btcec.PublicKey` is the optional compressed key that
+  controls the operator's leased OOR carrier float VTXOs.
 - `Ancestry` — One rooted commitment-tree fragment contributing ancestry to a VTXO (defined in `lib/types/ancestry.go`). Fields: `TreePath *tree.Tree` (extracted root-to-leaf path), `CommitmentTxID chainhash.Hash`, `InputIndices []uint32` (Ark tx input indices this fragment serves; empty for round-direct VTXOs), `TreeDepth uint32`. Round-direct VTXOs carry a single-element slice; multi-input OOR VTXOs carry one entry per distinct (commitment tx, tree path) pair — entries may share a commitment txid when inputs sat at different leaves of one commitment tree.
 - `MaxAncestryTreeDepth([]Ancestry) int` — Returns the largest `TreeDepth` across a slice; drives worst-case unilateral-exit timing calculations.
 - `ClientBatchInfo` — Client's view of batch output info after tree construction.

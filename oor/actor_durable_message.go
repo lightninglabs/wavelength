@@ -43,6 +43,17 @@ const (
 	// startPayloadDispatchRequestDataType stores the normalized caller
 	// recipient proof for a keyed dispatch.
 	startPayloadDispatchRequestDataType tlv.Type = 9
+
+	// startPayloadPreparedSubmitType stores an optional pre-committed
+	// PreparedSubmitPackage for asset-bearing OOR transfers.
+	startPayloadPreparedSubmitType tlv.Type = 11
+)
+
+const (
+	preparedSubmitArkPSBTType          tlv.Type = 1
+	preparedSubmitCheckpointPSBTsType  tlv.Type = 3
+	preparedSubmitCheckpointRootsType  tlv.Type = 5
+	preparedSubmitTaprootAssetXferType tlv.Type = 7
 )
 
 const (
@@ -101,6 +112,9 @@ const (
 	eventPayloadRetryableRecordType        tlv.Type = 19
 	eventPayloadRetryAfterNanosRecordType  tlv.Type = 21
 	eventPayloadIncomingRecipientsType     tlv.Type = 23
+	eventPayloadTaprootAssetTransferType   tlv.Type = 25
+	eventPayloadRecipientEventIDType       tlv.Type = 27
+	eventPayloadRecipientPkScriptType      tlv.Type = 29
 )
 
 const (
@@ -167,6 +181,7 @@ const (
 	incomingMetadataMatchAncestryPathsRecordType  tlv.Type = 17
 	incomingMetadataMatchOperatorKeyRecordType    tlv.Type = 19
 	incomingMetadataMatchExpiryAuthRecordType     tlv.Type = 21
+	incomingMetadataMatchAssetVerifiedRecordType  tlv.Type = 23
 )
 
 type startTransferPayload struct {
@@ -174,6 +189,7 @@ type startTransferPayload struct {
 	CSVDelay                   uint32
 	Inputs                     []*TransferInputSnapshot
 	Recipients                 []recipientPayload
+	PreparedSubmit             *PreparedSubmitPackage
 	IdempotencyKey             string
 	DispatchRequestData        []byte
 	AdmissionDeadlineUnixNanos int64
@@ -191,6 +207,7 @@ type incomingRecipientPayload struct {
 	PkScript           []byte
 	ValueSat           int64
 	VTXOPolicyTemplate []byte
+	Asset              *oortx.RecipientAsset
 }
 
 // encodeStartTransferPayload serializes admission terms and recipient data for
@@ -237,6 +254,20 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 		),
 	}
 
+	if payload.PreparedSubmit != nil {
+		preparedRaw, err := encodePreparedSubmitPackage(
+			payload.PreparedSubmit,
+		)
+		if err != nil {
+			return nil, err
+		}
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				startPayloadPreparedSubmitType, &preparedRaw,
+			),
+		)
+	}
+
 	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
@@ -259,6 +290,7 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		idKey               []byte
 		dispatchRequestData []byte
 		deadline            uint64
+		preparedRaw         []byte
 	)
 
 	records := []tlv.Record{
@@ -282,6 +314,9 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 			startPayloadDispatchRequestDataType,
 			&dispatchRequestData,
 		),
+		tlv.MakePrimitiveRecord(
+			startPayloadPreparedSubmitType, &preparedRaw,
+		),
 	}
 
 	if _, err := decodeBoundedRecords(
@@ -304,14 +339,162 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		return startTransferPayload{}, err
 	}
 
+	var preparedSubmit *PreparedSubmitPackage
+	if len(preparedRaw) > 0 {
+		preparedSubmit, err = decodePreparedSubmitPackageWithLimits(
+			preparedRaw, limits,
+		)
+		if err != nil {
+			return startTransferPayload{}, err
+		}
+	}
+
 	return startTransferPayload{
 		OperatorPubKey:             operatorKey,
 		CSVDelay:                   csvDelay,
 		Inputs:                     inputs,
 		Recipients:                 recipientsPayload,
+		PreparedSubmit:             preparedSubmit,
 		IdempotencyKey:             string(idKey),
 		DispatchRequestData:        dispatchRequestData,
 		AdmissionDeadlineUnixNanos: int64(deadline),
+	}, nil
+}
+
+// encodePreparedSubmitPackage serializes a PreparedSubmitPackage into bounded
+// TLV records for durable actor mailbox persistence.
+func encodePreparedSubmitPackage(pkg *PreparedSubmitPackage) ([]byte, error) {
+	if pkg == nil {
+		return nil, fmt.Errorf("prepared submit package must be " +
+			"provided")
+	}
+
+	arkRaw, err := psbtutil.Serialize(pkg.ArkPSBT)
+	if err != nil {
+		return nil, fmt.Errorf("encode prepared ark psbt: %w", err)
+	}
+
+	cpRaws, err := serializePSBTSlice(pkg.CheckpointPSBTs)
+	if err != nil {
+		return nil, fmt.Errorf("encode prepared checkpoint psbts: %w",
+			err)
+	}
+	cpListRaw, err := encodeLengthPrefixedBlobList(cpRaws)
+	if err != nil {
+		return nil, err
+	}
+
+	rootBlobs := make([][]byte, len(pkg.CheckpointAssetRoots))
+	for i, root := range pkg.CheckpointAssetRoots {
+		if root != nil {
+			rootBlobs[i] = append([]byte(nil), root[:]...)
+		}
+	}
+	rootsRaw, err := encodeLengthPrefixedBlobList(rootBlobs)
+	if err != nil {
+		return nil, err
+	}
+
+	if pkg.TaprootAssetTransfer == nil {
+		return nil, fmt.Errorf("prepared taproot asset transfer is " +
+			"required")
+	}
+	xferRaw, err := pkg.TaprootAssetTransfer.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("encode prepared taproot asset "+
+			"transfer: %w", err)
+	}
+
+	return tlvutil.EncodeRecordsToBytes(
+		tlv.MakePrimitiveRecord(preparedSubmitArkPSBTType, &arkRaw),
+		tlv.MakePrimitiveRecord(
+			preparedSubmitCheckpointPSBTsType, &cpListRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			preparedSubmitCheckpointRootsType, &rootsRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			preparedSubmitTaprootAssetXferType, &xferRaw,
+		),
+	)
+}
+
+// decodePreparedSubmitPackageWithLimits decodes a PreparedSubmitPackage from
+// TLV bytes while enforcing receive limits on checkpoints and roots.
+func decodePreparedSubmitPackageWithLimits(raw []byte,
+	limits ReceiveLimits) (*PreparedSubmitPackage, error) {
+
+	var (
+		arkRaw    []byte
+		cpListRaw []byte
+		rootsRaw  []byte
+		xferRaw   []byte
+	)
+
+	if _, err := decodeBoundedRecords(
+		raw,
+		tlv.MakePrimitiveRecord(preparedSubmitArkPSBTType, &arkRaw),
+		tlv.MakePrimitiveRecord(
+			preparedSubmitCheckpointPSBTsType, &cpListRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			preparedSubmitCheckpointRootsType, &rootsRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			preparedSubmitTaprootAssetXferType, &xferRaw,
+		),
+	); err != nil {
+		return nil, err
+	}
+
+	ark, err := psbtutil.Parse(arkRaw)
+	if err != nil {
+		return nil, fmt.Errorf("decode prepared ark psbt: %w", err)
+	}
+
+	checkpoints, err := decodeCheckpointPSBTsWithLimits(cpListRaw, limits)
+	if err != nil {
+		return nil, fmt.Errorf("decode prepared checkpoint psbts: %w",
+			err)
+	}
+
+	rootBlobs, err := decodeLengthPrefixedBlobListWithLimits(
+		rootsRaw, limits,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decode prepared checkpoint asset "+
+			"roots: %w", err)
+	}
+	roots := make([]*chainhash.Hash, len(rootBlobs))
+	for i, blob := range rootBlobs {
+		if len(blob) == 0 {
+			continue
+		}
+		if len(blob) != chainhash.HashSize {
+			return nil, fmt.Errorf("prepared checkpoint asset "+
+				"root %d length %d want %d", i, len(blob),
+				chainhash.HashSize)
+		}
+		var h chainhash.Hash
+		copy(h[:], blob)
+		roots[i] = &h
+	}
+
+	var xfer oortx.TaprootAssetTransfer
+	if err := xfer.UnmarshalBinary(xferRaw); err != nil {
+		return nil, fmt.Errorf("decode prepared taproot asset "+
+			"transfer: %w", err)
+	}
+	if err := xfer.Validate(len(checkpoints)); err != nil {
+		return nil, fmt.Errorf("validate prepared taproot asset "+
+			"transfer: %w", err)
+	}
+
+	return &PreparedSubmitPackage{
+		ArkPSBT:              ark,
+		CheckpointPSBTs:      checkpoints,
+		CheckpointAssetRoots: roots,
+		TaprootAssetTransfer: &xfer,
 	}, nil
 }
 
@@ -718,6 +901,10 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 	if match.Metadata.ExpiryAuthenticated {
 		expiryAuthenticated = 1
 	}
+	var assetVerified uint8
+	if match.Metadata.AssetVerified {
+		assetVerified = 1
+	}
 
 	ancestryBytes, err := encodeAncestryList(match.Metadata.Ancestry)
 	if err != nil {
@@ -760,6 +947,14 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 			&expiryAuthenticated,
 		),
 	}
+	if assetVerified == 1 {
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				incomingMetadataMatchAssetVerifiedRecordType,
+				&assetVerified,
+			),
+		)
+	}
 
 	return tlvutil.EncodeRecordsToBytes(records...)
 }
@@ -779,6 +974,7 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 		ancestryBytes  []byte
 		operatorKey    []byte
 		expiryAuth     uint8
+		assetVerified  uint8
 	)
 
 	records := []tlv.Record{
@@ -815,6 +1011,10 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 		tlv.MakePrimitiveRecord(
 			incomingMetadataMatchExpiryAuthRecordType, &expiryAuth,
 		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchAssetVerifiedRecordType,
+			&assetVerified,
+		),
 	}
 
 	if _, err := decodeBoundedRecords(
@@ -830,6 +1030,10 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 	if expiryAuth > 1 {
 		return IncomingMetadataMatch{}, fmt.Errorf("incoming " +
 			"metadata expiry authentication flag must be 0 or 1")
+	}
+	if assetVerified > 1 {
+		return IncomingMetadataMatch{}, fmt.Errorf("incoming " +
+			"metadata asset verification flag must be 0 or 1")
 	}
 
 	decodedBatchExpiry, err := uint32ToInt32(
@@ -875,6 +1079,7 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 			CommitmentTxID:      decodedCommitmentTxID,
 			BatchExpiry:         decodedBatchExpiry,
 			ExpiryAuthenticated: expiryAuth == 1,
+			AssetVerified:       assetVerified == 1,
 			ChainDepth:          int(decodedChainDepth),
 			CreatedHeight:       decodedCreatedHeight,
 			OperatorKey:         decodedOperatorKey,
@@ -1047,6 +1252,7 @@ func encodeIncomingRecipients(recipients []ArkRecipientOutput) ([]byte, error) {
 					[]byte(nil),
 					recipients[i].VTXOPolicyTemplate...,
 				),
+				Asset: recipients[i].Asset.Clone(),
 			},
 		)
 		if err != nil {
@@ -1087,6 +1293,7 @@ func decodeIncomingRecipientsWithLimits(raw []byte,
 			VTXOPolicyTemplate: append(
 				[]byte(nil), payload.VTXOPolicyTemplate...,
 			),
+			Asset: payload.Asset.Clone(),
 		})
 	}
 
@@ -1122,6 +1329,27 @@ func encodeIncomingRecipientPayload(payload incomingRecipientPayload) ([]byte,
 		),
 	}
 
+	if payload.Asset != nil {
+		if err := payload.Asset.Validate(); err != nil {
+			return nil, err
+		}
+
+		assetRoot := payload.Asset.Root[:]
+		assetRef := []byte(payload.Asset.Ref)
+		assetAmount := payload.Asset.Amount
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				recipientTaprootAssetRootType, &assetRoot,
+			),
+			tlv.MakePrimitiveRecord(
+				recipientTaprootAssetRefType, &assetRef,
+			),
+			tlv.MakePrimitiveRecord(
+				recipientTaprootAssetAmountType, &assetAmount,
+			),
+		)
+	}
+
 	return tlvutil.EncodeRecordsToBytes(records...)
 }
 
@@ -1135,6 +1363,9 @@ func decodeIncomingRecipientPayload(raw []byte) (incomingRecipientPayload,
 		valueSat           uint64
 		vtxoPolicyTemplate []byte
 		outputIndex        uint64
+		assetRootRaw       []byte
+		assetRefRaw        []byte
+		assetAmount        uint64
 	)
 
 	records := []tlv.Record{
@@ -1145,6 +1376,15 @@ func decodeIncomingRecipientPayload(raw []byte) (incomingRecipientPayload,
 		),
 		tlv.MakePrimitiveRecord(
 			recipientOutputIndexRecordType, &outputIndex,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientTaprootAssetRootType, &assetRootRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientTaprootAssetRefType, &assetRefRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientTaprootAssetAmountType, &assetAmount,
 		),
 	}
 
@@ -1168,11 +1408,19 @@ func decodeIncomingRecipientPayload(raw []byte) (incomingRecipientPayload,
 		return incomingRecipientPayload{}, err
 	}
 
+	asset, err := decodeTLVRecipientAsset(
+		assetRootRaw, assetRefRaw, assetAmount,
+	)
+	if err != nil {
+		return incomingRecipientPayload{}, err
+	}
+
 	return incomingRecipientPayload{
 		OutputIndex:        decodedOutputIndex,
 		PkScript:           pkScript,
 		ValueSat:           decodedValueSat,
 		VTXOPolicyTemplate: vtxoPolicyTemplate,
+		Asset:              asset,
 	}, nil
 }
 
@@ -2224,19 +2472,22 @@ func decodeDriveEventRequestPayloadWithLimits(raw []byte,
 //nolint:funlen
 func encodeEventPayload(event Event) ([]byte, error) {
 	var (
-		eventKind        uint64
-		submitSession    []byte
-		arkPSBT          []byte
-		checkpointPSBT   []byte
-		reason           []byte
-		outpointPayload  []byte
-		metadataPayload  []byte
-		ancestorPayload  []byte
-		outboxType       []byte
-		retryable        uint8
-		retryAfterNanos  uint64
-		err              error
-		recipientPayload []byte
+		eventKind         uint64
+		submitSession     []byte
+		arkPSBT           []byte
+		checkpointPSBT    []byte
+		reason            []byte
+		outpointPayload   []byte
+		metadataPayload   []byte
+		ancestorPayload   []byte
+		outboxType        []byte
+		retryable         uint8
+		retryAfterNanos   uint64
+		err               error
+		recipientPayload  []byte
+		assetTransferRaw  []byte
+		recipientEventID  uint64
+		recipientPkScript []byte
 	)
 
 	switch evt := event.(type) {
@@ -2340,6 +2591,17 @@ func encodeEventPayload(event Event) ([]byte, error) {
 			return nil, err
 		}
 
+		if evt.TaprootAssetTransfer != nil {
+			assetTransferRaw, err = evt.TaprootAssetTransfer.
+				MarshalBinary()
+			if err != nil {
+				return nil, fmt.Errorf("encode incoming event "+
+					"taproot asset transfer: %w", err)
+			}
+		}
+		recipientEventID = evt.RecipientEventID
+		recipientPkScript = evt.RecipientPkScript
+
 	case *IncomingHandledEvent:
 		eventKind = eventKindIncomingHandled
 
@@ -2423,6 +2685,30 @@ func encodeEventPayload(event Event) ([]byte, error) {
 			eventPayloadIncomingRecipientsType, &recipientPayload,
 		),
 	}
+	if len(assetTransferRaw) > 0 {
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				eventPayloadTaprootAssetTransferType,
+				&assetTransferRaw,
+			),
+		)
+	}
+	if recipientEventID > 0 {
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				eventPayloadRecipientEventIDType,
+				&recipientEventID,
+			),
+		)
+	}
+	if len(recipientPkScript) > 0 {
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				eventPayloadRecipientPkScriptType,
+				&recipientPkScript,
+			),
+		)
+	}
 
 	return tlvutil.EncodeRecordsToBytes(records...)
 }
@@ -2435,18 +2721,21 @@ func decodeEventPayloadWithLimits(raw []byte,
 	limits ReceiveLimits) (Event, error) {
 
 	var (
-		eventKind        uint64
-		submitSession    []byte
-		arkPSBT          []byte
-		checkpointPSBT   []byte
-		reason           []byte
-		outpointPayload  []byte
-		metadataPayload  []byte
-		ancestorPayload  []byte
-		outboxType       []byte
-		retryable        uint8
-		retryAfterNanos  uint64
-		recipientPayload []byte
+		eventKind         uint64
+		submitSession     []byte
+		arkPSBT           []byte
+		checkpointPSBT    []byte
+		reason            []byte
+		outpointPayload   []byte
+		metadataPayload   []byte
+		ancestorPayload   []byte
+		outboxType        []byte
+		retryable         uint8
+		retryAfterNanos   uint64
+		recipientPayload  []byte
+		assetTransferRaw  []byte
+		recipientEventID  uint64
+		recipientPkScript []byte
 	)
 
 	records := []tlv.Record{
@@ -2482,6 +2771,15 @@ func decodeEventPayloadWithLimits(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			eventPayloadIncomingRecipientsType, &recipientPayload,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadTaprootAssetTransferType, &assetTransferRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadRecipientEventIDType, &recipientEventID,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadRecipientPkScriptType, &recipientPkScript,
 		),
 	}
 
@@ -2583,11 +2881,34 @@ func decodeEventPayloadWithLimits(raw []byte,
 			return nil, err
 		}
 
+		var assetTransfer *oortx.TaprootAssetTransfer
+		if len(assetTransferRaw) > 0 {
+			var decoded oortx.TaprootAssetTransfer
+			if err := decoded.UnmarshalBinary(
+				assetTransferRaw,
+			); err != nil {
+				return nil, fmt.Errorf("decode incoming event "+
+					"taproot asset transfer: %w", err)
+			}
+			if err := decoded.Validate(
+				len(checkpoints),
+			); err != nil {
+				return nil, fmt.Errorf("validate incoming "+
+					"event taproot asset transfer: %w", err)
+			}
+			assetTransfer = &decoded
+		}
+
 		return &IncomingTransferEvent{
 			ArkPSBT:              ark,
 			FinalCheckpointPSBTs: checkpoints,
 			AncestorPackages:     ancestors,
 			Recipients:           recipients,
+			TaprootAssetTransfer: assetTransfer,
+			RecipientEventID:     recipientEventID,
+			RecipientPkScript: append(
+				[]byte(nil), recipientPkScript...,
+			),
 		}, nil
 
 	case eventKindIncomingHandled:

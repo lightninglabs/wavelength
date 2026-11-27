@@ -1,6 +1,7 @@
 package oor
 
 import (
+	"crypto/sha256"
 	"time"
 
 	"github.com/btcsuite/btcd/psbt/v2"
@@ -182,6 +183,19 @@ type IncomingTransferEvent struct {
 	// structural extraction from ArkPSBT for compatibility with older
 	// servers.
 	Recipients []ArkRecipientOutput
+
+	// TaprootAssetTransfer carries the sealed Taproot Asset transition
+	// packages when this incoming transfer creates an asset VTXO.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
+
+	// RecipientEventID identifies the per-script recipient event returned
+	// by phase-1 resolution so ReceiveResolving ignores stale responses
+	// from earlier passes on the same session.
+	RecipientEventID uint64
+
+	// RecipientPkScript is the uncomposed routing script resolved by
+	// phase-1 lookup, paired with RecipientEventID for pass correlation.
+	RecipientPkScript []byte
 }
 
 // eventSealed marks this as implementing the sealed Event interface.
@@ -192,15 +206,21 @@ func (e *IncomingTransferEvent) eventSealed() {}
 // descriptors are attached so the actor can forward them to the VTXO
 // manager for actor activation.
 type IncomingHandledEvent struct {
-	// MaterializedVTXOs contains descriptors that were durably
-	// persisted during materialization. The OOR actor forwards these
-	// to the VTXO manager so it can spawn monitoring actors.
+	// MaterializedVTXOs contains newly materialized live descriptors that
+	// were durably persisted during materialization. The OOR actor
+	// forwards these to the VTXO manager so it can spawn monitoring actors.
 	MaterializedVTXOs []*vtxo.Descriptor
 
 	// MaterializedOutpoints identifies the persisted VTXOs by outpoint so
 	// durable callback delivery can round-trip the event without embedding
 	// the full descriptor payload in the mailbox record.
 	MaterializedOutpoints []wire.OutPoint
+
+	// MaterializedPlainScripts records the SHA-256 hashes of plain
+	// (non-asset) output scripts owned and handled in this pass so
+	// follow-up hints for those scripts stay idempotent no-ops without
+	// reopening a completed session.
+	MaterializedPlainScripts [][sha256.Size]byte
 }
 
 // eventSealed marks this as implementing the sealed Event interface.

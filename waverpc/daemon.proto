@@ -99,6 +99,11 @@ service DaemonService {
     // client and operator, without waiting for a round.
     rpc SendOOR (SendOORRequest) returns (SendOORResponse);
 
+    // SendAssetOOR initiates an out-of-round Taproot Asset transfer directly
+    // between the client and operator, merging up to eight live asset VTXOs
+    // and leasing an operator carrier float for the new asset leaves.
+    rpc SendAssetOOR (SendAssetOORRequest) returns (SendAssetOORResponse);
+
     // PrepareOOR builds the deterministic OOR package without submitting it.
     // This lets callers collect signatures from external custom-input
     // participants before calling SendOOR with the same parameters.
@@ -1315,6 +1320,72 @@ message SendOORResponse {
     // a failure recorded before the origin was tracked. Clients that ignore
     // the field keep treating a failed replay as unresolved.
     bool failed_before_ponr = 4;
+}
+
+message SendAssetOORRequest {
+    // asset_ref is the canonical SDK asset reference (asset ID or group key)
+    // of the Taproot Asset to send.
+    string asset_ref = 1;
+
+    // amount is the number of asset units to send to the recipient.
+    uint64 amount = 2;
+
+    // destination selects the recipient's uncomposed Ark VTXO policy. A raw
+    // address is omitted because asset outputs must commit to an explicit
+    // uncomposed Ark policy before composing the Taproot Asset root.
+    oneof destination {
+        // pubkey is the 32-byte x-only (Schnorr) public key of the recipient.
+        // The daemon derives the standard Ark VTXO policy using the
+        // operator's key and exit delay.
+        bytes pubkey = 3;
+
+        // policy_template is the serialized uncomposed arkscript policy for
+        // the recipient VTXO.
+        bytes policy_template = 4;
+    }
+
+    // dry_run validates the request, operator terms, and asset input
+    // availability without leasing a carrier float or submitting a transfer.
+    bool dry_run = 5;
+
+    // idempotency_key is an optional caller-provided key that identifies
+    // this send intent across crashes and retries.
+    string idempotency_key = 6;
+
+    // admission_deadline_unix_nanos is the latest wall-clock time at which
+    // the daemon may admit a new transfer for this request. Zero leaves
+    // admission unbounded.
+    int64 admission_deadline_unix_nanos = 7;
+}
+
+message SendAssetOORResponse {
+    // status is the result: "submitted" on success, "failed" when replay
+    // finds a known terminal failure, or "preview" on dry_run.
+    string status = 1;
+
+    // session_id is the OOR session identifier (Ark txid). Empty on dry_run.
+    string session_id = 2;
+
+    // recipient_outpoint is the Ark transaction outpoint created for the
+    // recipient asset output. Empty on dry_run or when unavailable.
+    string recipient_outpoint = 3;
+
+    // selected_input_count is the number of live asset VTXOs merged by this
+    // transfer.
+    uint32 selected_input_count = 4;
+
+    // asset_change_amount is the surplus asset units returned to the sender
+    // as a new asset VTXO. Zero when the selected inputs match amount
+    // exactly.
+    uint64 asset_change_amount = 5;
+
+    // sender_btc_change_sat is the round-originated Bitcoin carrier returned
+    // to the sender as a plain Bitcoin VTXO.
+    int64 sender_btc_change_sat = 6;
+
+    // failed_before_ponr is set only on a replay with status "failed" when
+    // the session provably failed before the point of no return.
+    bool failed_before_ponr = 7;
 }
 
 message PrepareOORRequest {

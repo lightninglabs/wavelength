@@ -60,14 +60,20 @@ Durable journals retain committed packages for restart recovery.
   unchanged. The Ark package holds every new asset VTXO's proof, so
   `DecodeAssetVTXOClaimInputs` reads their pieces from it.
 - `TreeRootAssetSource` / `TreeRootAssetInput` — The asset states held by the
-  batch output that the tree's root node spends. `BatchAnchorCommit.RootSource`
-  feeds straight into `TreeMaterializerConfig.Root`.
+  batch output that the tree's root node spends, plus the optional 32-byte
+  `BatchAssetRoot` composed beside the sweep leaf in `BatchPkScript`.
+  `BatchAnchorCommit.RootSource` feeds straight into
+  `TreeMaterializerConfig.Root`.
 - `TreeLeafAnchor` / `StandardVTXOLeafAnchor` — Taproot material (uncomposed
   pkScript, internal key, canonical tap leaves) for a leaf VTXO output, before
   the asset root is composed in.
 - `VTXOVerifier` — Implements the round package's `AssetVTXOVerifier`. It
   checks the sealed package of a client's asset leaf and verifies the leaf's
-  proof path back to the confirmed deposits.
+  proof path back to the confirmed deposits. `VerifyOORAssetVTXO` verifies one
+  output of a sealed OOR Ark package (supporting multi-output Ark transactions
+  and merged multi-input `CoInputPaths`) using `NewOORProofVerifier`, which
+  restricts unconfirmed anchor steps to transactions present in the
+  authenticated commitment-tree lineage and OOR packages.
 - `ProofChainVerifier` / `TapdProofChainVerifier` — The asset backend seam:
   chain verification of one confirmed proof file. tapd rejects a grouped
   asset whose group it does not know, and answers a valid proof of an asset

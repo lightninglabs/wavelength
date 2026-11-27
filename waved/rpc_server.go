@@ -133,6 +133,11 @@ type RPCServer struct {
 	// without booting the receive-script persistence stack.
 	oorChangeRecipientOverride func(context.Context, btcutil.Amount) (
 		oortx.RecipientOutput, error)
+
+	// oorCarrierLeaseOverride lets focused RPC tests supply an operator
+	// carrier float lease without booting a mailbox transport.
+	oorCarrierLeaseOverride func(context.Context, btcutil.Amount,
+		string) (*oor.OORCarrierLease, error)
 }
 
 // NewRPCServer creates a new RPCServer backed by the given Server.
@@ -4465,6 +4470,11 @@ func (r *RPCServer) resolveExistingOORRecipientOutpoints(ctx context.Context,
 	sessionID := oor.SessionID(attempt.SessionID)
 	if len(attempt.RequestData) == 0 {
 		return nil, nil
+	}
+
+	if oor.IsOutgoingAssetReplayData(attempt.RequestData) {
+		return nil, status.Errorf(codes.AlreadyExists, "idempotency "+
+			"key already identifies an asset OOR request")
 	}
 
 	recipients, err := oor.OutgoingReplayRecipients(
