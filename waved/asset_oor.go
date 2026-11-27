@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -36,6 +37,18 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// incomingAssetVerifier returns the daemon's incoming asset OOR verifier when
+// Taproot Assets support is enabled, and nil when assets are disabled so
+// default Bitcoin-only daemons skip asset overlays without breaking sibling
+// Bitcoin outputs.
+func (s *Server) incomingAssetVerifier() oor.IncomingAssetVerifier {
+	if s == nil || s.assetClient == nil || s.embeddedAssets == nil {
+		return nil
+	}
+
+	return s.verifyIncomingAssetOOR
+}
+
 // verifyIncomingAssetOOR verifies one incoming Taproot Asset OOR output
 // against the daemon's embedded asset engine and the output's authenticated
 // Bitcoin lineage and OOR package chain before materialization stores its
@@ -59,6 +72,11 @@ func (s *Server) verifyIncomingAssetOOR(ctx context.Context,
 		len(req.TaprootAssetTransfer.ArkPackage) == 0 {
 		return fmt.Errorf("%w: missing incoming sealed ark "+
 			"asset package", oor.ErrInvalidIncomingAssetPackage)
+	}
+
+	if err := validateAssetRefFilter(req.Recipient.Asset.Ref); err != nil {
+		return fmt.Errorf("%w: %w", oor.ErrInvalidIncomingAssetPackage,
+			err)
 	}
 
 	if err := trustAssetGroup(
@@ -124,12 +142,12 @@ func (s *Server) verifyIncomingAssetOOR(ctx context.Context,
 		},
 	)
 	if err != nil {
-		if ctx.Err() != nil {
-			return err
-		}
 
-		return fmt.Errorf("%w: %w", oor.ErrInvalidIncomingAssetPackage,
-			err)
+		// Return proof-verifier errors unwrapped so transient chain
+		// backend outages use ReceiveNotified's bounded exponential
+		// backoff before terminating instead of permanently killing a
+		// valid incoming asset transfer on the first RPC blip.
+		return err
 	}
 
 	return nil
@@ -172,24 +190,6 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 			"admission_deadline_unix_nanos must not be negative")
 	}
 
-	if req.GetIdempotencyKey() != "" && !req.GetDryRun() {
-		replay, handled, err := r.replaySendAssetOORByIdempotencyKey(
-			ctx, req.GetIdempotencyKey(),
-		)
-		if err != nil {
-			return nil, err
-		}
-		if handled {
-			return replay, nil
-		}
-	}
-
-	if deadline := req.GetAdmissionDeadlineUnixNanos(); deadline > 0 &&
-		!time.Now().Before(time.Unix(0, deadline)) {
-		return nil, status.Errorf(codes.FailedPrecondition, "OOR "+
-			"admission deadline reached")
-	}
-
 	terms, err := r.server.fetchOperatorTerms(ctx)
 	if err != nil {
 		return nil, operatorTermsError(
@@ -214,6 +214,25 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 	recipientPolicy, err := resolveAssetOORRecipientPolicy(req, terms)
 	if err != nil {
 		return nil, err
+	}
+
+	if req.GetIdempotencyKey() != "" && !req.GetDryRun() {
+		replay, handled, err := r.replaySendAssetOORByIdempotencyKey(
+			ctx, req.GetIdempotencyKey(), assetRef, req.GetAmount(),
+			recipientPolicy,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if handled {
+			return replay, nil
+		}
+	}
+
+	if deadline := req.GetAdmissionDeadlineUnixNanos(); deadline > 0 &&
+		!time.Now().Before(time.Unix(0, deadline)) {
+		return nil, status.Errorf(codes.FailedPrecondition, "OOR "+
+			"admission deadline reached")
 	}
 
 	if req.GetDryRun() {
@@ -253,8 +272,22 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 	}
 
 	// Build a compatible SelectAndLockVTXOsResponse so error and canceled-
-	// await cleanup reuse the exact same unlock helpers as SendOOR.
+	// await cleanup reuse the exact same unlock helpers as SendOOR. Use a
+	// single deferred unlock on a detached bounded context so a cancelled
+	// request context can never leak locked VTXOs.
 	lockedCompat := toCompatLockedVTXOs(lockedAsset)
+	handoffDone := false
+	defer func() {
+		if handoffDone {
+			return
+		}
+		unlockCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx), 5*time.Second,
+		)
+		defer cancel()
+
+		r.unlockSelectedVTXOsBestEffort(unlockCtx, lockedCompat)
+	}()
 
 	policy := arkscript.CheckpointPolicy{
 		OperatorKey: terms.PubKey,
@@ -264,19 +297,14 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 	if err := trustAssetGroup(
 		r.server.embeddedAssets, assetRef,
 	); err != nil {
-
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 		return nil, status.Errorf(codes.InvalidArgument, "trust asset "+
 			"group: %v", err)
 	}
 
 	builtInputs, err := r.loadAssetOORInputs(
-		ctx, assetRef, lockedAsset.SelectedVTXOs,
+		ctx, assetRef, terms.PubKey, lockedAsset.SelectedVTXOs,
 	)
 	if err != nil {
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 		return nil, err
 	}
 
@@ -286,12 +314,24 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 		newAssetLeafCount = 2
 	}
 
+	// Validate local carrier preconditions before leasing an operator
+	// carrier float so local rejections never consume a float lease.
+	var roundCarrierTotal btcutil.Amount
+	for _, carrier := range builtInputs.carriers {
+		if carrier.Origin == oortx.CarrierOriginRound {
+			roundCarrierTotal += carrier.Amount
+		}
+	}
+	if roundCarrierTotal > 0 && roundCarrierTotal < outputFloor {
+		return nil, status.Errorf(codes.FailedPrecondition, "sender "+
+			"Bitcoin change %d sat is below output floor %d sat",
+			roundCarrierTotal, outputFloor)
+	}
+
 	requiredLeaseSat, err := oortx.RequiredCarrierLeaseSat(
 		newAssetLeafCount, outputFloor,
 	)
 	if err != nil {
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 		return nil, status.Errorf(codes.InvalidArgument, "required "+
 			"carrier lease: %v", err)
 	}
@@ -300,8 +340,6 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 		ctx, requiredLeaseSat, req.GetIdempotencyKey(),
 	)
 	if err != nil {
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 		return nil, err
 	}
 
@@ -309,8 +347,6 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 		terms.PubKey, terms.OORCarrierPubKey,
 	)
 	if err != nil {
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 		return nil, status.Errorf(codes.FailedPrecondition, "invalid "+
 			"operator carrier lease: %v", err)
 	}
@@ -322,8 +358,6 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 		LeaseValue:        lease.Value,
 	})
 	if err != nil {
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 		return nil, status.Errorf(codes.FailedPrecondition, "plan "+
 			"asset carriers: %v", err)
 	}
@@ -342,15 +376,11 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 		},
 	)
 	if err != nil {
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 		return nil, status.Errorf(codes.Internal, "build carrier "+
 			"float checkpoint: %v", err)
 	}
 	floatCPOut, err := floatCPArtifact.ToCheckpointOutput()
 	if err != nil {
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 		return nil, status.Errorf(codes.Internal, "build carrier "+
 			"float checkpoint output: %v", err)
 	}
@@ -366,8 +396,6 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 			carrierPlan.NewAssetLeafCarrier,
 		)
 		if err != nil {
-			r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 			return nil, err
 		}
 		assetOutputs = append(assetOutputs, tapassets.OORAssetOutput{
@@ -384,8 +412,6 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 			carrierPlan.SenderChange,
 		)
 		if err != nil {
-			r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 			return nil, err
 		}
 		plainOutputs = append(plainOutputs, btcChangeRecip)
@@ -404,8 +430,6 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 		req.GetIdempotencyKey(),
 	)
 	if err != nil {
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 		return nil, status.Errorf(codes.Internal, "derive asset "+
 			"transfer digest: %v", err)
 	}
@@ -425,8 +449,6 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 		},
 	)
 	if err != nil {
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 		code := codes.Internal
 		if errors.Is(err, tapassets.ErrOORProofLimit) ||
 			errors.Is(err, tapassets.ErrOOROrderingUnresolved) {
@@ -470,17 +492,12 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 		},
 	}
 	if err := prepared.AttachTapLeafScripts(allInputs); err != nil {
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 		return nil, status.Errorf(codes.Internal, "attach asset OOR "+
 			"tapleaf scripts: %v", err)
 	}
 	if err := prepared.Validate(
 		policy, allInputs, builtTransfer.Recipients,
 	); err != nil {
-
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 		return nil, status.Errorf(codes.Internal, "validate prepared "+
 			"asset OOR submit: %v", err)
 	}
@@ -490,21 +507,37 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 		req.GetAmount(),
 	)
 	if err != nil {
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 		return nil, status.Errorf(codes.Internal, "locate asset OOR "+
 			"recipient output: %v", err)
 	}
 
+	recipientOP, err := oortx.RecipientOutPoint(
+		prepared.ArkPSBT.UnsignedTx.TxHash(), builtTransfer.Recipients,
+		matchedRecipient,
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "derive asset OOR "+
+			"recipient outpoint: %v", err)
+	}
+
 	var dispatchRequestData []byte
 	if req.GetIdempotencyKey() != "" {
-		dispatchRequestData, err = oor.NewOutgoingReplayData(
-			builtTransfer.Recipients,
-			[]oortx.RecipientOutput{matchedRecipient},
+		dispatchRequestData, err = oor.NewOutgoingAssetReplayData(
+			oor.OutgoingAssetReplay{
+				OutputIndex: recipientOP.Index,
+				SelectedInputCount: uint32(
+					len(builtInputs.assetInputs),
+				),
+				AssetRef:          assetRef,
+				AssetAmount:       req.GetAmount(),
+				AssetChangeAmount: assetChange,
+				SenderBtcChangeSat: int64(
+					carrierPlan.SenderChange,
+				),
+				RecipientPolicy: recipientPolicy,
+			},
 		)
 		if err != nil {
-			r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 			return nil, status.Errorf(codes.Internal, "build "+
 				"asset OOR dispatch identity: %v", err)
 		}
@@ -529,19 +562,16 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 	oorResp, err := future.Await(ctx).Unpack()
 	if err != nil {
 		if errors.Is(err, oor.ErrOutgoingAdmissionExpired) {
-			r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 			return nil, status.Errorf(codes.FailedPrecondition,
 				"OOR admission deadline reached")
 		}
 		if errors.Is(err, oor.ErrIdempotencyKeyConflict) {
-			r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 			return nil, status.Errorf(codes.AlreadyExists, "OOR "+
 				"session already uses a different "+
 				"idempotency key")
 		}
 		if isAwaitContextError(ctx, err) {
+			handoffDone = true
 			r.cleanupSubmittedOORStart(
 				ctx, future, lockedCompat, nil,
 			)
@@ -555,7 +585,6 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 				"response wait: %v", err)
 		}
 
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
 		r.server.emitMetric(ctx, &metrics.OORTransferSentMsg{
 			Status:   "failed",
 			Duration: time.Since(startTime),
@@ -567,30 +596,39 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 
 	resp, ok := oorResp.(*oor.StartTransferResponse)
 	if !ok {
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
-
 		return nil, status.Errorf(codes.Internal, "unexpected "+
 			"response type: %T", oorResp)
 	}
 
 	if resp.Existing {
-		r.unlockSelectedVTXOsBestEffort(ctx, lockedCompat)
+		// Leave handoffDone false so the deferred cleanup releases the
+		// discarded selection, do not emit a second submitted metric,
+		// and return the stored attempt's identity and summary.
+		if req.GetIdempotencyKey() != "" {
+			replay, handled, replayErr := r.
+				replaySendAssetOORByIdempotencyKey(
+					ctx, req.GetIdempotencyKey(), assetRef,
+					req.GetAmount(), recipientPolicy,
+				)
+			if replayErr != nil {
+				return nil, replayErr
+			}
+			if handled {
+				return replay, nil
+			}
+		}
+
+		return &waverpc.SendAssetOORResponse{
+			Status:    "submitted",
+			SessionId: resp.SessionID.String(),
+		}, nil
 	}
 
-	var recipientOutpoint string
-	if !resp.Existing {
-		op, opErr := oortx.RecipientOutPoint(
-			chainhash.Hash(resp.SessionID),
-			builtTransfer.Recipients, matchedRecipient,
-		)
-		if opErr == nil {
-			recipientOutpoint = op.String()
-		}
-	}
+	handoffDone = true
 
 	r.server.log.InfoS(ctx, "Asset OOR transfer submitted",
 		slog.String("session_id", resp.SessionID.String()),
-		slog.Bool("existing_session", resp.Existing),
+		slog.Bool("existing_session", false),
 		slog.String("asset_ref", assetRef),
 		slog.Uint64("asset_amount", req.GetAmount()),
 		slog.Uint64("asset_change_amount", assetChange),
@@ -615,7 +653,7 @@ func (r *RPCServer) SendAssetOOR(ctx context.Context,
 	return &waverpc.SendAssetOORResponse{
 		Status:             "submitted",
 		SessionId:          resp.SessionID.String(),
-		RecipientOutpoint:  recipientOutpoint,
+		RecipientOutpoint:  recipientOP.String(),
 		SelectedInputCount: uint32(len(builtInputs.assetInputs)),
 		AssetChangeAmount:  assetChange,
 		SenderBtcChangeSat: int64(carrierPlan.SenderChange),
@@ -633,7 +671,10 @@ type assetOORInputs struct {
 
 // loadAssetOORInputs loads the full descriptors, asset pieces, proof
 // verifiers, and collaborative leaves for the selected asset VTXOs.
+// Checkpoint owner leaves are built under currentOperatorKey so asset VTXOs
+// created before an operator key rotation remain spendable OOR.
 func (r *RPCServer) loadAssetOORInputs(ctx context.Context, assetRef string,
+	currentOperatorKey *btcec.PublicKey,
 	selected []wallet.SelectedAssetVTXO) (*assetOORInputs, error) {
 
 	out := &assetOORInputs{
@@ -651,7 +692,7 @@ func (r *RPCServer) loadAssetOORInputs(ctx context.Context, assetRef string,
 				"selected asset VTXO %s: %v", sv.Outpoint, err)
 		}
 		if desc == nil || desc.TaprootAssetRoot == nil ||
-			desc.TaprootAssetRef != assetRef ||
+			!strings.EqualFold(desc.TaprootAssetRef, assetRef) ||
 			desc.TaprootAssetAmount == 0 ||
 			len(desc.TaprootAssetSealedPackage) == 0 {
 			return nil, status.Errorf(codes.FailedPrecondition,
@@ -702,8 +743,13 @@ func (r *RPCServer) loadAssetOORInputs(ctx context.Context, assetRef string,
 			}
 		}
 
+		checkpointOperatorKey := currentOperatorKey
+		if checkpointOperatorKey == nil {
+			checkpointOperatorKey = desc.OperatorKey
+		}
+
 		collabLeaf, err := arkscript.MultiSigCollabTapLeaf(
-			desc.ClientKey.PubKey, desc.OperatorKey,
+			desc.ClientKey.PubKey, checkpointOperatorKey,
 		)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "derive "+
@@ -714,7 +760,7 @@ func (r *RPCServer) loadAssetOORInputs(ctx context.Context, assetRef string,
 			Node: &arkscript.Multisig{
 				Keys: []*btcec.PublicKey{
 					desc.ClientKey.PubKey,
-					desc.OperatorKey,
+					checkpointOperatorKey,
 				},
 			},
 		}.Encode()
@@ -928,9 +974,12 @@ func (r *RPCServer) previewSendAssetOOR(ctx context.Context, assetRef string,
 }
 
 // replaySendAssetOORByIdempotencyKey returns an existing durable keyed session
-// before selecting asset VTXOs or leasing an operator carrier float.
-func (r *RPCServer) replaySendAssetOORByIdempotencyKey(ctx context.Context,
-	key string) (*waverpc.SendAssetOORResponse, bool, error) {
+// before selecting asset VTXOs or leasing an operator carrier float, verifying
+// that the caller's asset, amount, and destination policy match the original
+// attempt.
+func (r *RPCServer) replaySendAssetOORByIdempotencyKey(ctx context.Context, key,
+	assetRef string, amount uint64, recipientPolicy []byte) (
+	*waverpc.SendAssetOORResponse, bool, error) {
 
 	attempt, found, err := r.findOutgoingOORSessionByIdempotencyKey(
 		ctx, key,
@@ -943,6 +992,34 @@ func (r *RPCServer) replaySendAssetOORByIdempotencyKey(ctx context.Context,
 	}
 
 	sessionID := oor.SessionID(attempt.SessionID)
+	var (
+		hasReplay bool
+		replay    oor.OutgoingAssetReplay
+	)
+	if len(attempt.RequestData) > 0 {
+		if !oor.IsOutgoingAssetReplayData(attempt.RequestData) {
+			return nil, true, status.Errorf(codes.AlreadyExists,
+				"idempotency key already identifies a "+
+					"different OOR request")
+		}
+
+		replay, err = oor.DecodeOutgoingAssetReplayData(
+			attempt.RequestData,
+		)
+		if err != nil {
+			return nil, true, status.Errorf(codes.DataLoss,
+				"decode asset OOR dispatch request: %v", err)
+		}
+		if replay.AssetRef != assetRef ||
+			replay.AssetAmount != amount ||
+			!bytes.Equal(replay.RecipientPolicy, recipientPolicy) {
+			return nil, true, status.Errorf(codes.AlreadyExists,
+				"idempotency key already identifies a "+
+					"different asset OOR request")
+		}
+		hasReplay = true
+	}
+
 	replayStatus, prePONR, err := r.outgoingOORReplayStatus(ctx, sessionID)
 	if err != nil {
 		return nil, true, err
@@ -955,10 +1032,22 @@ func (r *RPCServer) replaySendAssetOORByIdempotencyKey(ctx context.Context,
 		}, true, nil
 	}
 
-	return &waverpc.SendAssetOORResponse{
+	resp := &waverpc.SendAssetOORResponse{
 		Status:    "submitted",
 		SessionId: sessionID.String(),
-	}, true, nil
+	}
+	if hasReplay {
+		op := wire.OutPoint{
+			Hash:  chainhash.Hash(sessionID),
+			Index: replay.OutputIndex,
+		}
+		resp.RecipientOutpoint = op.String()
+		resp.SelectedInputCount = replay.SelectedInputCount
+		resp.AssetChangeAmount = replay.AssetChangeAmount
+		resp.SenderBtcChangeSat = replay.SenderBtcChangeSat
+	}
+
+	return resp, true, nil
 }
 
 // resolveAssetOORRecipientPolicy converts the SendAssetOOR destination oneof
@@ -1003,6 +1092,19 @@ func resolveAssetOORRecipientPolicy(req *waverpc.SendAssetOORRequest,
 		if _, err := template.Compile(); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument,
 				"compile recipient policy_template: %v", err)
+		}
+
+		nodes := make([]arkscript.Node, len(template.Leaves))
+		for i, leaf := range template.Leaves {
+			nodes[i] = leaf.Node
+		}
+		if err := arkscript.ValidatePolicy(
+			nodes, arkscript.PolicyValidationOpts{
+				OperatorKey: terms.PubKey,
+			},
+		); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"policy violates Ark invariants: %v", err)
 		}
 
 		return bytes.Clone(d.PolicyTemplate), nil
@@ -1079,7 +1181,8 @@ func findAssetOORRecipientOutput(recipients []oortx.RecipientOutput,
 // SelectAndLockVTXOsResponse shape expected by unlockSelectedVTXOsBestEffort
 // and cleanupSubmittedOORStart.
 func toCompatLockedVTXOs(
-	locked *wallet.SelectAndLockAssetVTXOsResponse) *wallet.SelectAndLockVTXOsResponse { //nolint:ll
+	locked *wallet.SelectAndLockAssetVTXOsResponse,
+) *wallet.SelectAndLockVTXOsResponse {
 
 	if locked == nil {
 		return nil

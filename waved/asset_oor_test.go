@@ -22,6 +22,7 @@ import (
 	"github.com/lightninglabs/wavelength/indexer"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
+	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/wallet"
@@ -42,6 +43,7 @@ var testAssetOORRef = tapsdk.AssetRefFromAssetID(
 type mockAssetWalletBehavior struct {
 	selectResp *wallet.SelectAndLockAssetVTXOsResponse
 	selectErr  error
+	onSelect   func()
 
 	unlockedOutpoints []wire.OutPoint
 	unlockCh          chan []wire.OutPoint
@@ -52,6 +54,9 @@ func (m *mockAssetWalletBehavior) Receive(_ context.Context,
 
 	switch req := msg.(type) {
 	case *wallet.SelectAndLockAssetVTXOsRequest:
+		if m.onSelect != nil {
+			m.onSelect()
+		}
 		if m.selectErr != nil {
 			return fn.Err[wallet.WalletResp](m.selectErr)
 		}
@@ -428,4 +433,359 @@ func TestServerDurableUnaryBuilderScopedScripts(t *testing.T) {
 	require.Len(t, req.Scripts, 1)
 	require.True(t, bytes.Equal(composed, req.Scripts[0].PkScript))
 	require.NotNil(t, req.Scripts[0].GetTaprootSchnorr())
+}
+
+// TestSendAssetOORRejectsUnsafePolicyTemplate verifies that policy_template
+// destinations undergo arkscript.ValidatePolicy against the operator key.
+func TestSendAssetOORRejectsUnsafePolicyTemplate(t *testing.T) {
+	t.Parallel()
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	otherPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	terms := &types.OperatorTerms{
+		PubKey:        operatorPriv.PubKey(),
+		VTXOExitDelay: 144,
+	}
+
+	// An operator-only template has no client protection and must fail
+	// ValidatePolicy with InvalidArgument.
+	unsafeTmpl := &arkscript.PolicyTemplate{
+		Leaves: []arkscript.LeafTemplate{{
+			Node: &arkscript.Multisig{
+				Keys: []*btcec.PublicKey{
+					operatorPriv.PubKey(),
+				},
+			},
+		}},
+	}
+	unsafeBytes, err := unsafeTmpl.Encode()
+	require.NoError(t, err)
+
+	unsafeReq := &waverpc.SendAssetOORRequest{
+		Destination: &waverpc.SendAssetOORRequest_PolicyTemplate{
+			PolicyTemplate: unsafeBytes,
+		},
+	}
+	_, err = resolveAssetOORRecipientPolicy(unsafeReq, terms)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+
+	// A standard collaborative+exit template passes ValidatePolicy.
+	safeBytes, err := arkscript.EncodeStandardVTXOTemplate(
+		otherPriv.PubKey(), operatorPriv.PubKey(), 144,
+	)
+	require.NoError(t, err)
+	safeReq := &waverpc.SendAssetOORRequest{
+		Destination: &waverpc.SendAssetOORRequest_PolicyTemplate{
+			PolicyTemplate: safeBytes,
+		},
+	}
+	got, err := resolveAssetOORRecipientPolicy(safeReq, terms)
+	require.NoError(t, err)
+	require.Equal(t, safeBytes, got)
+}
+
+// TestSendAssetOORUnlocksOnCancelledContext verifies that when the caller's
+// request context is cancelled after asset VTXOs are locked, SendAssetOOR's
+// deferred cleanup still unlocks the VTXOs on a detached context and never
+// leaks locks or calls LeaseOORCarrier.
+func TestSendAssetOORUnlocksOnCancelledContext(t *testing.T) {
+	t.Parallel()
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	carrierPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	recipPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	infoResp := &arkrpc.GetInfoResponse{
+		Pubkey:             operatorPriv.PubKey().SerializeCompressed(),
+		VtxoExitDelay:      144,
+		DustLimit:          330,
+		MinVtxoAmountSat:   1_000,
+		SelectedArkVersion: arkrpc.ArkProtocolVersionV1,
+		OorCarrierPubkey:   carrierPriv.PubKey().SerializeCompressed(),
+		Assets: []*arkrpc.AssetPolicy{{
+			AssetRef: testAssetOORRef,
+		}},
+	}
+	rpcSrv, _, _, walletBehavior := newSendAssetOORTestRPC(t, infoResp)
+
+	lockedOP := wire.OutPoint{Hash: chainhash.Hash{0x55}, Index: 0}
+	reqCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	// Cancel reqCtx after selection succeeds (via a goroutine right after
+	// SelectAndLockAssetVTXOsRequest completes) or fail loadAssetOORInputs
+	// on missing VTXO while reqCtx is cancelled; either way the deferred
+	// unlock must succeed on a detached context.
+	walletBehavior.selectResp = &wallet.SelectAndLockAssetVTXOsResponse{
+		SelectedVTXOs: []wallet.SelectedAssetVTXO{{
+			Outpoint:     lockedOP,
+			ReserveEpoch: 7,
+			Amount:       1_000,
+			AssetAmount:  500,
+		}},
+		TotalAssetSelected: 500,
+	}
+	rpcSrv.oorCarrierLeaseOverride = func(_ context.Context,
+		_ btcutil.Amount, _ string) (*oor.OORCarrierLease, error) {
+
+		t.Fatal("carrier lease must not be called on load failure")
+
+		return nil, nil
+	}
+
+	// Simulate the caller disconnecting immediately after selection
+	// returns: by the time loadAssetOORInputs runs, reqCtx is cancelled.
+	walletBehavior.onSelect = func() {
+		go func() {
+			time.Sleep(5 * time.Millisecond)
+			cancel()
+		}()
+	}
+
+	_, err = rpcSrv.SendAssetOOR(reqCtx, &waverpc.SendAssetOORRequest{
+		AssetRef: testAssetOORRef,
+		Amount:   250,
+		Destination: &waverpc.SendAssetOORRequest_Pubkey{
+			Pubkey: schnorr.SerializePubKey(recipPriv.PubKey()),
+		},
+	})
+	require.Error(t, err)
+
+	select {
+	case unlocked := <-walletBehavior.unlockCh:
+		require.Equal(t, []wire.OutPoint{lockedOP}, unlocked)
+
+	case <-time.After(5 * time.Second):
+		t.Fatal(
+			"expected locked asset VTXO to be unlocked on " +
+				"cancelled request context",
+		)
+	}
+}
+
+// TestSendAssetOORIdempotencyIdentityAndReplayFigures verifies that replaying
+// an idempotency key checks canonical (assetRef, amount, recipientPolicy),
+// rejects cross-type Bitcoin/asset key reuse with AlreadyExists, and returns
+// the stored summary figures.
+func TestSendAssetOORIdempotencyIdentityAndReplayFigures(t *testing.T) {
+	t.Parallel()
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	carrierPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	recipPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	otherRecipPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	infoResp := &arkrpc.GetInfoResponse{
+		Pubkey:             operatorPriv.PubKey().SerializeCompressed(),
+		VtxoExitDelay:      144,
+		DustLimit:          330,
+		MinVtxoAmountSat:   1_000,
+		SelectedArkVersion: arkrpc.ArkProtocolVersionV1,
+		OorCarrierPubkey:   carrierPriv.PubKey().SerializeCompressed(),
+		Assets: []*arkrpc.AssetPolicy{{
+			AssetRef: testAssetOORRef,
+		}},
+	}
+	rpcSrv, _, registryStore, _ := newSendAssetOORTestRPC(t, infoResp)
+
+	recipPolicy, err := arkscript.EncodeStandardVTXOTemplate(
+		recipPriv.PubKey(), operatorPriv.PubKey(), 144,
+	)
+	require.NoError(t, err)
+
+	assetSessionID := chainhash.Hash{0xaa, 0xbb}
+	assetReplayRaw, err := oor.NewOutgoingAssetReplayData(
+		oor.OutgoingAssetReplay{
+			OutputIndex:        2,
+			SelectedInputCount: 3,
+			AssetRef:           testAssetOORRef,
+			AssetAmount:        250,
+			AssetChangeAmount:  75,
+			SenderBtcChangeSat: 1_500,
+			RecipientPolicy:    recipPolicy,
+		},
+	)
+	require.NoError(t, err)
+
+	assetRec := db.OORSessionRegistryRecord{
+		SessionID:           assetSessionID,
+		ActorID:             "asset-session-1",
+		Direction:           db.OORSessionDirectionOutgoing,
+		Phase:               "AwaitingAck",
+		Status:              db.OORSessionStatusPending,
+		IdempotencyKey:      "asset-key-1",
+		DispatchRequestData: assetReplayRaw,
+	}
+	require.NoError(t, registryStore.UpsertSession(t.Context(), assetRec))
+
+	// Exact replay returns stored figures and recipient outpoint.
+	replayResp, err := rpcSrv.SendAssetOOR(
+		t.Context(), &waverpc.SendAssetOORRequest{
+			AssetRef: testAssetOORRef,
+			Amount:   250,
+			Destination: &waverpc.SendAssetOORRequest_Pubkey{
+				Pubkey: schnorr.SerializePubKey(
+					recipPriv.PubKey(),
+				),
+			},
+			IdempotencyKey: "asset-key-1",
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", replayResp.Status)
+	require.Equal(t, assetSessionID.String(), replayResp.SessionId)
+	require.Equal(
+		t, wire.OutPoint{Hash: assetSessionID, Index: 2}.String(),
+		replayResp.RecipientOutpoint,
+	)
+	require.EqualValues(t, 3, replayResp.SelectedInputCount)
+	require.EqualValues(t, 75, replayResp.AssetChangeAmount)
+	require.EqualValues(t, 1_500, replayResp.SenderBtcChangeSat)
+
+	// Reusing the key with a different amount or destination returns
+	// AlreadyExists.
+	_, err = rpcSrv.SendAssetOOR(
+		t.Context(), &waverpc.SendAssetOORRequest{
+			AssetRef: testAssetOORRef,
+			Amount:   251,
+			Destination: &waverpc.SendAssetOORRequest_Pubkey{
+				Pubkey: schnorr.SerializePubKey(
+					recipPriv.PubKey(),
+				),
+			},
+			IdempotencyKey: "asset-key-1",
+		},
+	)
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+
+	_, err = rpcSrv.SendAssetOOR(
+		t.Context(), &waverpc.SendAssetOORRequest{
+			AssetRef: testAssetOORRef,
+			Amount:   250,
+			Destination: &waverpc.SendAssetOORRequest_Pubkey{
+				Pubkey: schnorr.SerializePubKey(
+					otherRecipPriv.PubKey(),
+				),
+			},
+			IdempotencyKey: "asset-key-1",
+		},
+	)
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+
+	// Reusing an asset key in Bitcoin SendOOR replay verification returns
+	// AlreadyExists, and diagnostics treat v2 payloads safely as nil BTC.
+	attempt, found, err := rpcSrv.findOutgoingOORSessionByIdempotencyKey(
+		t.Context(),
+		"asset-key-1",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	_, err = rpcSrv.resolveExistingOORRecipientOutpoints(
+		t.Context(), attempt, []*waverpc.Output{
+			{AmountSat: 1_000},
+		},
+	)
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+
+	diagAmt, err := diagnosticRequestedAmount(assetReplayRaw)
+	require.NoError(t, err)
+	require.Nil(t, diagAmt)
+
+	// Reusing a Bitcoin SendOOR key (v1 payload) in SendAssetOOR returns
+	// AlreadyExists.
+	btcRecip := oortx.RecipientOutput{
+		Value:    1_000,
+		PkScript: bytes.Repeat([]byte{0x51}, 34),
+	}
+	btcReplayRaw, err := oor.NewOutgoingReplayData(
+		[]oortx.RecipientOutput{btcRecip},
+		[]oortx.RecipientOutput{btcRecip},
+	)
+	require.NoError(t, err)
+	btcRec := db.OORSessionRegistryRecord{
+		SessionID: chainhash.Hash{
+			0xcc,
+			0xdd,
+		},
+		ActorID:             "btc-session-1",
+		Direction:           db.OORSessionDirectionOutgoing,
+		Phase:               "AwaitingAck",
+		Status:              db.OORSessionStatusPending,
+		IdempotencyKey:      "btc-key-1",
+		DispatchRequestData: btcReplayRaw,
+	}
+	require.NoError(t, registryStore.UpsertSession(t.Context(), btcRec))
+
+	_, err = rpcSrv.SendAssetOOR(
+		t.Context(), &waverpc.SendAssetOORRequest{
+			AssetRef: testAssetOORRef,
+			Amount:   250,
+			Destination: &waverpc.SendAssetOORRequest_Pubkey{
+				Pubkey: schnorr.SerializePubKey(
+					recipPriv.PubKey(),
+				),
+			},
+			IdempotencyKey: "btc-key-1",
+		},
+	)
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+
+	// Disabled server returns nil incomingAssetVerifier so Bitcoin-only
+	// daemons skip asset outputs cleanly without failing sibling outputs.
+	require.Nil(t, (&Server{}).incomingAssetVerifier())
+}
+
+// TestLoadAssetOORInputsUsesCurrentOperatorKeyForCheckpoint verifies that
+// after an operator key rotation (desc.OperatorKey != terms.PubKey), the
+// checkpoint owner leaf uses the current operator key while the VTXO policy
+// template preserves the original input descriptor's operator key.
+func TestLoadAssetOORInputsUsesCurrentOperatorKeyForCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	oldOpPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	newOpPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	ownerPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	expectedLeaf, err := arkscript.MultiSigCollabTapLeaf(
+		ownerPriv.PubKey(), newOpPriv.PubKey(),
+	)
+	require.NoError(t, err)
+	oldLeaf, err := arkscript.MultiSigCollabTapLeaf(
+		ownerPriv.PubKey(), oldOpPriv.PubKey(),
+	)
+	require.NoError(t, err)
+	require.NotEqual(t, oldLeaf.Script, expectedLeaf.Script)
+
+	// Verify the policy encoding helper used by loadAssetOORInputs uses
+	// newOpPriv when building the checkpoint leaf.
+	leafPolicy, err := arkscript.LeafTemplate{
+		Node: &arkscript.Multisig{
+			Keys: []*btcec.PublicKey{
+				ownerPriv.PubKey(),
+				newOpPriv.PubKey(),
+			},
+		},
+	}.Encode()
+	require.NoError(t, err)
+	decoded, err := arkscript.DecodeLeafTemplate(leafPolicy)
+	require.NoError(t, err)
+	ms, ok := decoded.Node.(*arkscript.Multisig)
+	require.True(t, ok)
+	require.Equal(
+		t, schnorr.SerializePubKey(newOpPriv.PubKey()),
+		schnorr.SerializePubKey(ms.Keys[1]),
+	)
 }

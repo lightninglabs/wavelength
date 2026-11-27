@@ -4472,6 +4472,11 @@ func (r *RPCServer) resolveExistingOORRecipientOutpoints(ctx context.Context,
 		return nil, nil
 	}
 
+	if oor.IsOutgoingAssetReplayData(attempt.RequestData) {
+		return nil, status.Errorf(codes.AlreadyExists, "idempotency "+
+			"key already identifies an asset OOR request")
+	}
+
 	recipients, err := oor.OutgoingReplayRecipients(
 		attempt.RequestData,
 	)

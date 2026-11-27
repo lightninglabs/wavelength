@@ -80,12 +80,14 @@ func operatorTermsFromResponse(resp *arkrpc.GetInfoResponse) (
 
 	var oorCarrierPubKey *btcec.PublicKey
 	if len(resp.OorCarrierPubkey) > 0 {
-		oorCarrierPubKey, err = oortx.ParseCarrierPubKey(
+		// Parse leniently so a malformed asset-only carrier key never
+		// blocks Bitcoin-only bootstrap or terms refresh; SendAssetOOR
+		// fails closed when OORCarrierPubKey is nil.
+		if parsed, parseErr := oortx.ParseCarrierPubKey(
 			resp.OorCarrierPubkey,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("parse oor carrier pubkey: %w",
-				err)
+		); parseErr == nil {
+
+			oorCarrierPubKey = parsed
 		}
 	}
 

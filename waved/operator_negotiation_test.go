@@ -268,12 +268,14 @@ func TestOperatorTermsOORCarrierPubKey(t *testing.T) {
 		terms.OORCarrierPubKey.SerializeCompressed(),
 	)
 
-	// Malformed carrier pubkey fails closed.
-	_, err = operatorTermsFromResponse(&arkrpc.GetInfoResponse{
+	// Malformed carrier pubkey is dropped leniently so Bitcoin-only
+	// bootstrap never breaks; SendAssetOOR rejects nil OORCarrierPubKey.
+	terms, err = operatorTermsFromResponse(&arkrpc.GetInfoResponse{
 		Pubkey:           testOperatorPubKeyBytes(t),
 		OorCarrierPubkey: []byte{0x01, 0x02},
 	})
-	require.ErrorContains(t, err, "oor carrier pubkey")
+	require.NoError(t, err)
+	require.Nil(t, terms.OORCarrierPubKey)
 }
 
 // TestNegotiateArkBootstrapZeroSelection proves the client refuses to bootstrap

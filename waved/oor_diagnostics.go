@@ -52,7 +52,7 @@ func (s *Server) ReadOORAmount(ctx context.Context, sessionID string,
 
 // diagnosticRequestedAmount decodes the caller's recipients, not all outputs.
 func diagnosticRequestedAmount(raw []byte) (*int64, error) {
-	if len(raw) == 0 {
+	if len(raw) == 0 || oor.IsOutgoingAssetReplayData(raw) {
 		return nil, nil
 	}
 	recipients, err := oor.OutgoingReplayRecipients(raw)

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -757,7 +758,7 @@ func (r *RPCServer) recoveryOORHandler(
 		OperatorKey:                terms.PubKey,
 		ExitDelay:                  terms.VTXOExitDelay,
 		AuthenticateIncomingExpiry: r.server.expiryAuthenticator,
-		VerifyIncomingAssetPackage: r.server.verifyIncomingAssetOOR,
+		VerifyIncomingAssetPackage: r.server.incomingAssetVerifier(),
 
 		// Recovery materializes receives without going through the
 		// session actor, so the ledger emission the session behaviour
@@ -832,6 +833,24 @@ func (r *RPCServer) recoverOOREventsForScript(ctx context.Context,
 				ctx, idx, event, handler,
 			)
 			if err != nil {
+				if errors.Is(
+					err, oor.ErrInvalidIncomingAssetPackage,
+				) {
+
+					r.server.log.WarnS(
+						ctx, "Skipping unverifiable "+
+							"asset OOR event "+
+							"during recovery",
+						err,
+						slog.Uint64(
+							"event_id",
+							event.GetEventId(),
+						),
+					)
+
+					continue
+				}
+
 				return err
 			}
 			result.OOREvents++

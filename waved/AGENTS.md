@@ -774,17 +774,25 @@ background-window guide for legacy-reference and device acceptance limits.
 
 ## Asset OOR transfers
 
-`RPCServer.SendAssetOOR` (daemon RPC only, guarded by `entityOOR:write`) sends
-Taproot Assets out-of-round without exposing a CLI subcommand. It validates the
-request and operator terms (asset admission + `OORCarrierPubKey`), reserves up
-to `tapassets.MaxOORAssetInputs` live asset VTXOs via
-`SelectAndLockAssetVTXOsRequest`, leases an operator carrier float via
-authenticated `LeaseOORCarrier`, plans carrier allocation (`oortx.PlanAssetCarriers`),
-builds the asset transitions on `s.assetClient` (`tapassets.BuildOORTransfer`)
-against lineage-scoped input proof verifiers, attaches composed tapleaf scripts
-onto `oor.PreparedSubmitPackage`, and hands it to `OORRegistryActor`. Incoming
-asset OOR outputs resolve their signing key via uncomposed `RoutingPkScript()`
-(`ResolveOwnedReceiveScriptKey` and `ScopedVTXOQueryBuilder`), verify the
-sealed Ark package outside the actor DB transaction (`Server.verifyIncomingAssetOOR`
-→ `tapassets.VTXOVerifier.VerifyOORAssetVTXO`), and persist `TaprootAssetSealedPackage`
-on the materialized `vtxo.Descriptor` for unilateral claims and respends.
+`RPCServer.SendAssetOOR` (daemon RPC guarded by `entityOOR:write`; no top-level
+user CLI command, though reachable via the generated devrpc registry
+`wavecli dev daemon send-asset-oor`) sends Taproot Assets out-of-round. It
+validates the request, operator terms (asset admission + `OORCarrierPubKey`),
+and destination policy (`arkscript.ValidatePolicy`), checks idempotency against
+canonical v2 `oor.OutgoingAssetReplay` identity, reserves up to
+`tapassets.MaxOORAssetInputs` live asset VTXOs via
+`SelectAndLockAssetVTXOsRequest` (with a single deferred detached-context
+unlock on failure), validates local carrier preconditions before leasing an
+operator carrier float via authenticated `LeaseOORCarrier`, plans carrier
+allocation (`oortx.PlanAssetCarriers`), builds the asset transitions on
+`s.assetClient` (`tapassets.BuildOORTransfer`) against lineage-scoped input
+proof verifiers and current-operator checkpoint leaves, attaches composed
+tapleaf scripts onto `oor.PreparedSubmitPackage`, and hands it to
+`OORRegistryActor`. Incoming asset OOR outputs resolve their signing key via
+uncomposed `RoutingPkScript()` (`ResolveOwnedReceiveScriptKey` and
+`ScopedVTXOQueryBuilder`), verify the sealed Ark package synchronously outside
+the actor DB write transaction (`Server.incomingAssetVerifier` →
+`tapassets.VTXOVerifier.VerifyOORAssetVTXO`, wired as `nil` when assets are
+disabled so sibling Bitcoin outputs remain unaffected), and persist
+`TaprootAssetSealedPackage` on the materialized `vtxo.Descriptor` for
+unilateral claims and respends.

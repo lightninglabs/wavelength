@@ -5104,7 +5104,7 @@ func (s *Server) initOORActor(ctx context.Context,
 		OperatorKey:                operatorTerms.PubKey,
 		ExitDelay:                  operatorTerms.VTXOExitDelay,
 		AuthenticateIncomingExpiry: s.expiryAuthenticator,
-		VerifyIncomingAssetPackage: s.verifyIncomingAssetOOR,
+		VerifyIncomingAssetPackage: s.incomingAssetVerifier(),
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
